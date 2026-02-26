@@ -18,6 +18,7 @@ Each program in this directory demonstrates a class of bug that:
 | [`uninit_read`](#uninit_read) | ✅ pass | ✅ pass | ❌ uninitialized read\* |
 | [`nil_deref`](#nil_deref) | ✅ pass | ✅ pass† | ❌ nil pointer dereference |
 | [`type_assert`](#type_assert) | ✅ pass | ✅ pass | ❌ type-assertion failure |
+| [`reflect_unsafe`](#reflect_unsafe) | ✅ pass | ✅ pass | ❌ unsafe-pointer rule 5 |
 
 \* Requires `--track-init` flag.
 † Passes if the failing code path is not covered by tests.
@@ -190,6 +191,38 @@ branch, sees the `MakeInterface` wrapping a `*Cat`, then detects at the
 ```
 $ giri ./testdata/showcase/type_assert
 VIOLATION type-assertion failed: interface holds *main.Cat, not *main.Dog (goroutine 1) at ...
+```
+
+---
+
+## reflect_unsafe
+
+**File:** `reflect_unsafe/main.go`
+
+`processValue()` calls `reflect.Value.Pointer()` (which returns a `uintptr`),
+then calls `doWork()` (a GC safepoint), then converts the uintptr back to a pointer.
+
+```go
+func processValue(v reflect.Value) *int {
+    uptr := v.Pointer() // Rule 5: returns uintptr, not a tracked pointer
+    doWork()            // GC safepoint — uptr may now be stale!
+    return (*int)(unsafe.Pointer(uptr))
+}
+```
+
+**Why `go vet` misses it:** the types are correct — `uintptr` is a valid
+intermediate form for reflect-obtained pointers. `go vet` does not track
+liveness of uintptr values across function boundaries.
+**Why `-race` misses it:** single goroutine, no concurrent access.
+**Why Giri catches it:** Giri intercepts `reflect.Value.Pointer()`, records
+the resulting uintptr as a pending Rule 5 conversion, and fires a violation
+when `doWork()` constitutes a GC safepoint before the uintptr is converted back.
+
+```
+$ giri ./testdata/showcase/reflect_unsafe
+VIOLATION unsafe-pointer-violation (rule 5: reflect pointer conversion) at ...
+  uintptr value t4 (converted at ...) survived to GC point without conversion back to unsafe.Pointer
+  hint: Review the six rules at https://pkg.go.dev/unsafe#Pointer.
 ```
 
 ---

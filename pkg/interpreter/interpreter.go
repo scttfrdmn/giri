@@ -685,7 +685,20 @@ func (interp *Interpreter) handleUnsafePointer(gid int64, op UnsafeOp, val Value
 		return val, nil
 
 	case UnsafeOpFromPointer:
-		// unsafe.Pointer → *T: legal if the resulting pointer's alignment is satisfied.
+		// Rule 6: unsafe.Pointer → *reflect.SliceHeader or *reflect.StringHeader.
+		// These types should not be manipulated via unsafe.Pointer; use
+		// unsafe.SliceData / unsafe.StringData instead (Go 1.17+).
+		if targetType != nil && isReflectHeaderType(targetType) {
+			return val, &shadow.UnsafePointerViolation{
+				Rule: shadow.RuleSliceHeader,
+				Site: site,
+				Details: fmt.Sprintf(
+					"unsafe.Pointer → %s: use unsafe.SliceData/unsafe.StringData instead (Go 1.17+)",
+					targetType,
+				),
+			}
+		}
+
 		// Rule 1: the offset into the allocation must be divisible by align(T).
 		if val.Provenance != nil && targetType != nil {
 			elemType := deref(targetType)
@@ -749,6 +762,23 @@ const (
 	UnsafeOpToUintptr                   // unsafe.Pointer → uintptr
 	UnsafeOpArithmetic                  // uintptr arithmetic → unsafe.Pointer
 )
+
+// isReflectHeaderType reports whether t is *reflect.SliceHeader or *reflect.StringHeader.
+// These types are deprecated in Go 1.17+ and their manipulation via unsafe.Pointer
+// violates Rule 6 of Go's unsafe.Pointer rules.
+func isReflectHeaderType(t types.Type) bool {
+	pt, ok := t.(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := pt.Elem().(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	return obj.Pkg() != nil && obj.Pkg().Path() == "reflect" &&
+		(obj.Name() == "SliceHeader" || obj.Name() == "StringHeader")
+}
 
 // handleArenaNew interprets arena.New[T](a) calls.
 func (interp *Interpreter) handleArenaNew(gid int64, arenaVal Value, typeName, site string) (Value, error) {

@@ -125,6 +125,7 @@ type UnsafeDetector struct {
 type pendingConversion struct {
 	site       string
 	provenance *shadow.Pointer
+	rule       shadow.UnsafeRule // RuleUintptr or RuleReflect
 }
 
 func NewUnsafeDetector() *UnsafeDetector {
@@ -162,6 +163,18 @@ func (d *UnsafeDetector) RecordUintptrConversion(valueID, site string, ptr *shad
 	d.pendingUintptrs[valueID] = pendingConversion{
 		site:       site,
 		provenance: ptr,
+		rule:       shadow.RuleUintptr,
+	}
+}
+
+// RecordReflectConversion tracks a reflect.Value.Pointer() or reflect.Value.UnsafeAddr()
+// result (a uintptr) that must be converted back to unsafe.Pointer before any GC point.
+// This is Rule 5 of Go's unsafe.Pointer rules.
+func (d *UnsafeDetector) RecordReflectConversion(valueID, site string, ptr *shadow.Pointer) {
+	d.pendingUintptrs[valueID] = pendingConversion{
+		site:       site,
+		provenance: ptr,
+		rule:       shadow.RuleReflect,
 	}
 }
 
@@ -184,7 +197,7 @@ func (d *UnsafeDetector) CheckGCPoint(site string) []error {
 	var errs []error
 	for valueID, pending := range d.pendingUintptrs {
 		errs = append(errs, &shadow.UnsafePointerViolation{
-			Rule: shadow.RuleUintptr,
+			Rule: pending.rule,
 			Site: site,
 			Details: fmt.Sprintf(
 				"uintptr value %s (converted at %s) survived to GC point without conversion back to unsafe.Pointer",
@@ -363,6 +376,14 @@ func (r *Registry) ClearUintptrConversion(valueID string) {
 func (r *Registry) ClearAllUintptrConversions() {
 	if r.unsafeDetector != nil {
 		r.unsafeDetector.ClearAllUintptrConversions()
+	}
+}
+
+// RecordReflectConversion tracks a reflect.Value.Pointer() or UnsafeAddr() result.
+// Delegates to the UnsafeDetector if one is registered.
+func (r *Registry) RecordReflectConversion(valueID, site string, ptr *shadow.Pointer) {
+	if r.unsafeDetector != nil {
+		r.unsafeDetector.RecordReflectConversion(valueID, site, ptr)
 	}
 }
 

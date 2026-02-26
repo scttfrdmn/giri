@@ -911,6 +911,22 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 		}
 	}
 
+	// Intercept reflect.Value.Pointer() and reflect.Value.UnsafeAddr() (Rule 5).
+	// Both methods return a uintptr that must be converted back to unsafe.Pointer
+	// before the next GC safepoint. Record the pending conversion so CheckGCPoint
+	// fires if a function call separates the reflect call from the conversion.
+	if callee != nil && callee.Package() != nil && interp.config.TrackUnsafe {
+		if pkg := callee.Package().Pkg; pkg != nil && pkg.Path() == "reflect" {
+			name := callee.Name()
+			if name == "Pointer" || name == "UnsafeAddr" {
+				if interp.registry != nil {
+					interp.registry.RecordReflectConversion(call.Name(), site, nil)
+				}
+				return Value{Raw: int64(0)}
+			}
+		}
+	}
+
 	if callee != nil && callee.Blocks != nil {
 		return interp.execFunction(gid, callee, args)
 	}

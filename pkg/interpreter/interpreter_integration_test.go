@@ -176,6 +176,21 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.8.0 regression tests
+	{
+		name:           "reflect uintptr gc",
+		dir:            "reflect_uintptr",
+		wantViolations: 1,
+		wantCategory:   "rule 5",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "slice header",
+		dir:            "slice_header",
+		wantViolations: 1,
+		wantCategory:   "rule 6",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {
@@ -242,6 +257,17 @@ var showcaseTests = []struct {
 		dir:            "type_assert",
 		wantViolations: 1,
 		wantCategory:   "type-assertion",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		// processValue() calls v.Pointer() then doWork() before converting back.
+		// go vet: pass (types are correct).
+		// go test -race: pass (no concurrent access).
+		// Giri: reflect.Value.Pointer() uintptr escapes past a GC safepoint (Rule 5).
+		name:           "reflect unsafe",
+		dir:            "reflect_unsafe",
+		wantViolations: 1,
+		wantCategory:   "rule 5",
 		config:         interpreter.DefaultConfig(),
 	},
 }

@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-02-26
+
+### Added
+
+- **unsafe.Pointer Rule 5 — reflect.Value.Pointer / UnsafeAddr** (closes #12 partially):
+  Calls to `reflect.Value.Pointer()` and `reflect.Value.UnsafeAddr()` are now intercepted in
+  `execCall`. Both methods return a `uintptr` that must be converted back to `unsafe.Pointer`
+  before any GC safepoint. Giri records the pending conversion (tagged with `RuleReflect`)
+  so that `CheckGCPoint` fires a violation if any subsequent non-builtin function call is made
+  before the conversion. The violation is classified as `"unsafe-pointer-rule 5: reflect pointer
+  conversion"` in the report.
+
+- **unsafe.Pointer Rule 6 — reflect.SliceHeader / StringHeader** (closes #12):
+  `handleUnsafePointer` now detects when `unsafe.Pointer` is cast to `*reflect.SliceHeader` or
+  `*reflect.StringHeader` (the `UnsafeOpFromPointer` case). These deprecated types should be
+  replaced with `unsafe.SliceData` / `unsafe.StringData` (Go 1.17+). A `RuleSliceHeader`
+  violation is recorded. The check uses `go/types` to inspect the target pointer type — it is
+  robust against type aliases and works regardless of how the type name is spelled.
+
+- **`pendingConversion.rule` field** (`pkg/detector/detector.go`): each pending uintptr
+  conversion now carries the `UnsafeRule` that governs it (`RuleUintptr` for Rule 2,
+  `RuleReflect` for Rule 5). `CheckGCPoint` uses `pending.rule` instead of the previous
+  hardcoded `RuleUintptr`, so violations from reflect calls report as Rule 5.
+
+- **`RecordReflectConversion`** method on `UnsafeDetector` and `Registry`: records a pending
+  reflect-derived uintptr conversion (same mechanics as `RecordUintptrConversion` but with
+  `RuleReflect`).
+
+- **`isReflectHeaderType` helper** (`pkg/interpreter/interpreter.go`): uses `go/types` to
+  check whether a `types.Type` is `*reflect.SliceHeader` or `*reflect.StringHeader` without
+  string matching.
+
+- **Integration tests** (2 new programs in `pkg/interpreter/testdata/integration/`):
+  - `reflect_uintptr` — `v.Pointer()` result held across `noop()` GC safepoint; expects 1
+    `"rule 5"` violation.
+  - `slice_header` — `unsafe.Pointer(&s)` cast to `*reflect.SliceHeader`; expects 1
+    `"rule 6"` violation.
+
+- **Showcase program** (`testdata/showcase/reflect_unsafe/main.go`): `processValue()` calls
+  `v.Pointer()`, then `doWork()` (GC safepoint), then converts back to `*int`. Compiles
+  clean, passes `go vet` and `go test -race`; Giri catches the Rule 5 violation.
+
+### Fixed
+
+- Closed GitHub issue #12: unsafe.Pointer Rules 5 & 6 were stubs with no detection logic.
+
 ## [0.7.1] - 2026-02-26
 
 ### Added
@@ -384,7 +430,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the missing import for `github.com/scttfrdmn/giri/pkg/report`.
 - Generated `go.sum` via `go mod tidy`.
 
-[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/scttfrdmn/giri/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/scttfrdmn/giri/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/scttfrdmn/giri/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/scttfrdmn/giri/compare/v0.6.1...v0.6.2
