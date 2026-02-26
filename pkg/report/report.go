@@ -33,6 +33,18 @@ type Finding struct {
 	FreeSite     string   `json:"free_site,omitempty"`
 	Hint         string   `json:"hint,omitempty"`
 	DetectorName string   `json:"detector"`
+	StackTrace   string   `json:"stack_trace,omitempty"`
+	GoroutineID  int64    `json:"goroutine_id,omitempty"`
+}
+
+// stackTracer is implemented by ViolationWithStack in pkg/interpreter.
+// Defined here to avoid an import cycle (report → interpreter is forbidden).
+// ViolationWithStack satisfies this interface implicitly via its StackTrace()
+// and GoroutineID() methods.
+type stackTracer interface {
+	StackTrace() string
+	GoroutineID() int64
+	Unwrap() error
 }
 
 // Severity levels for findings.
@@ -82,7 +94,19 @@ func Build(violations []error, memStats *shadow.MemoryStats) *Report {
 	}
 
 	for _, err := range violations {
-		f := classifyError(err)
+		// Extract stack trace and goroutine ID before classifying the core error.
+		var stackTrace string
+		var goroutineID int64
+		underlying := err
+		if st, ok := err.(stackTracer); ok {
+			stackTrace = st.StackTrace()
+			goroutineID = st.GoroutineID()
+			underlying = st.Unwrap()
+		}
+
+		f := classifyError(underlying)
+		f.StackTrace = stackTrace
+		f.GoroutineID = goroutineID
 		r.Findings = append(r.Findings, f)
 
 		r.Summary.TotalFindings++
@@ -186,6 +210,18 @@ func classifyError(err error) Finding {
 				"safely, or ensure the interface always holds the expected concrete type.",
 		}
 
+	case *shadow.GoroutineLeakError:
+		return Finding{
+			Severity:    SeverityError,
+			Category:    "goroutine-leak",
+			Message:     e.Error(),
+			Location:    e.BlockSite,
+			GoroutineID: e.GID,
+			Hint: "Ensure every goroutine that reads from a channel has a corresponding " +
+				"sender, or use select with a default clause / done channel to avoid " +
+				"permanent blocking.",
+		}
+
 	default:
 		return Finding{
 			Severity: SeverityWarning,
@@ -226,6 +262,12 @@ func (r *Report) writeText(w io.Writer) error {
 		for i, f := range r.Findings {
 			fmt.Fprintf(w, "── [%d] %s: %s ──\n", i+1, f.Severity, f.Category)
 			fmt.Fprintf(w, "%s\n", f.Message)
+			if f.StackTrace != "" {
+				fmt.Fprintf(w, "\n  stack trace:\n")
+				for _, line := range strings.Split(strings.TrimRight(f.StackTrace, "\n"), "\n") {
+					fmt.Fprintf(w, "    %s\n", line)
+				}
+			}
 			if f.Hint != "" {
 				fmt.Fprintf(w, "\n  hint: %s\n", f.Hint)
 			}

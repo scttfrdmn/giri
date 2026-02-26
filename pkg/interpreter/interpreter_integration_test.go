@@ -191,6 +191,28 @@ var integrationTests = []struct {
 		wantCategory:   "rule 6",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.9.0 regression tests
+	{
+		name:           "callstack depth",
+		dir:            "callstack_depth",
+		wantViolations: 1,
+		wantCategory:   "rule 1",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "goroutine leak",
+		dir:            "goroutine_leak",
+		wantViolations: 1,
+		wantCategory:   "goroutine leak",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "no goroutine leak",
+		dir:            "no_goroutine_leak",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {
@@ -268,6 +290,17 @@ var showcaseTests = []struct {
 		dir:            "reflect_unsafe",
 		wantViolations: 1,
 		wantCategory:   "rule 5",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		// worker() reads from results channel that main never sends on.
+		// go vet: pass (channel operations are type-correct).
+		// go test -race: pass (no concurrent data access).
+		// Giri: goroutine is permanently blocked — goroutine leak.
+		name:           "goroutine leak",
+		dir:            "goroutine_leak",
+		wantViolations: 1,
+		wantCategory:   "goroutine leak",
 		config:         interpreter.DefaultConfig(),
 	},
 }

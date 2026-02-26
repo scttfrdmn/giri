@@ -19,6 +19,7 @@ Each program in this directory demonstrates a class of bug that:
 | [`nil_deref`](#nil_deref) | ✅ pass | ✅ pass† | ❌ nil pointer dereference |
 | [`type_assert`](#type_assert) | ✅ pass | ✅ pass | ❌ type-assertion failure |
 | [`reflect_unsafe`](#reflect_unsafe) | ✅ pass | ✅ pass | ❌ unsafe-pointer rule 5 |
+| [`goroutine_leak`](#goroutine_leak) | ✅ pass | ✅ pass | ❌ goroutine leak |
 
 \* Requires `--track-init` flag.
 † Passes if the failing code path is not covered by tests.
@@ -223,6 +224,45 @@ $ giri ./testdata/showcase/reflect_unsafe
 VIOLATION unsafe-pointer-violation (rule 5: reflect pointer conversion) at ...
   uintptr value t4 (converted at ...) survived to GC point without conversion back to unsafe.Pointer
   hint: Review the six rules at https://pkg.go.dev/unsafe#Pointer.
+```
+
+---
+
+## goroutine_leak
+
+**File:** `goroutine_leak/main.go`
+
+A `worker` goroutine reads from a `results` channel that `main` never writes to.
+This is a common pattern in production code when the caller forgets to send a
+result after an early return or error.
+
+```go
+func worker(results chan int) {
+    val := <-results // blocks forever — main exits without sending
+    _ = val
+}
+
+func main() {
+    results := make(chan int)
+    go worker(results)
+    // BUG: main returns without ever sending on results
+}
+```
+
+**Why `go vet` misses it:** the channel operations are type-correct.
+**Why `-race` misses it:** there is no concurrent *data* access — just a
+permanently blocked goroutine.
+**Why Giri catches it:** Giri tracks which channels have ever had a sender.
+At finalization, any goroutine blocked on a channel with no recorded sender
+is reported as a goroutine leak.
+
+```
+$ giri ./testdata/showcase/goroutine_leak
+VIOLATION goroutine-leak: goroutine 2 blocked on channel receive
+  spawned at: goroutine_leak/main.go:22
+  blocked at: goroutine_leak/main.go:14
+  hint: Ensure every goroutine that reads from a channel has a corresponding
+        sender, or use select with a default clause to avoid permanent blocking.
 ```
 
 ---

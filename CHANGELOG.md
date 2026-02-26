@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-02-26
+
+### Added
+
+- **Call stack traces in violations**: every violation recorded via `recordViolation` is now
+  wrapped in a `ViolationWithStack` struct that captures the goroutine ID, spawn site, and
+  full call stack (innermost frame first) at the moment of detection. The stack is exposed
+  via a `StackTrace() string` method. `pkg/report` extracts the stack via the `stackTracer`
+  interface (defined in report to avoid import cycles) and renders it in both text and JSON
+  output. `ViolationWithStack.Unwrap()` ensures existing `errors.As` chains and
+  `classifyError` type switches continue to work on the underlying error.
+
+- **Goroutine leak detection**: the interpreter now detects goroutines that are permanently
+  blocked on a channel receive with no corresponding sender.
+  - In the `token.ARROW` (channel receive) case, if the channel has no pending value and is
+    not closed, the goroutine is marked `GoroutineBlocked` and execution stops (analogous to
+    the existing `Panicked` halt path).
+  - `handleChannelSend` now records every send in a new `channelSenders map[ChanID]bool` on
+    the `Interpreter` and always sets `ch.hasPending = true` regardless of `TrackRaces`.
+  - `checkGoroutineLeaks()` (called from `Finish()`) reports any goroutine with
+    `Status == GoroutineBlocked` where no goroutine ever sent on `BlockChanID`. A sender
+    existing on the channel — regardless of scheduling order — suppresses the report to
+    prevent false positives.
+  - New `GoroutineLeakError` type in `pkg/shadow/errors.go` with `GID`, `SpawnSite`,
+    `BlockSite`, and `BlockKind` fields. Classified as `"goroutine-leak"` in
+    `pkg/report/report.go`.
+
+- **`SpawnSite` on spawned goroutines** (`Goroutine.SpawnSite`): the `ssa.Go` handler now
+  records the source location of the spawn on the new goroutine struct, so goroutine leak
+  reports include "spawned at" context.
+
+- **`captureStack` helper** (`pkg/interpreter/interpreter.go`): captures the current call
+  stack for a goroutine as `[]StackFrame` (innermost first).
+
+- **`Finding.StackTrace` and `Finding.GoroutineID`** (`pkg/report/report.go`): new optional
+  fields on `Finding` populated from `ViolationWithStack` when present.
+
+- **Integration tests** (3 new programs in `pkg/interpreter/testdata/integration/`):
+  - `callstack_depth` — 4-level deep misalignment violation; validates stack traces are
+    captured through multi-level calls. Expects 1 `"rule 1"` violation.
+  - `goroutine_leak` — goroutine blocks on receive with no sender; expects 1
+    `"goroutine leak"` violation.
+  - `no_goroutine_leak` — sender/receiver pair with different scheduling order; validates
+    no false positive. Expects 0 violations.
+
+- **Showcase program** (`testdata/showcase/goroutine_leak/main.go`): `worker()` blocks on
+  a `results` channel that `main` never sends on. Compiles clean, passes `go vet` and
+  `go test -race`; Giri catches the goroutine leak.
+
+### Changed
+
+- `recordViolation(err error)` → `recordViolation(gid int64, err error)`: all 21 call sites
+  updated. The `gid` parameter is used to capture the calling goroutine's stack trace.
+
+### Fixed
+
+- Goroutines marked `GoroutineBlocked` now correctly stop execution in both `execBlock` and
+  `execFunction` (checked alongside `g.Panicked`).
+
 ## [0.8.0] - 2026-02-26
 
 ### Added
@@ -430,7 +489,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the missing import for `github.com/scttfrdmn/giri/pkg/report`.
 - Generated `go.sum` via `go mod tidy`.
 
-[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/scttfrdmn/giri/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/scttfrdmn/giri/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/scttfrdmn/giri/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/scttfrdmn/giri/compare/v0.6.2...v0.7.0

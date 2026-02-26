@@ -95,6 +95,10 @@ func Run(prog *Program, config Config) *RunResult {
 
 		if mainFn != nil {
 			interp.execFunction(mainGID, mainFn, nil)
+			// Mark main goroutine as finished if it completed normally.
+			if g := interp.goroutines[mainGID]; g != nil && g.Status == GoroutineRunning && !g.Panicked {
+				g.Status = GoroutineFinished
+			}
 		}
 
 		// Drain the run queue: execute spawned goroutines via scheduler
@@ -108,6 +112,10 @@ func Run(prog *Program, config Config) *RunResult {
 				if t.gid == nextGID {
 					interp.runQueue = append(interp.runQueue[:i], interp.runQueue[i+1:]...)
 					interp.execFunction(t.gid, t.fn, t.args)
+					// Mark goroutine as finished if it completed normally (not blocked).
+					if g := interp.goroutines[t.gid]; g != nil && g.Status == GoroutineRunning && !g.Panicked {
+						g.Status = GoroutineFinished
+					}
 					break
 				}
 			}
@@ -155,7 +163,7 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 	block := fn.Blocks[0]
 	for block != nil {
 		g := interp.goroutines[gid]
-		if g != nil && g.Panicked {
+		if g != nil && (g.Panicked || g.Status == GoroutineBlocked) {
 			return Value{}
 		}
 		if f := interp.currentFrame(gid); f != nil {
@@ -182,8 +190,8 @@ func (interp *Interpreter) execBlock(gid int64, fn *ssa.Function, block *ssa.Bas
 	}
 
 	for _, instr := range block.Instrs {
-		// Check for panic/halt between instructions
-		if g := interp.goroutines[gid]; g != nil && g.Panicked {
+		// Stop if the goroutine has panicked or blocked on a channel receive.
+		if g := interp.goroutines[gid]; g != nil && (g.Panicked || g.Status == GoroutineBlocked) {
 			return nil
 		}
 		next := interp.execInstruction(gid, fn, instr)
@@ -204,7 +212,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		if interp.steps > interp.config.MaxSteps {
 			g := interp.goroutines[gid]
 			if g != nil && !g.Panicked {
-				interp.recordViolation(fmt.Errorf(
+				interp.recordViolation(gid, fmt.Errorf(
 					"execution limit of %d steps exceeded at %s",
 					interp.config.MaxSteps, interp.posString(instr.Pos()),
 				))
@@ -239,7 +247,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		val := interp.resolveValue(frame, inst.Val)
 		size := interp.typeSizeOf(inst.Val.Type())
 		if err := interp.handleStore(gid, addr, val, size, site); err != nil {
-			interp.recordViolation(err)
+			interp.recordViolation(gid, err)
 		}
 
 	case *ssa.UnOp:
@@ -249,13 +257,25 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			size := interp.typeSizeOf(inst.Type())
 			result, err := interp.handleLoad(gid, operand, size, site)
 			if err != nil {
-				interp.recordViolation(err)
+				interp.recordViolation(gid, err)
 			}
 			frame.Locals[inst.Name()] = result
 		case token.ARROW: // Channel receive (<-ch)
 			var chanID ChanID
 			if id, ok := operand.Raw.(ChanID); ok {
 				chanID = id
+			}
+			// Check if this receive would block (no pending value and not closed).
+			// If so, mark the goroutine as blocked so leak detection can report it.
+			if chanID != 0 {
+				if ch, ok := interp.channels[chanID]; ok && !ch.hasPending && !ch.closed {
+					if g := interp.goroutines[gid]; g != nil {
+						g.Status = GoroutineBlocked
+						g.BlockChanID = chanID
+						g.BlockSite = site
+					}
+					break // Don't assign result; execBlock will see GoroutineBlocked
+				}
 			}
 			interp.handleChannelRecv(gid, chanID, site)
 			if inst.CommaOk {
@@ -347,7 +367,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 				addrVal := Value{Raw: elemPtr, Provenance: elemPtr}
 				result, err := interp.handleLoad(gid, addrVal, elemSize, site)
 				if err != nil {
-					interp.recordViolation(err)
+					interp.recordViolation(gid, err)
 				}
 				frame.Locals[inst.Name()] = result
 			} else {
@@ -462,7 +482,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			}
 			// Bounds check: 0 <= low <= high <= cap(s) (#32)
 			if lowVal < 0 || highVal < lowVal || highVal > sv.Cap {
-				interp.recordViolation(&shadow.OutOfBoundsError{
+				interp.recordViolation(gid, &shadow.OutOfBoundsError{
 					AllocSize:  sv.Cap,
 					Offset:     highVal,
 					AccessSize: highVal - lowVal,
@@ -546,7 +566,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 				if g != nil {
 					g.Panicked = true
 				}
-				interp.recordViolation(&shadow.TypeAssertionError{
+				interp.recordViolation(gid, &shadow.TypeAssertionError{
 					Site:         site,
 					ConcreteType: concreteType.String(),
 					AssertedType: assertedType.String(),
@@ -671,8 +691,13 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		funcName := interp.callTargetName(inst.Call)
 		newGID, err := interp.spawnGoroutine(funcName, site)
 		if err != nil {
-			interp.recordViolation(err)
+			interp.recordViolation(gid, err)
 			break
+		}
+
+		// Record the spawn site on the new goroutine for goroutine leak reporting.
+		if newG := interp.goroutines[newGID]; newG != nil {
+			newG.SpawnSite = site
 		}
 
 		// Propagate parent → child happens-before edge (#29).
@@ -764,7 +789,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		if isUnsafePointerConversion(inst) {
 			result, err := interp.handleUnsafePointer(gid, classifyUnsafeConversion(inst), val, site, inst.Type(), inst.Name())
 			if err != nil {
-				interp.recordViolation(err)
+				interp.recordViolation(gid, err)
 			}
 			frame.Locals[inst.Name()] = result
 		} else {
@@ -862,7 +887,7 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 	// Check for pending uintptr conversions that would be invalidated.
 	if interp.registry != nil {
 		for _, err := range interp.registry.CheckGCPoint(site) {
-			interp.recordViolation(err)
+			interp.recordViolation(gid, err)
 		}
 	}
 
@@ -881,7 +906,7 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 		typeName := extractGenericType(calleeName)
 		result, err := interp.handleArenaNew(gid, args[0], typeName, site)
 		if err != nil {
-			interp.recordViolation(err)
+			interp.recordViolation(gid, err)
 		}
 		return result
 	}
@@ -892,7 +917,7 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 		if ok {
 			errs := interp.Memory.FreeArena(arenaID, site)
 			for _, err := range errs {
-				interp.recordViolation(err)
+				interp.recordViolation(gid, err)
 			}
 		}
 		return Value{}
@@ -946,7 +971,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 			// Check bounds
 			alloc, exists := interp.Memory.GetAllocation(derived.Alloc)
 			if exists && (derived.Offset < 0 || derived.Offset > alloc.Size) {
-				interp.recordViolation(&shadow.UnsafePointerViolation{
+				interp.recordViolation(gid, &shadow.UnsafePointerViolation{
 					Rule:    shadow.RuleArithmetic,
 					Site:    site,
 					Details: fmt.Sprintf("unsafe.Add moved pointer to offset %d, allocation is %d bytes", derived.Offset, alloc.Size),
@@ -1019,7 +1044,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 			if n > 0 && dstSlice.Backing != nil {
 				err := interp.handleStore(gid, Value{Raw: dstSlice.Backing, Provenance: dstSlice.Backing}, Value{}, n, site)
 				if err != nil {
-					interp.recordViolation(err)
+					interp.recordViolation(gid, err)
 				}
 			}
 		} else if dstOk {

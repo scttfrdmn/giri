@@ -64,6 +64,46 @@ type InterfaceValue struct {
 	Value Value
 }
 
+// StackFrame represents a single frame captured from a goroutine's call stack.
+// Frames are ordered innermost-first in ViolationWithStack.Frames.
+type StackFrame struct {
+	FuncName string
+	Site     string // "file:line"
+}
+
+// ViolationWithStack wraps a violation error with the goroutine's call stack
+// at the point of detection. It implements Unwrap() so existing type switches
+// in classifyError still work after unwrapping.
+type ViolationWithStack struct {
+	Err       error
+	GID       int64
+	SpawnSite string        // where this goroutine was created
+	Frames    []StackFrame  // call stack, innermost first
+}
+
+// Error implements the error interface. The message is the underlying error's.
+func (v *ViolationWithStack) Error() string { return v.Err.Error() }
+
+// Unwrap returns the underlying violation for errors.As / type-switch chains.
+func (v *ViolationWithStack) Unwrap() error { return v.Err }
+
+// StackTrace renders the captured call stack as a formatted string.
+func (v *ViolationWithStack) StackTrace() string {
+	var b strings.Builder
+	spawnSite := v.SpawnSite
+	if spawnSite == "" {
+		spawnSite = "entry"
+	}
+	fmt.Fprintf(&b, "goroutine %d (spawned at %s):\n", v.GID, spawnSite)
+	for _, f := range v.Frames {
+		fmt.Fprintf(&b, "  %s\n    %s\n", f.FuncName, f.Site)
+	}
+	return b.String()
+}
+
+// GoroutineID returns the goroutine ID that recorded this violation.
+func (v *ViolationWithStack) GoroutineID() int64 { return v.GID }
+
 // ClosureValue represents a closure: a function together with its captured
 // free variables. Created by ssa.MakeClosure; called by execCall/ssa.Go.
 type ClosureValue struct {
@@ -113,6 +153,18 @@ type Goroutine struct {
 
 	// Vector clock for happens-before tracking
 	VClock *VectorClock
+
+	// SpawnSite is the source location of the ssa.Go instruction that created
+	// this goroutine. Empty for the main goroutine.
+	SpawnSite string
+
+	// BlockSite is the source location where this goroutine blocked.
+	// Only meaningful when Status == GoroutineBlocked.
+	BlockSite string
+
+	// BlockChanID is the channel this goroutine is blocked on.
+	// Only meaningful when Status == GoroutineBlocked.
+	BlockChanID ChanID
 }
 
 // GoroutineStatus tracks goroutine lifecycle.
@@ -223,6 +275,11 @@ type Interpreter struct {
 	channels   map[ChanID]*chanEntry
 	nextChanID atomic.Uint64
 
+	// channelSenders tracks channels that have had at least one send operation.
+	// Used by checkGoroutineLeaks: a goroutine blocked on channel C is only
+	// reported as leaked if no goroutine ever sent on C.
+	channelSenders map[ChanID]bool
+
 	// Sync primitive state for sync.Mutex and sync.WaitGroup (#33).
 	// Key is the AllocID of the mutex/waitgroup's shadow memory allocation.
 	mutexes map[shadow.AllocID]*mutexState
@@ -320,13 +377,14 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 	}
 
 	interp := &Interpreter{
-		Memory:     shadow.NewMemory(memOpts...),
-		Fset:       fset,
-		goroutines: make(map[int64]*Goroutine),
-		channels:   make(map[ChanID]*chanEntry),
-		mutexes:    make(map[shadow.AllocID]*mutexState),
-		config:     config,
-		sizes:      types.SizesFor("gc", runtime.GOARCH),
+		Memory:         shadow.NewMemory(memOpts...),
+		Fset:           fset,
+		goroutines:     make(map[int64]*Goroutine),
+		channels:       make(map[ChanID]*chanEntry),
+		channelSenders: make(map[ChanID]bool),
+		mutexes:        make(map[shadow.AllocID]*mutexState),
+		config:         config,
+		sizes:          types.SizesFor("gc", runtime.GOARCH),
 	}
 
 	// Build detector registry from config flags
@@ -378,14 +436,15 @@ func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Inter
 	}
 
 	interp := &Interpreter{
-		Memory:     shadow.NewMemory(memOpts...),
-		Fset:       fset,
-		goroutines: make(map[int64]*Goroutine),
-		channels:   make(map[ChanID]*chanEntry),
-		mutexes:    make(map[shadow.AllocID]*mutexState),
-		config:     config,
-		sizes:      types.SizesFor("gc", runtime.GOARCH),
-		arena:      a,
+		Memory:         shadow.NewMemory(memOpts...),
+		Fset:           fset,
+		goroutines:     make(map[int64]*Goroutine),
+		channels:       make(map[ChanID]*chanEntry),
+		channelSenders: make(map[ChanID]bool),
+		mutexes:        make(map[shadow.AllocID]*mutexState),
+		config:         config,
+		sizes:          types.SizesFor("gc", runtime.GOARCH),
+		arena:          a,
 	}
 
 	var dets []detector.Detector
@@ -438,9 +497,34 @@ func (interp *Interpreter) Violations() []error {
 	return interp.violations
 }
 
-// recordViolation adds a detected violation.
-func (interp *Interpreter) recordViolation(err error) {
-	interp.violations = append(interp.violations, err)
+// captureStack returns the current call stack for a goroutine, innermost first.
+func (interp *Interpreter) captureStack(gid int64) []StackFrame {
+	g := interp.goroutines[gid]
+	if g == nil {
+		return nil
+	}
+	frames := make([]StackFrame, 0, len(g.Stack))
+	for i := len(g.Stack) - 1; i >= 0; i-- {
+		f := g.Stack[i]
+		frames = append(frames, StackFrame{FuncName: f.FuncName, Site: f.Site})
+	}
+	return frames
+}
+
+// recordViolation adds a detected violation, wrapping it with the goroutine's
+// current call stack so reporters can display accurate stack traces.
+func (interp *Interpreter) recordViolation(gid int64, err error) {
+	var spawnSite string
+	if g := interp.goroutines[gid]; g != nil {
+		spawnSite = g.SpawnSite
+	}
+	wrapped := &ViolationWithStack{
+		Err:       err,
+		GID:       gid,
+		SpawnSite: spawnSite,
+		Frames:    interp.captureStack(gid),
+	}
+	interp.violations = append(interp.violations, wrapped)
 }
 
 // --- Goroutine Management ---
@@ -574,7 +658,7 @@ func (interp *Interpreter) handleLoad(gid int64, addr Value, size int, site stri
 	// Run all registered detectors (pass vector clock for race detection)
 	if interp.registry != nil {
 		for _, rerr := range interp.registry.CheckAccess(interp.Memory, addr.Provenance, size, shadow.AccessRead, site, g.ID, g.VClock.Clocks) {
-			interp.recordViolation(rerr)
+			interp.recordViolation(gid, rerr)
 		}
 	}
 
@@ -608,7 +692,7 @@ func (interp *Interpreter) handleStore(gid int64, addr Value, val Value, size in
 	// Run all registered detectors (pass vector clock for race detection)
 	if interp.registry != nil {
 		for _, rerr := range interp.registry.CheckAccess(interp.Memory, addr.Provenance, size, shadow.AccessWrite, site, g.ID, g.VClock.Clocks) {
-			interp.recordViolation(rerr)
+			interp.recordViolation(gid, rerr)
 		}
 	}
 
@@ -623,7 +707,7 @@ func (interp *Interpreter) handleStore(gid int64, addr Value, val Value, size in
 		if srcOk && srcAlloc.Kind == shadow.AllocArena {
 			destAlloc, destOk := interp.Memory.GetAllocation(addr.Provenance.Alloc)
 			if destOk && destAlloc.Kind == shadow.AllocGlobal {
-				interp.recordViolation(&shadow.EscapedPointerError{
+				interp.recordViolation(gid, &shadow.EscapedPointerError{
 					AllocID:    srcAlloc.ID,
 					ArenaID:    srcAlloc.Arena,
 					AllocSite:  srcAlloc.AllocSite,
@@ -822,7 +906,7 @@ func (interp *Interpreter) handleArenaFree(gid int64, d DeferredCall) {
 
 	errs := interp.Memory.FreeArena(arenaID, d.Site)
 	for _, err := range errs {
-		interp.recordViolation(err)
+		interp.recordViolation(gid, err)
 	}
 }
 
@@ -863,7 +947,7 @@ func (interp *Interpreter) handleReturn(gid int64, values []Value, site string) 
 
 		// If returning an arena-allocated pointer, it's an escape
 		if alloc.Kind == shadow.AllocArena && alloc.Arena != 0 {
-			interp.recordViolation(&shadow.EscapedPointerError{
+			interp.recordViolation(gid, &shadow.EscapedPointerError{
 				AllocID:    alloc.ID,
 				ArenaID:    alloc.Arena,
 				AllocSite:  alloc.AllocSite,
@@ -883,7 +967,7 @@ func (interp *Interpreter) handleChannelClose(gid int64, chanID ChanID, site str
 			if g != nil {
 				g.Panicked = true
 			}
-			interp.recordViolation(fmt.Errorf("close of already-closed channel at %s (goroutine %d)", site, gid))
+			interp.recordViolation(gid, fmt.Errorf("close of already-closed channel at %s (goroutine %d)", site, gid))
 			return
 		}
 		ch.closed = true
@@ -900,7 +984,7 @@ func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value
 		if g != nil {
 			g.Panicked = true
 		}
-		interp.recordViolation(fmt.Errorf("send on closed channel at %s (goroutine %d)", site, gid))
+		interp.recordViolation(gid, fmt.Errorf("send on closed channel at %s (goroutine %d)", site, gid))
 		return
 	}
 
@@ -918,13 +1002,23 @@ func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value
 			ch.hasPending = true
 			ch.pendingVal = val
 		}
+	} else {
+		// Even without race tracking, mark the channel as having a pending value
+		// so goroutine leak detection works correctly (a receiver is not a leak
+		// if a sender exists, regardless of scheduling order).
+		if ch, ok := interp.channels[chanID]; ok {
+			ch.hasPending = true
+		}
 	}
+
+	// Track that this channel has had a sender (for goroutine leak detection).
+	interp.channelSenders[chanID] = true
 
 	// Check for arena pointer escape via channel
 	if interp.config.TrackArenas && val.Provenance != nil {
 		alloc, ok := interp.Memory.GetAllocation(val.Provenance.Alloc)
 		if ok && alloc.Kind == shadow.AllocArena {
-			interp.recordViolation(&shadow.EscapedPointerError{
+			interp.recordViolation(gid, &shadow.EscapedPointerError{
 				AllocID:    alloc.ID,
 				ArenaID:    alloc.Arena,
 				AllocSite:  alloc.AllocSite,
@@ -974,6 +1068,32 @@ func (interp *Interpreter) StackTrace(gid int64) string {
 
 // --- Finalization ---
 
+// checkGoroutineLeaks reports goroutines that are permanently blocked on a
+// channel receive with no corresponding sender. A goroutine blocked on channel
+// C is only reported as a leak if no goroutine ever sent on C; if a sender
+// exists (regardless of scheduling order), the block is not flagged.
+func (interp *Interpreter) checkGoroutineLeaks() []error {
+	var leaks []error
+	for _, g := range interp.goroutines {
+		if g.Status != GoroutineBlocked {
+			continue
+		}
+		// If a sender ran on this channel (in any goroutine, at any point),
+		// this is not a leak — the scheduling order just happened to run the
+		// receiver first.
+		if g.BlockChanID != 0 && interp.channelSenders[g.BlockChanID] {
+			continue
+		}
+		leaks = append(leaks, &shadow.GoroutineLeakError{
+			GID:       g.ID,
+			SpawnSite: g.SpawnSite,
+			BlockSite: g.BlockSite,
+			BlockKind: "channel receive",
+		})
+	}
+	return leaks
+}
+
 // Finish is called when interpretation completes. Runs detector finalization
 // checks (leak detection, pending uintptr checks, etc.).
 func (interp *Interpreter) Finish() []error {
@@ -984,6 +1104,10 @@ func (interp *Interpreter) Finish() []error {
 		errs = append(errs, interp.registry.Finalize(interp.Memory)...)
 	}
 
+	// Check for goroutine leaks (goroutines blocked with no sender).
+	errs = append(errs, interp.checkGoroutineLeaks()...)
+
+	// Collect recorded violations (already wrapped with call stack traces).
 	errs = append(errs, interp.violations...)
 	return errs
 }

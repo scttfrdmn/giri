@@ -239,3 +239,19 @@ func (e *TypeAssertionError) Error() string {
 		e.ConcreteType, e.AssertedType, e.GID, e.Site,
 	)
 }
+
+// GoroutineLeakError is reported when a goroutine is permanently blocked.
+// This happens when a goroutine waits on a channel that never has a sender.
+type GoroutineLeakError struct {
+	GID       int64
+	SpawnSite string // where the goroutine was created (ssa.Go site)
+	BlockSite string // where the goroutine blocked
+	BlockKind string // "channel receive"
+}
+
+func (e *GoroutineLeakError) Error() string {
+	return fmt.Sprintf(
+		"goroutine leak: goroutine %d blocked on %s at %s (spawned at %s)",
+		e.GID, e.BlockKind, e.BlockSite, e.SpawnSite,
+	)
+}
