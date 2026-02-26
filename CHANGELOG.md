@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-02-26
+
+### Fixed
+
+- **MaxSteps enforcement** (#17): `Config.MaxSteps` is now checked in
+  `execInstruction`. A per-interpreter `steps uint64` counter increments on
+  every instruction; exceeding the cap records an `"execution limit exceeded"`
+  violation and sets `Goroutine.Panicked = true` to halt further execution.
+  Previously the field was wired from the CLI but never read.
+- **Phi node fallback picks wrong value** (#18): The fallback path (taken when
+  no predecessor block matches `frame.PrevBlock`) previously skipped any edge
+  whose resolved value had `Raw == nil`, meaning loop variables initialised to
+  `0`, `false`, or a nil pointer were silently discarded. The fallback now
+  unconditionally takes `inst.Edges[0]`, which is correct by SSA edge ordering.
+- **Closure FreeVars not bound** (#19): `execFunction` now binds `fn.FreeVars`
+  from args appended after the regular parameter slice. `ssa.MakeClosure` is
+  handled to capture binding values into a new `ClosureValue` struct. Both
+  `execCall` and `ssa.Go` detect `ClosureValue` callee values and append the
+  captured free vars when dispatching.
+- **ssa.Panic stub** (#20): `ssa.Panic` now runs deferred calls across the
+  entire goroutine stack in LIFO order (innermost frame first), clears the
+  stack, and sets `Goroutine.Panicked = true`. This prevents false arena-leak
+  reports when a `defer a.Free()` is registered above the panic site. The
+  `Goroutine.Panicked` flag is also checked at the top of `execBlock` and in
+  the `execFunction` block loop so that execution stops cleanly after a halt.
+
+### Added
+
+- `Goroutine.Panicked bool` field — shared halt signal for panic and step-limit.
+- `ClosureValue` struct (`Fn *ssa.Function`, `FreeVars []Value`) in interpreter.go.
+- `steps uint64` field on `Interpreter`.
+- Integration tests for each fix: `loop` (Phi zero), `closure` (FreeVars),
+  `maxsteps` (step limit), `panic_defers` (panic stack unwind).
+
 ## [0.3.0] - 2026-02-25
 
 ### Added
@@ -134,7 +168,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the missing import for `github.com/scttfrdmn/giri/pkg/report`.
 - Generated `go.sum` via `go mod tidy`.
 
-[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/scttfrdmn/giri/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/scttfrdmn/giri/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/scttfrdmn/giri/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/scttfrdmn/giri/releases/tag/v0.1.0

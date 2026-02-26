@@ -63,6 +63,13 @@ type InterfaceValue struct {
 	Value Value
 }
 
+// ClosureValue represents a closure: a function together with its captured
+// free variables. Created by ssa.MakeClosure; called by execCall/ssa.Go.
+type ClosureValue struct {
+	Fn       *ssa.Function
+	FreeVars []Value
+}
+
 // Frame represents a single stack frame in the interpreter.
 type Frame struct {
 	// Function being executed
@@ -94,6 +101,11 @@ type Goroutine struct {
 	ID     int64
 	Stack  []*Frame // Call stack, top of stack = last element
 	Status GoroutineStatus
+
+	// Panicked is set when this goroutine has panicked or been halted
+	// (e.g. execution step limit exceeded). All subsequent instructions
+	// are skipped until the goroutine is removed from the run queue.
+	Panicked bool
 
 	// Vector clock for happens-before tracking
 	VClock *VectorClock
@@ -196,6 +208,9 @@ type Interpreter struct {
 	// Channel state for happens-before tracking
 	channels   map[ChanID]*chanEntry
 	nextChanID atomic.Uint64
+
+	// Total SSA instructions executed (checked against Config.MaxSteps)
+	steps uint64
 }
 
 // Config controls interpreter behavior.

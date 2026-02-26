@@ -66,6 +66,39 @@ var integrationTests = []struct {
 		wantCategory:   "rule 1",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.3.1 regression tests
+	{
+		name:           "loop phi zero",
+		dir:            "loop",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "closure freevars",
+		dir:            "closure",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "maxsteps enforced",
+		dir:            "maxsteps",
+		wantViolations: 1,
+		wantCategory:   "execution limit",
+		config: func() interpreter.Config {
+			c := interpreter.DefaultConfig()
+			c.MaxSteps = 200 // trip well before 1M iterations
+			return c
+		}(),
+	},
+	{
+		name:           "panic defers",
+		dir:            "panic_defers",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 func TestIntegration(t *testing.T) {

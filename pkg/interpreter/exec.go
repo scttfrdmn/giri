@@ -112,10 +112,24 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 		}
 	}
 
-	// Execute blocks, tracking the previous block for Phi node resolution
+	// Bind free variables (closures): callers append them after regular params.
+	// See ClosureValue and the execCall/ssa.Go closure handling.
+	freeVarStart := len(fn.Params)
+	for i, fv := range fn.FreeVars {
+		if freeVarStart+i < len(args) {
+			frame.Locals[fv.Name()] = args[freeVarStart+i]
+		}
+	}
+
+	// Execute blocks, tracking the previous block for Phi node resolution.
+	// Stop early if the goroutine is halted (panic or step limit).
 	var prevBlock *ssa.BasicBlock
 	block := fn.Blocks[0]
 	for block != nil {
+		g := interp.goroutines[gid]
+		if g != nil && g.Panicked {
+			return Value{}
+		}
 		if f := interp.currentFrame(gid); f != nil {
 			f.PrevBlock = prevBlock
 		}
@@ -140,6 +154,10 @@ func (interp *Interpreter) execBlock(gid int64, fn *ssa.Function, block *ssa.Bas
 	}
 
 	for _, instr := range block.Instrs {
+		// Check for panic/halt between instructions
+		if g := interp.goroutines[gid]; g != nil && g.Panicked {
+			return nil
+		}
 		next := interp.execInstruction(gid, fn, instr)
 		if next != nil {
 			return next // Branch taken
@@ -152,6 +170,22 @@ func (interp *Interpreter) execBlock(gid int64, fn *ssa.Function, block *ssa.Bas
 // execInstruction interprets a single SSA instruction. Returns non-nil
 // if the instruction is a branch/jump (next block to execute).
 func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ssa.Instruction) *ssa.BasicBlock {
+	// Enforce execution step limit (#17)
+	if interp.config.MaxSteps > 0 {
+		interp.steps++
+		if interp.steps > interp.config.MaxSteps {
+			g := interp.goroutines[gid]
+			if g != nil && !g.Panicked {
+				interp.recordViolation(fmt.Errorf(
+					"execution limit of %d steps exceeded at %s",
+					interp.config.MaxSteps, interp.posString(instr.Pos()),
+				))
+				g.Panicked = true
+			}
+			return nil
+		}
+	}
+
 	site := interp.posString(instr.Pos())
 	frame := interp.currentFrame(gid)
 
@@ -339,6 +373,17 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			frame.Locals[inst.Name()] = base
 		}
 
+	case *ssa.MakeClosure:
+		// Capture the function and its free variable values into a ClosureValue.
+		// The ClosureValue is passed to execCall/ssa.Go which appends the free
+		// vars after regular params when invoking execFunction (#19).
+		fn := inst.Fn.(*ssa.Function)
+		freeVars := make([]Value, len(inst.Bindings))
+		for i, binding := range inst.Bindings {
+			freeVars[i] = interp.resolveValue(frame, binding)
+		}
+		frame.Locals[inst.Name()] = Value{Raw: &ClosureValue{Fn: fn, FreeVars: freeVars}}
+
 	case *ssa.MakeMap:
 		frame.Locals[inst.Name()] = Value{Raw: make(map[interface{}]Value)}
 
@@ -411,7 +456,23 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		return nil // End of function
 
 	case *ssa.Panic:
-		// Program panicked — record where
+		// Program panicked: run all deferred calls across the entire goroutine
+		// stack in LIFO order (innermost frame first), then halt the goroutine.
+		// This prevents false arena-leak reports when defer a.Free() was set up
+		// in a frame above the panic site (#20).
+		g := interp.goroutines[gid]
+		if g != nil {
+			for i := len(g.Stack) - 1; i >= 0; i-- {
+				f := g.Stack[i]
+				for j := len(f.Defers) - 1; j >= 0; j-- {
+					interp.executeDeferred(gid, f.Defers[j])
+				}
+				f.Defers = nil // prevent double-execution in popFrame
+			}
+			g.Stack = nil
+			g.Status = GoroutineFinished
+			g.Panicked = true
+		}
 		return nil
 
 	// --- Function Calls ---
@@ -434,26 +495,36 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		frame.Defers = append(frame.Defers, d)
 
 	case *ssa.Go:
-		// Spawn goroutine — enqueue for execution via scheduler
-		callee := inst.Call.StaticCallee()
-		funcName := interp.callTargetName(inst.Call)
+		// Spawn goroutine — enqueue for execution via scheduler.
+		// Handle both direct function calls and closure calls (#19).
 		var args []Value
 		for _, arg := range inst.Call.Args {
 			args = append(args, interp.resolveValue(frame, arg))
 		}
+		callee := inst.Call.StaticCallee()
+		// If no static callee, check if the call value is a ClosureValue
+		if callee == nil {
+			calleeVal := interp.resolveValue(frame, inst.Call.Value)
+			if cv, ok := calleeVal.Raw.(*ClosureValue); ok {
+				callee = cv.Fn
+				args = append(args, cv.FreeVars...)
+			}
+		}
+		if callee == nil {
+			break // Can't resolve the goroutine function
+		}
+		funcName := interp.callTargetName(inst.Call)
 		newGID, err := interp.spawnGoroutine(funcName, site)
 		if err != nil {
 			interp.recordViolation(err)
 			break
 		}
 		interp.sched.OnSpawn(gid, newGID)
-		if callee != nil {
-			interp.runQueue = append(interp.runQueue, goroutineTask{
-				gid:  newGID,
-				fn:   callee,
-				args: args,
-			})
-		}
+		interp.runQueue = append(interp.runQueue, goroutineTask{
+			gid:  newGID,
+			fn:   callee,
+			args: args,
+		})
 
 	// --- Channel Operations ---
 
@@ -507,15 +578,12 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 				break
 			}
 		}
-		// Fallback: if no predecessor matched (e.g. entry block), take first non-nil value
-		if _, exists := frame.Locals[inst.Name()]; !exists {
-			for _, edge := range inst.Edges {
-				val := interp.resolveValue(frame, edge)
-				if val.Raw != nil {
-					frame.Locals[inst.Name()] = val
-					break
-				}
-			}
+		// Fallback: if no predecessor matched, take the first edge unconditionally.
+		// This is correct because SSA guarantees edge order matches predecessor order,
+		// and the entry block has no Phi nodes. The previous code skipped zero-valued
+		// edges (int 0, false, nil pointer), producing wrong values in loops (#18).
+		if _, exists := frame.Locals[inst.Name()]; !exists && len(inst.Edges) > 0 {
+			frame.Locals[inst.Name()] = interp.resolveValue(frame, inst.Edges[0])
 		}
 
 	// --- SSA bookkeeping we pass through ---
@@ -546,6 +614,16 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 	// Handle SSA builtins (unsafe.Add, len, cap, append, etc.) — not GC points.
 	if b, ok := call.Call.Value.(*ssa.Builtin); ok {
 		return interp.execBuiltin(gid, b, args, site)
+	}
+
+	// Handle closure calls: if the call value is a ClosureValue, extract the
+	// function and append free vars after regular args (#19).
+	if !call.Call.IsInvoke() {
+		calleeVal := interp.resolveValue(frame, call.Call.Value)
+		if cv, ok := calleeVal.Raw.(*ClosureValue); ok {
+			allArgs := append(args, cv.FreeVars...)
+			return interp.execFunction(gid, cv.Fn, allArgs)
+		}
 	}
 
 	// Non-builtin function call is a potential GC safepoint.
