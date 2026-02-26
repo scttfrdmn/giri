@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-02-26
+
+### Added
+
+- **Interface values first-class in the interpreter** (#28): `MakeInterface` now wraps the
+  concrete value and its type into an `InterfaceValue` struct (was a pass-through that
+  discarded type metadata). `ChangeInterface` unwraps and re-wraps while preserving the
+  original concrete type. This is the foundation for all interface-aware bug detection.
+- **`TypeAssert` proper type checking** (fixes #28): the always-succeeds stub is replaced with
+  real dynamic-type checking using `go/types`. For non-comma-ok assertions, a failing assertion
+  records a `*shadow.TypeAssertionError` and halts the goroutine (mirroring the runtime panic).
+  For comma-ok assertions, the `ok` value now correctly reflects whether the assertion succeeds.
+  If the concrete type is unknown (value not boxed via `MakeInterface`), the check is
+  conservative and assumes success.
+- **Interface method dispatch (invoke calls)**: `execCall` now handles `call.Call.IsInvoke()`
+  before the GC-safepoint check. When the receiver is an `InterfaceValue` with a known concrete
+  type and `interp.prog != nil`, `ssa.Program.LookupMethod` resolves the concrete method and
+  executes it directly. Unknown concrete types fall through as external calls (safe no-op).
+- **`TypeAssertionError`** (`pkg/shadow/errors.go`): new structured error type with fields
+  `Site`, `ConcreteType`, `AssertedType`, and `GID`. Error message contains `"type-assertion"`
+  for consistent substring matching in tests.
+- **`TypeAssertionError` report classification** (`pkg/report/report.go`): classified as
+  `SeverityError` / category `"type-assertion-failure"` with a hint recommending the comma-ok form.
+- **`interp.prog *ssa.Program`** field on `Interpreter`, set in `Run()` after construction.
+  Used by invoke dispatch; no public API change.
+- **`typeAssertSucceeds` helper** (`pkg/interpreter/exec.go`): checks `types.Identical`,
+  `types.Implements` (both T and *T for interface assertions), and `types.AssignableTo`.
+- **Integration tests** (3 new programs in `pkg/interpreter/testdata/integration/`):
+  - `type_assert_ok` — assertion to correct concrete type; expects 0 violations.
+  - `type_assert_fail` — assertion to wrong concrete type (non-comma-ok); expects ≥ 1
+    `type-assertion` violation.
+  - `iface_dispatch` — `g.Greet()` on a `*English` concrete type via `Greeter` interface;
+    expects 0 violations (validates invoke dispatch end-to-end).
+- **Showcase program** (`testdata/showcase/type_assert/main.go`): `makeAnimal("cat")` returns
+  `*Cat`; `a.(*Dog)` panics. Compiles clean, passes `go vet` and `go test -race`; Giri catches it.
+
+### Fixed
+
+- Closed GitHub issue #28: TypeAssert always returned ok=true.
+
 ## [0.6.2] - 2026-02-26
 
 ### Fixed

@@ -232,6 +232,9 @@ type Interpreter struct {
 	// Global variable state: maps each ssa.Global to its shadow-memory pointer.
 	// Initialized in Run() by iterating all packages before main executes.
 	globals map[*ssa.Global]Value
+
+	// prog is the SSA program, used for interface method dispatch (LookupMethod).
+	prog *ssa.Program
 }
 
 // Config controls interpreter behavior.

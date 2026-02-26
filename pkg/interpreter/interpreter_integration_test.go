@@ -154,6 +154,28 @@ var integrationTests = []struct {
 		wantCategory:   "out-of-bounds",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.7.0 regression tests
+	{
+		name:           "type assert ok",
+		dir:            "type_assert_ok",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "type assert fail",
+		dir:            "type_assert_fail",
+		wantViolations: 1,
+		wantCategory:   "type-assertion",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "iface dispatch",
+		dir:            "iface_dispatch",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {
@@ -210,6 +232,16 @@ var showcaseTests = []struct {
 		dir:            "nil_deref",
 		wantViolations: 1,
 		wantCategory:   "nil pointer",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		// makeAnimal("cat") returns *Cat; a.(*Dog) panics at runtime.
+		// go vet: pass (can't statically trace makeAnimal's return type).
+		// go test -race: pass (single goroutine, no concurrent access).
+		name:           "type assert panic",
+		dir:            "type_assert",
+		wantViolations: 1,
+		wantCategory:   "type-assertion",
 		config:         interpreter.DefaultConfig(),
 	},
 }

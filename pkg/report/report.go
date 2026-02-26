@@ -176,6 +176,16 @@ func classifyError(err error) Finding {
 			Hint:     "Check for nil before dereferencing. Map lookups and type assertions return zero values for absent keys.",
 		}
 
+	case *shadow.TypeAssertionError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "type-assertion-failure",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint: "Use the comma-ok form (v, ok := x.(T)) to handle assertion failures " +
+				"safely, or ensure the interface always holds the expected concrete type.",
+		}
+
 	default:
 		return Finding{
 			Severity: SeverityWarning,

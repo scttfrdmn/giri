@@ -53,6 +53,7 @@ type ExecutionStats struct {
 // Run interprets the program and returns all detected violations.
 func Run(prog *Program, config Config) *RunResult {
 	interp := New(prog.Fset, config)
+	interp.prog = prog.SSA
 
 	// Initialize global variable state: allocate shadow memory for every
 	// package-level variable so loads/stores via *ssa.Global are tracked.
@@ -510,15 +511,54 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 
 	case *ssa.TypeAssert:
 		val := interp.resolveValue(frame, inst.X)
+		assertedType := inst.AssertedType
+
+		// Unwrap InterfaceValue to get the concrete type and value.
+		concreteVal := val
+		var concreteType types.Type
+		if iv, ok := val.Raw.(*InterfaceValue); ok {
+			concreteVal = iv.Value
+			concreteType = iv.Type
+		}
+
+		// If concreteType is unknown (not boxed via MakeInterface), be conservative.
+		ok := concreteType == nil || typeAssertSucceeds(concreteType, assertedType)
+
 		if inst.CommaOk {
-			frame.Locals[inst.Name()] = Value{Raw: []Value{val, {Raw: true}}}
+			if ok {
+				frame.Locals[inst.Name()] = Value{Raw: []Value{concreteVal, {Raw: true}}}
+			} else {
+				frame.Locals[inst.Name()] = Value{Raw: []Value{{}, {Raw: false}}}
+			}
 		} else {
-			frame.Locals[inst.Name()] = val
+			if !ok {
+				// Non-comma-ok assertion that fails → runtime panic; record violation.
+				g := interp.goroutines[gid]
+				if g != nil {
+					g.Panicked = true
+				}
+				interp.recordViolation(&shadow.TypeAssertionError{
+					Site:         site,
+					ConcreteType: concreteType.String(),
+					AssertedType: assertedType.String(),
+					GID:          gid,
+				})
+			}
+			frame.Locals[inst.Name()] = concreteVal
 		}
 
 	case *ssa.ChangeInterface:
 		val := interp.resolveValue(frame, inst.X)
-		frame.Locals[inst.Name()] = val
+		if iv, ok := val.Raw.(*InterfaceValue); ok {
+			// Preserve the concrete type through interface widening so TypeAssert
+			// and invoke dispatch can still see the original dynamic type.
+			frame.Locals[inst.Name()] = Value{
+				Raw:        &InterfaceValue{Type: iv.Type, Value: iv.Value},
+				Provenance: val.Provenance,
+			}
+		} else {
+			frame.Locals[inst.Name()] = val
+		}
 
 	case *ssa.SliceToArrayPointer:
 		base := interp.resolveValue(frame, inst.X)
@@ -728,7 +768,8 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 
 	case *ssa.MakeInterface:
 		val := interp.resolveValue(frame, inst.X)
-		frame.Locals[inst.Name()] = val
+		iface := &InterfaceValue{Type: inst.X.Type(), Value: val}
+		frame.Locals[inst.Name()] = Value{Raw: iface, Provenance: val.Provenance}
 
 	case *ssa.MultiConvert:
 		val := interp.resolveValue(frame, inst.X)
@@ -790,6 +831,22 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 			allArgs := append(args, cv.FreeVars...)
 			return interp.execFunction(gid, cv.Fn, allArgs)
 		}
+	}
+
+	// Handle interface method dispatch (invoke calls: v.Method(args...)).
+	// call.Call.Value is the interface receiver; call.Call.Method is the selector.
+	if call.Call.IsInvoke() {
+		recv := interp.resolveValue(frame, call.Call.Value)
+		if iv, ok := recv.Raw.(*InterfaceValue); ok && iv.Type != nil && interp.prog != nil {
+			m := call.Call.Method
+			fn := interp.prog.LookupMethod(iv.Type, m.Pkg(), m.Name())
+			if fn != nil && fn.Blocks != nil {
+				// Receiver is prepended to args (SSA invoke convention).
+				allArgs := append([]Value{iv.Value}, args...)
+				return interp.execFunction(gid, fn, allArgs)
+			}
+		}
+		return Value{} // Unknown concrete type; fall through as external call.
 	}
 
 	// Non-builtin function call is a potential GC safepoint.
@@ -1334,4 +1391,18 @@ func valueFromMapKey(mk interface{}) Value {
 		return Value{Raw: k}
 	}
 	return Value{Raw: fmt.Sprintf("%v", mk)}
+}
+
+// typeAssertSucceeds reports whether a type assertion from concreteType to
+// assertedType would succeed at runtime.
+func typeAssertSucceeds(concreteType, assertedType types.Type) bool {
+	if types.Identical(concreteType, assertedType) {
+		return true
+	}
+	if iface, ok := assertedType.Underlying().(*types.Interface); ok {
+		// Check if the concrete type (or its pointer form) implements the interface.
+		return types.Implements(concreteType, iface) ||
+			types.Implements(types.NewPointer(concreteType), iface)
+	}
+	return types.AssignableTo(concreteType, assertedType)
 }

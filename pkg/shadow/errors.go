@@ -223,3 +223,19 @@ func (e *DataRaceError) Error() string {
 		e.Write2Goroutine, e.Write2Site,
 	)
 }
+
+// TypeAssertionError is reported when a non-comma-ok type assertion fails at runtime.
+// In a real Go program this would panic; Giri records it as a violation.
+type TypeAssertionError struct {
+	Site         string
+	ConcreteType string // the actual dynamic type held by the interface
+	AssertedType string // the type being asserted to
+	GID          int64
+}
+
+func (e *TypeAssertionError) Error() string {
+	return fmt.Sprintf(
+		"type-assertion failed: interface holds %s, not %s (goroutine %d) at %s",
+		e.ConcreteType, e.AssertedType, e.GID, e.Site,
+	)
+}

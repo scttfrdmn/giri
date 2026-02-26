@@ -17,6 +17,7 @@ Each program in this directory demonstrates a class of bug that:
 | [`uintptr_gc_hazard`](#uintptr_gc_hazard) | ✅ pass | ✅ pass | ❌ unsafe-pointer rule 2 |
 | [`uninit_read`](#uninit_read) | ✅ pass | ✅ pass | ❌ uninitialized read\* |
 | [`nil_deref`](#nil_deref) | ✅ pass | ✅ pass† | ❌ nil pointer dereference |
+| [`type_assert`](#type_assert) | ✅ pass | ✅ pass | ❌ type-assertion failure |
 
 \* Requires `--track-init` flag.
 † Passes if the failing code path is not covered by tests.
@@ -159,6 +160,36 @@ the failing execution path to be covered by a test.
 ```
 $ giri ./testdata/showcase/nil_deref
 VIOLATION nil pointer dereference (goroutine 1) at nil_deref/main.go:37
+```
+
+---
+
+---
+
+## type_assert
+
+**File:** `type_assert/main.go`
+
+`makeAnimal("cat")` returns a `*Cat`, but the caller asserts without the comma-ok
+form that it holds a `*Dog`. This panics at runtime.
+
+```go
+a := makeAnimal("cat")   // returns *Cat
+d := a.(*Dog)            // panics: interface holds *Cat, not *Dog
+_ = d.Sound()
+```
+
+**Why `go vet` misses it:** `go vet` does not track the return type of
+`makeAnimal` through branches — it only flags assertions where the concrete
+type is provably wrong from the static type.
+**Why `-race` misses it:** single goroutine, no concurrent access.
+**Why Giri catches it:** Giri interprets `makeAnimal("cat")` along the `"cat"`
+branch, sees the `MakeInterface` wrapping a `*Cat`, then detects at the
+`TypeAssert(*Dog)` that the dynamic type does not match.
+
+```
+$ giri ./testdata/showcase/type_assert
+VIOLATION type-assertion failed: interface holds *main.Cat, not *main.Dog (goroutine 1) at ...
 ```
 
 ---
