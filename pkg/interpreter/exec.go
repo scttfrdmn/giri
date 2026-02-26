@@ -16,7 +16,9 @@ package interpreter
 
 import (
 	"fmt"
+	"go/constant"
 	"go/token"
+	"go/types"
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
@@ -61,12 +63,27 @@ func Run(prog *Program, config Config) *RunResult {
 	// Find and execute main function
 	mainFn := prog.Main.Func("main")
 	if mainFn == nil {
-		// Try init functions
 		mainFn = prog.Main.Func("init")
 	}
 
 	if mainFn != nil {
 		interp.execFunction(mainGID, mainFn, nil)
+	}
+
+	// Drain the run queue: execute spawned goroutines via scheduler
+	for len(interp.runQueue) > 0 {
+		runnable := make([]int64, len(interp.runQueue))
+		for i, t := range interp.runQueue {
+			runnable[i] = t.gid
+		}
+		nextGID := interp.sched.Next(runnable)
+		for i, t := range interp.runQueue {
+			if t.gid == nextGID {
+				interp.runQueue = append(interp.runQueue[:i], interp.runQueue[i+1:]...)
+				interp.execFunction(t.gid, t.fn, t.args)
+				break
+			}
+		}
 	}
 
 	// Run finalization checks
@@ -95,10 +112,16 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 		}
 	}
 
-	// Execute blocks starting from the entry block
+	// Execute blocks, tracking the previous block for Phi node resolution
+	var prevBlock *ssa.BasicBlock
 	block := fn.Blocks[0]
 	for block != nil {
-		block = interp.execBlock(gid, fn, block)
+		if f := interp.currentFrame(gid); f != nil {
+			f.PrevBlock = prevBlock
+		}
+		nextBlock := interp.execBlock(gid, fn, block)
+		prevBlock = block
+		block = nextBlock
 	}
 
 	// Return the result (if any)
@@ -137,63 +160,219 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 	// --- Memory Operations ---
 
 	case *ssa.Alloc:
-		// Alloc: allocate memory for a local variable or heap object
+		// Inline allocation with proper type sizing
+		elemType := deref(inst.Type())
+		size := interp.typeSizeOf(elemType)
 		typeName := inst.Type().String()
 		kind := shadow.AllocStack
 		if inst.Heap {
 			kind = shadow.AllocHeap
 		}
-		size := estimateTypeSize(typeName)
 		allocID := interp.Memory.Allocate(kind, size, typeName, site)
 		ptr := &shadow.Pointer{Alloc: allocID, Offset: 0}
 		frame.Locals[inst.Name()] = Value{Raw: ptr, Provenance: ptr}
 
 	case *ssa.Store:
-		// Store: *addr = val
 		addr := interp.resolveValue(frame, inst.Addr)
 		val := interp.resolveValue(frame, inst.Val)
-		size := estimateTypeSize(inst.Val.Type().String())
-
+		size := interp.typeSizeOf(inst.Val.Type())
 		if err := interp.handleStore(gid, addr, val, size, site); err != nil {
 			interp.recordViolation(err)
 		}
 
 	case *ssa.UnOp:
-		// UnOp: includes dereference (*x), address-of (&x), negation, etc.
 		operand := interp.resolveValue(frame, inst.X)
-
-		switch inst.Op.String() {
-		case "*": // Dereference (load)
-			size := estimateTypeSize(inst.Type().String())
+		switch inst.Op {
+		case token.MUL: // Dereference (load)
+			size := interp.typeSizeOf(inst.Type())
 			result, err := interp.handleLoad(gid, operand, size, site)
 			if err != nil {
 				interp.recordViolation(err)
 			}
 			frame.Locals[inst.Name()] = result
+		case token.ARROW: // Channel receive (<-ch)
+			interp.handleChannelRecv(gid, 0, site)
+			if inst.CommaOk {
+				frame.Locals[inst.Name()] = Value{Raw: []Value{{}, {Raw: true}}}
+			} else {
+				frame.Locals[inst.Name()] = Value{}
+			}
+		case token.SUB:
+			if v, ok := operand.Raw.(int64); ok {
+				frame.Locals[inst.Name()] = Value{Raw: -v}
+			} else if v, ok := operand.Raw.(float64); ok {
+				frame.Locals[inst.Name()] = Value{Raw: -v}
+			} else {
+				frame.Locals[inst.Name()] = operand
+			}
+		case token.NOT:
+			if v, ok := operand.Raw.(bool); ok {
+				frame.Locals[inst.Name()] = Value{Raw: !v}
+			} else {
+				frame.Locals[inst.Name()] = operand
+			}
+		case token.XOR:
+			if v, ok := operand.Raw.(int64); ok {
+				frame.Locals[inst.Name()] = Value{Raw: ^v}
+			} else {
+				frame.Locals[inst.Name()] = operand
+			}
 		default:
-			// Other unary ops: -, ^, etc. — pass through
 			frame.Locals[inst.Name()] = operand
 		}
 
+	case *ssa.BinOp:
+		x := interp.resolveValue(frame, inst.X)
+		y := interp.resolveValue(frame, inst.Y)
+		frame.Locals[inst.Name()] = evalBinOp(inst.Op, x, y)
+
 	case *ssa.FieldAddr:
-		// FieldAddr: &s.Field
 		base := interp.resolveValue(frame, inst.X)
-		// In real implementation: compute field offset from types.Sizes
-		fieldOffset := inst.Field * 8 // Simplified
+		fieldOffset := inst.Field * 8 // fallback
+		if xType := deref(inst.X.Type()); xType != nil {
+			if st, ok := xType.Underlying().(*types.Struct); ok {
+				offsets := interp.sizes.Offsetsof(structFields(st))
+				if inst.Field < len(offsets) {
+					fieldOffset = int(offsets[inst.Field])
+				}
+			}
+		}
 		result := interp.handleFieldAddr(gid, base, fieldOffset, site)
 		frame.Locals[inst.Name()] = result
 
 	case *ssa.IndexAddr:
-		// IndexAddr: &a[i]
 		base := interp.resolveValue(frame, inst.X)
 		idx := interp.resolveValue(frame, inst.Index)
-		indexVal := 0
-		if i, ok := idx.Raw.(int64); ok {
-			indexVal = int(i)
+		indexVal := int(toInt64(idx))
+		elemSize := 8
+		switch t := inst.X.Type().Underlying().(type) {
+		case *types.Pointer:
+			if arr, ok := t.Elem().Underlying().(*types.Array); ok {
+				elemSize = interp.typeSizeOf(arr.Elem())
+			}
+		case *types.Slice:
+			elemSize = interp.typeSizeOf(t.Elem())
 		}
-		elemSize := 8 // Simplified; real impl uses types.Sizes
 		result := interp.handleIndexAddr(gid, base, indexVal, elemSize, site)
 		frame.Locals[inst.Name()] = result
+
+	case *ssa.Field:
+		base := interp.resolveValue(frame, inst.X)
+		if m, ok := base.Raw.(map[int]Value); ok {
+			frame.Locals[inst.Name()] = m[inst.Field]
+		} else {
+			frame.Locals[inst.Name()] = Value{}
+		}
+
+	case *ssa.Index:
+		// Array/slice/string index — conservative: return zero value
+		frame.Locals[inst.Name()] = Value{}
+
+	case *ssa.Extract:
+		// Extract element from a multi-value tuple (e.g. multi-return)
+		tuple := interp.resolveValue(frame, inst.Tuple)
+		if elems, ok := tuple.Raw.([]Value); ok && inst.Index < len(elems) {
+			frame.Locals[inst.Name()] = elems[inst.Index]
+		} else {
+			frame.Locals[inst.Name()] = Value{}
+		}
+
+	case *ssa.Lookup:
+		// Map key lookup — return zero value for v0.2.0
+		frame.Locals[inst.Name()] = Value{}
+
+	case *ssa.MapUpdate:
+		// Map update m[k] = v — no-op for safety checking purposes in v0.2.0
+
+	case *ssa.MakeSlice:
+		elemType := inst.Type().(*types.Slice).Elem()
+		elemSize := interp.typeSizeOf(elemType)
+		lenVal := interp.resolveValue(frame, inst.Len)
+		capVal := interp.resolveValue(frame, inst.Cap)
+		lenN := int(toInt64(lenVal))
+		capN := int(toInt64(capVal))
+		if capN < lenN {
+			capN = lenN
+		}
+		allocSize := capN * elemSize
+		if allocSize <= 0 {
+			allocSize = elemSize
+		}
+		allocID := interp.Memory.Allocate(shadow.AllocHeap, allocSize, inst.Type().String(), site)
+		ptr := &shadow.Pointer{Alloc: allocID, Offset: 0}
+		sv := &SliceValue{Backing: ptr, Len: lenN, Cap: capN}
+		frame.Locals[inst.Name()] = Value{Raw: sv, Provenance: ptr}
+
+	case *ssa.Slice:
+		base := interp.resolveValue(frame, inst.X)
+		var lowVal int
+		if inst.Low != nil {
+			lowVal = int(toInt64(interp.resolveValue(frame, inst.Low)))
+		}
+		highVal := -1
+		if inst.High != nil {
+			highVal = int(toInt64(interp.resolveValue(frame, inst.High)))
+		}
+		if sv, ok := base.Raw.(*SliceValue); ok {
+			if highVal < 0 {
+				highVal = sv.Len
+			}
+			elemSize := 1
+			if t, ok2 := inst.X.Type().Underlying().(*types.Slice); ok2 {
+				elemSize = interp.typeSizeOf(t.Elem())
+			}
+			var newPtr *shadow.Pointer
+			if sv.Backing != nil {
+				newPtr = interp.Memory.DerivePointer(sv.Backing, lowVal*elemSize)
+			}
+			newSv := &SliceValue{
+				Backing: newPtr,
+				Len:     highVal - lowVal,
+				Cap:     sv.Cap - lowVal,
+			}
+			frame.Locals[inst.Name()] = Value{Raw: newSv, Provenance: newPtr}
+		} else {
+			frame.Locals[inst.Name()] = base
+		}
+
+	case *ssa.MakeMap:
+		frame.Locals[inst.Name()] = Value{Raw: make(map[interface{}]Value)}
+
+	case *ssa.MakeChan:
+		frame.Locals[inst.Name()] = Value{}
+
+	case *ssa.Range:
+		base := interp.resolveValue(frame, inst.X)
+		frame.Locals[inst.Name()] = Value{Raw: &rangeIter{val: base, idx: 0}}
+
+	case *ssa.Next:
+		iter := interp.resolveValue(frame, inst.Iter)
+		if ri, ok := iter.Raw.(*rangeIter); ok {
+			ok2, k, v := ri.advance()
+			frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: ok2}, k, v}}
+		} else {
+			frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: false}, {}, {}}}
+		}
+
+	case *ssa.TypeAssert:
+		val := interp.resolveValue(frame, inst.X)
+		if inst.CommaOk {
+			frame.Locals[inst.Name()] = Value{Raw: []Value{val, {Raw: true}}}
+		} else {
+			frame.Locals[inst.Name()] = val
+		}
+
+	case *ssa.ChangeInterface:
+		val := interp.resolveValue(frame, inst.X)
+		frame.Locals[inst.Name()] = val
+
+	case *ssa.SliceToArrayPointer:
+		base := interp.resolveValue(frame, inst.X)
+		if sv, ok := base.Raw.(*SliceValue); ok {
+			frame.Locals[inst.Name()] = Value{Raw: sv.Backing, Provenance: sv.Backing}
+		} else {
+			frame.Locals[inst.Name()] = base
+		}
 
 	// --- Control Flow ---
 
@@ -215,8 +394,14 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		}
 		interp.handleReturn(gid, retVals, site)
 
-		if len(retVals) > 0 {
+		switch len(retVals) {
+		case 0:
+			// nothing to store
+		case 1:
 			frame.Locals["__return__"] = retVals[0]
+		default:
+			// Multi-value return: store as a tuple Value for Extract to pick apart
+			frame.Locals["__return__"] = Value{Raw: retVals}
 		}
 		return nil // End of function
 
@@ -244,7 +429,8 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		frame.Defers = append(frame.Defers, d)
 
 	case *ssa.Go:
-		// Spawn goroutine
+		// Spawn goroutine — enqueue for execution via scheduler
+		callee := inst.Call.StaticCallee()
 		funcName := interp.callTargetName(inst.Call)
 		var args []Value
 		for _, arg := range inst.Call.Args {
@@ -253,11 +439,15 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		newGID, err := interp.spawnGoroutine(funcName, site)
 		if err != nil {
 			interp.recordViolation(err)
-		} else {
-			// In a full implementation, the scheduler would handle execution.
-			// For now, we note the spawn for later scheduling.
-			_ = newGID
-			_ = args
+			break
+		}
+		interp.sched.OnSpawn(gid, newGID)
+		if callee != nil {
+			interp.runQueue = append(interp.runQueue, goroutineTask{
+				gid:  newGID,
+				fn:   callee,
+				args: args,
+			})
 		}
 
 	// --- Channel Operations ---
@@ -265,6 +455,10 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 	case *ssa.Send:
 		val := interp.resolveValue(frame, inst.X)
 		interp.handleChannelSend(gid, val, site)
+
+	case *ssa.Select:
+		// Simplified: return sentinel (-1, false) indicating no case ready
+		frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: int64(-1)}, {Raw: false}}}
 
 	// --- Type Conversions ---
 
@@ -289,16 +483,28 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		val := interp.resolveValue(frame, inst.X)
 		frame.Locals[inst.Name()] = val
 
+	case *ssa.MultiConvert:
+		val := interp.resolveValue(frame, inst.X)
+		frame.Locals[inst.Name()] = val
+
 	// --- Phi nodes ---
 
 	case *ssa.Phi:
-		// Phi: value depends on which predecessor block we came from.
-		// For now, take the first available value.
-		for _, edge := range inst.Edges {
-			val := interp.resolveValue(frame, edge)
-			if val.Raw != nil {
-				frame.Locals[inst.Name()] = val
+		// Select the edge value corresponding to the predecessor block we came from.
+		for i, pred := range inst.Block().Preds {
+			if pred == frame.PrevBlock {
+				frame.Locals[inst.Name()] = interp.resolveValue(frame, inst.Edges[i])
 				break
+			}
+		}
+		// Fallback: if no predecessor matched (e.g. entry block), take first non-nil value
+		if _, exists := frame.Locals[inst.Name()]; !exists {
+			for _, edge := range inst.Edges {
+				val := interp.resolveValue(frame, edge)
+				if val.Raw != nil {
+					frame.Locals[inst.Name()] = val
+					break
+				}
 			}
 		}
 
@@ -320,13 +526,19 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 // execCall interprets a function call instruction.
 func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa.Call, site string) Value {
 	frame := interp.currentFrame(gid)
-	calleeName := interp.callTargetName(call.Call)
 
 	// Resolve arguments
 	var args []Value
 	for _, arg := range call.Call.Args {
 		args = append(args, interp.resolveValue(frame, arg))
 	}
+
+	// Handle SSA builtins (unsafe.Add, len, cap, append, etc.)
+	if b, ok := call.Call.Value.(*ssa.Builtin); ok {
+		return interp.execBuiltin(gid, b, args, site)
+	}
+
+	calleeName := interp.callTargetName(call.Call)
 
 	// --- Intercept known functions ---
 
@@ -358,17 +570,25 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 		return Value{}
 	}
 
-	// unsafe.Add
-	if calleeName == "unsafe.Add" && len(args) >= 2 {
-		base := args[0]
-		if base.Provenance != nil {
-			offset := 0
-			if i, ok := args[1].Raw.(int64); ok {
-				offset = int(i)
-			}
-			derived := interp.Memory.DerivePointer(base.Provenance, offset)
-			result := Value{Raw: derived, Provenance: derived}
+	// --- General function call: interpret the callee ---
 
+	callee := call.Call.StaticCallee()
+	if callee != nil && callee.Blocks != nil {
+		return interp.execFunction(gid, callee, args)
+	}
+
+	// External function — can't interpret, return opaque value
+	return Value{}
+}
+
+// execBuiltin interprets SSA builtin function calls (len, cap, unsafe.Add, etc.)
+func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, site string) Value {
+	switch b.Name() {
+	case "Add": // unsafe.Add(ptr, offset) — pointer arithmetic
+		if len(args) >= 2 && args[0].Provenance != nil {
+			offset := int(toInt64(args[1]))
+			derived := interp.Memory.DerivePointer(args[0].Provenance, offset)
+			result := Value{Raw: derived, Provenance: derived}
 			// Check bounds
 			alloc, exists := interp.Memory.GetAllocation(derived.Alloc)
 			if exists && (derived.Offset < 0 || derived.Offset > alloc.Size) {
@@ -380,31 +600,58 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 			}
 			return result
 		}
-	}
 
-	// new(T)
-	if calleeName == "new" {
-		typeName := "unknown"
+	case "len":
 		if len(args) > 0 {
-			typeName = fmt.Sprintf("*%v", args[0].Raw)
+			switch sv := args[0].Raw.(type) {
+			case *SliceValue:
+				return Value{Raw: int64(sv.Len)}
+			case string:
+				return Value{Raw: int64(len(sv))}
+			}
 		}
-		return interp.handleAlloc(gid, typeName, site, false, 0)
+
+	case "cap":
+		if len(args) > 0 {
+			if sv, ok := args[0].Raw.(*SliceValue); ok {
+				return Value{Raw: int64(sv.Cap)}
+			}
+		}
+
+	case "append":
+		// Conservative: return the first argument (the slice)
+		if len(args) > 0 {
+			return args[0]
+		}
+
+	case "copy":
+		// Return 0 copies for now
+		return Value{Raw: int64(0)}
+
+	case "delete":
+		// Map delete — no-op for safety checking purposes
+
+	case "close":
+		// Channel close — no-op for v0.2.0
+
+	case "panic":
+		// panic() — just stop execution of this goroutine
+
+	case "recover":
+		// recover() — return nil (no panic in progress in our model)
+		return Value{}
+
+	case "print", "println":
+		// Ignore print output during interpretation
+
+	case "Slice": // unsafe.Slice(ptr, len) — create slice from pointer + length
+		if len(args) >= 2 && args[0].Provenance != nil {
+			lenN := int(toInt64(args[1]))
+			sv := &SliceValue{Backing: args[0].Provenance, Len: lenN, Cap: lenN}
+			return Value{Raw: sv, Provenance: args[0].Provenance}
+		}
 	}
 
-	// make([]T, len, cap)
-	if calleeName == "make" {
-		typeName := "[]unknown"
-		return interp.handleAlloc(gid, typeName, site, false, 0)
-	}
-
-	// --- General function call: interpret the callee ---
-
-	callee := call.Call.StaticCallee()
-	if callee != nil && callee.Blocks != nil {
-		return interp.execFunction(gid, callee, args)
-	}
-
-	// External function — can't interpret, return opaque value
 	return Value{}
 }
 
@@ -440,12 +687,23 @@ func (interp *Interpreter) resolveValue(frame *Frame, v ssa.Value) Value {
 	return Value{}
 }
 
-// constToValue converts an SSA constant to an interpreted Value.
+// constToValue converts an SSA constant to an interpreted Value using go/constant.
 func (interp *Interpreter) constToValue(c *ssa.Const) Value {
 	if c.Value == nil {
 		return Value{Raw: nil} // nil constant
 	}
-	// Extract the concrete value
+	switch c.Value.Kind() {
+	case constant.Bool:
+		return Value{Raw: constant.BoolVal(c.Value)}
+	case constant.Int:
+		v, _ := constant.Int64Val(c.Value)
+		return Value{Raw: v}
+	case constant.Float:
+		v, _ := constant.Float64Val(c.Value)
+		return Value{Raw: v}
+	case constant.String:
+		return Value{Raw: constant.StringVal(c.Value)}
+	}
 	return Value{Raw: c.Value.String()}
 }
 
@@ -504,4 +762,190 @@ func extractGenericType(name string) string {
 		return name[start+1 : end]
 	}
 	return "unknown"
+}
+
+// evalBinOp evaluates a binary operation on two interpreted Values.
+func evalBinOp(op token.Token, x, y Value) Value {
+	// Integer arithmetic
+	xi, xIsInt := x.Raw.(int64)
+	yi, yIsInt := y.Raw.(int64)
+	if xIsInt && yIsInt {
+		switch op {
+		case token.ADD:
+			return Value{Raw: xi + yi}
+		case token.SUB:
+			return Value{Raw: xi - yi}
+		case token.MUL:
+			return Value{Raw: xi * yi}
+		case token.QUO:
+			if yi == 0 {
+				return Value{Raw: int64(0)}
+			}
+			return Value{Raw: xi / yi}
+		case token.REM:
+			if yi == 0 {
+				return Value{Raw: int64(0)}
+			}
+			return Value{Raw: xi % yi}
+		case token.AND:
+			return Value{Raw: xi & yi}
+		case token.OR:
+			return Value{Raw: xi | yi}
+		case token.XOR:
+			return Value{Raw: xi ^ yi}
+		case token.SHL:
+			return Value{Raw: xi << uint(yi)}
+		case token.SHR:
+			return Value{Raw: xi >> uint(yi)}
+		case token.EQL:
+			return Value{Raw: xi == yi}
+		case token.NEQ:
+			return Value{Raw: xi != yi}
+		case token.LSS:
+			return Value{Raw: xi < yi}
+		case token.LEQ:
+			return Value{Raw: xi <= yi}
+		case token.GTR:
+			return Value{Raw: xi > yi}
+		case token.GEQ:
+			return Value{Raw: xi >= yi}
+		}
+	}
+
+	// Float arithmetic
+	xf, xIsFloat := x.Raw.(float64)
+	yf, yIsFloat := y.Raw.(float64)
+	if xIsFloat && yIsFloat {
+		switch op {
+		case token.ADD:
+			return Value{Raw: xf + yf}
+		case token.SUB:
+			return Value{Raw: xf - yf}
+		case token.MUL:
+			return Value{Raw: xf * yf}
+		case token.QUO:
+			return Value{Raw: xf / yf}
+		case token.EQL:
+			return Value{Raw: xf == yf}
+		case token.NEQ:
+			return Value{Raw: xf != yf}
+		case token.LSS:
+			return Value{Raw: xf < yf}
+		case token.LEQ:
+			return Value{Raw: xf <= yf}
+		case token.GTR:
+			return Value{Raw: xf > yf}
+		case token.GEQ:
+			return Value{Raw: xf >= yf}
+		}
+	}
+
+	// Bool operations
+	xb, xIsBool := x.Raw.(bool)
+	yb, yIsBool := y.Raw.(bool)
+	if xIsBool && yIsBool {
+		switch op {
+		case token.LAND:
+			return Value{Raw: xb && yb}
+		case token.LOR:
+			return Value{Raw: xb || yb}
+		case token.EQL:
+			return Value{Raw: xb == yb}
+		case token.NEQ:
+			return Value{Raw: xb != yb}
+		}
+	}
+
+	// String operations
+	xs, xIsStr := x.Raw.(string)
+	ys, yIsStr := y.Raw.(string)
+	if xIsStr && yIsStr {
+		switch op {
+		case token.ADD:
+			return Value{Raw: xs + ys}
+		case token.EQL:
+			return Value{Raw: xs == ys}
+		case token.NEQ:
+			return Value{Raw: xs != ys}
+		case token.LSS:
+			return Value{Raw: xs < ys}
+		case token.LEQ:
+			return Value{Raw: xs <= ys}
+		case token.GTR:
+			return Value{Raw: xs > ys}
+		case token.GEQ:
+			return Value{Raw: xs >= ys}
+		}
+	}
+
+	return Value{} // Unhandled combination
+}
+
+// toInt64 converts an interpreted Value's Raw to int64.
+func toInt64(v Value) int64 {
+	switch n := v.Raw.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case int32:
+		return int64(n)
+	case uint64:
+		return int64(n)
+	case float64:
+		return int64(n)
+	case bool:
+		if n {
+			return 1
+		}
+		return 0
+	}
+	return 0
+}
+
+// deref dereferences a pointer type, returning the pointed-to type.
+// If t is not a pointer, it is returned unchanged.
+func deref(t types.Type) types.Type {
+	if ptr, ok := t.Underlying().(*types.Pointer); ok {
+		return ptr.Elem()
+	}
+	return t
+}
+
+// structFields returns all field variables of a struct type.
+func structFields(st *types.Struct) []*types.Var {
+	fields := make([]*types.Var, st.NumFields())
+	for i := 0; i < st.NumFields(); i++ {
+		fields[i] = st.Field(i)
+	}
+	return fields
+}
+
+// rangeIter holds iterator state for range over a collection.
+type rangeIter struct {
+	val Value
+	idx int
+}
+
+// advance returns the next (ok, key, value) triple from the iterator.
+func (ri *rangeIter) advance() (bool, Value, Value) {
+	switch sv := ri.val.Raw.(type) {
+	case *SliceValue:
+		if ri.idx >= sv.Len {
+			return false, Value{}, Value{}
+		}
+		k := Value{Raw: int64(ri.idx)}
+		ri.idx++
+		return true, k, Value{}
+	case string:
+		runes := []rune(sv)
+		if ri.idx >= len(runes) {
+			return false, Value{}, Value{}
+		}
+		k := Value{Raw: int64(ri.idx)}
+		v := Value{Raw: int64(runes[ri.idx])}
+		ri.idx++
+		return true, k, v
+	}
+	return false, Value{}, Value{}
 }

@@ -23,9 +23,14 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"runtime"
 	"strings"
 	"sync/atomic"
 
+	"golang.org/x/tools/go/ssa"
+
+	"github.com/scttfrdmn/giri/pkg/detector"
+	"github.com/scttfrdmn/giri/pkg/scheduler"
 	"github.com/scttfrdmn/giri/pkg/shadow"
 )
 
@@ -72,6 +77,9 @@ type Frame struct {
 
 	// Caller frame (for stack traces)
 	Caller *Frame
+
+	// Previous basic block (for Phi node resolution)
+	PrevBlock *ssa.BasicBlock
 }
 
 // DeferredCall represents a deferred function invocation.
@@ -138,6 +146,13 @@ func (vc *VectorClock) HappensBefore(other *VectorClock) bool {
 	return true
 }
 
+// goroutineTask holds a pending goroutine execution queued by ssa.Go.
+type goroutineTask struct {
+	gid  int64
+	fn   *ssa.Function
+	args []Value
+}
+
 // Interpreter is the main SSA interpreter with shadow memory instrumentation.
 type Interpreter struct {
 	// Shadow memory system
@@ -155,6 +170,18 @@ type Interpreter struct {
 
 	// Configuration
 	config Config
+
+	// Type size calculator for the target platform
+	sizes types.Sizes
+
+	// Detector registry (runs all enabled detectors on each access)
+	registry *detector.Registry
+
+	// Goroutine scheduler
+	sched scheduler.Scheduler
+
+	// Pending goroutine tasks queued by ssa.Go
+	runQueue []goroutineTask
 }
 
 // Config controls interpreter behavior.
@@ -235,6 +262,35 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 		Fset:       fset,
 		goroutines: make(map[int64]*Goroutine),
 		config:     config,
+		sizes:      types.SizesFor("gc", runtime.GOARCH),
+	}
+
+	// Build detector registry from config flags
+	var dets []detector.Detector
+	if config.TrackArenas {
+		dets = append(dets, &detector.ArenaDetector{})
+	}
+	if config.TrackArenas || config.TrackUnsafe {
+		dets = append(dets, &detector.BoundsDetector{})
+	}
+	if config.TrackUnsafe {
+		dets = append(dets, detector.NewUnsafeDetector())
+	}
+	if config.TrackRaces {
+		dets = append(dets, detector.NewRaceDetector())
+	}
+	interp.registry = detector.NewRegistry(dets...)
+
+	// Initialize scheduler
+	switch config.ScheduleStrategy {
+	case ScheduleRoundRobin:
+		interp.sched = scheduler.NewRoundRobin()
+	case ScheduleRandom:
+		interp.sched = scheduler.NewRandom(config.RandomSeed)
+	case SchedulePCT:
+		interp.sched = scheduler.NewPCT(config.RandomSeed, config.BugDepth)
+	default:
+		interp.sched = scheduler.NewRoundRobin()
 	}
 
 	return interp
@@ -329,8 +385,9 @@ func (interp *Interpreter) executeDeferred(gid int64, d DeferredCall) {
 // These will be filled in as we implement each SSA instruction type.
 
 // handleAlloc interprets an allocation instruction (new, make, arena.New).
+// Callers with a concrete types.Type should use Memory.Allocate directly with typeSizeOf.
 func (interp *Interpreter) handleAlloc(gid int64, typeName, site string, isArena bool, arenaID shadow.ArenaID) Value {
-	typeSize := estimateTypeSize(typeName) // Simplified; real impl uses types.Sizes
+	typeSize := 8 // Conservative default; Alloc SSA case uses typeSizeOf directly
 
 	var allocID shadow.AllocID
 	if isArena && arenaID != 0 {
@@ -362,9 +419,16 @@ func (interp *Interpreter) handleLoad(gid int64, addr Value, size int, site stri
 		return Value{}, err
 	}
 
+	// Run all registered detectors
+	if interp.registry != nil {
+		for _, rerr := range interp.registry.CheckAccess(interp.Memory, addr.Provenance, size, shadow.AccessRead, site, g.ID) {
+			interp.recordViolation(rerr)
+		}
+	}
+
 	// The loaded value inherits provenance if it's a pointer type
 	return Value{
-		Raw:        addr.Raw, // In a real interpreter, this would be the concrete loaded value
+		Raw:        addr.Raw,
 		Provenance: addr.Provenance,
 	}, nil
 }
@@ -379,6 +443,13 @@ func (interp *Interpreter) handleStore(gid int64, addr Value, val Value, size in
 	err := interp.Memory.CheckAccess(addr.Provenance, size, shadow.AccessWrite, site, g.ID)
 	if err != nil {
 		return err
+	}
+
+	// Run all registered detectors
+	if interp.registry != nil {
+		for _, rerr := range interp.registry.CheckAccess(interp.Memory, addr.Provenance, size, shadow.AccessWrite, site, g.ID) {
+			interp.recordViolation(rerr)
+		}
 	}
 
 	// Mark bytes as initialized
@@ -617,19 +688,14 @@ func (interp *Interpreter) StackTrace(gid int64) string {
 
 // --- Finalization ---
 
-// Finish is called when interpretation completes. It checks for leaked arenas
-// and unreleased resources.
+// Finish is called when interpretation completes. Runs detector finalization
+// checks (leak detection, pending uintptr checks, etc.).
 func (interp *Interpreter) Finish() []error {
 	var errs []error
 
-	// Check for leaked arenas
-	if interp.config.TrackArenas {
-		for _, arena := range interp.Memory.LiveArenas() {
-			errs = append(errs, fmt.Errorf(
-				"arena leak: arena %d created at %s was never freed",
-				arena.ID, arena.CreateSite,
-			))
-		}
+	// Run detector finalization checks (arena leaks, pending uintptrs, etc.)
+	if interp.registry != nil {
+		errs = append(errs, interp.registry.Finalize(interp.Memory)...)
 	}
 
 	errs = append(errs, interp.violations...)
@@ -638,24 +704,10 @@ func (interp *Interpreter) Finish() []error {
 
 // --- Helpers ---
 
-// estimateTypeSize returns an approximate size for a type.
-// The real implementation would use types.Sizes from the target platform.
-func estimateTypeSize(typeName string) int {
-	// Placeholder: in real implementation, use go/types.Sizes
-	switch {
-	case strings.HasPrefix(typeName, "*"):
-		return 8 // pointer
-	case typeName == "int", typeName == "int64", typeName == "uint64", typeName == "float64":
+// typeSizeOf returns the size in bytes of t for the target platform.
+func (interp *Interpreter) typeSizeOf(t types.Type) int {
+	if t == nil {
 		return 8
-	case typeName == "int32", typeName == "uint32", typeName == "float32":
-		return 4
-	case typeName == "int16", typeName == "uint16":
-		return 2
-	case typeName == "int8", typeName == "uint8", typeName == "byte", typeName == "bool":
-		return 1
-	case typeName == "string":
-		return 16 // string header
-	default:
-		return 64 // conservative estimate for structs
 	}
+	return int(interp.sizes.Sizeof(t))
 }

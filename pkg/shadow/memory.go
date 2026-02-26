@@ -70,6 +70,7 @@ type Allocation struct {
 
 	// Access log for debugging (only in verbose mode)
 	AccessLog []AccessRecord
+	logMu     sync.Mutex // guards AccessLog only
 }
 
 // AccessRecord tracks a single read or write to an allocation.
@@ -179,6 +180,10 @@ func (m *Memory) Allocate(kind AllocKind, size int, typeName, site string) Alloc
 		// One bit per byte, packed into uint64s
 		words := (size + 63) / 64
 		alloc.InitBits = make([]uint64, words)
+	}
+
+	if m.verbose {
+		alloc.AccessLog = make([]AccessRecord, 0, 16)
 	}
 
 	m.mu.Lock()
@@ -373,10 +378,17 @@ func (m *Memory) CheckAccess(ptr *Pointer, size int, kind AccessKind, site strin
 		}
 	}
 
-	// Record access if verbose
+	// Record access if verbose (uses per-allocation lock to avoid upgrading global RLock)
 	if m.verbose && alloc.AccessLog != nil {
-		// Note: this path requires write lock; callers should upgrade
-		// In practice, we'd use a lock-free append or per-goroutine buffer
+		alloc.logMu.Lock()
+		alloc.AccessLog = append(alloc.AccessLog, AccessRecord{
+			Kind:      kind,
+			Offset:    ptr.Offset,
+			Size:      size,
+			Site:      site,
+			Goroutine: goroutine,
+		})
+		alloc.logMu.Unlock()
 	}
 
 	return nil

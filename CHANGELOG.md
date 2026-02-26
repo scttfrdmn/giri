@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-25
+
+### Added
+
+- **Constant value representation** (`pkg/interpreter/exec.go`): `constToValue` now uses
+  `go/constant` to extract typed values (`int64`, `float64`, `bool`, `string`) instead of
+  returning raw strings, enabling correct arithmetic.
+- **Accurate type sizing** (`pkg/interpreter/interpreter.go`): Replaced `estimateTypeSize`
+  string-matching heuristic with `go/types.Sizes` for the target platform (`gc`/`GOARCH`).
+  Field offsets in `FieldAddr` and element sizes in `IndexAddr` now use `types.Sizes.Offsetsof`.
+- **Phi node predecessor tracking**: Added `PrevBlock *ssa.BasicBlock` to `Frame`; `execFunction`
+  tracks the previous block so Phi edges are resolved correctly rather than taking the first
+  available value.
+- **New SSA instruction coverage** (15 new cases): `BinOp`, `Extract`, `Field`, `Index`,
+  `Lookup`, `MapUpdate`, `MakeSlice`, `Slice`, `MakeMap`, `MakeChan`, `Range`, `Next`,
+  `TypeAssert`, `ChangeInterface`, `MultiConvert`, `SliceToArrayPointer`, `Select`.
+- **Builtin interception** (`execBuiltin`): Handles `unsafe.Add`, `len`, `cap`, `append`,
+  `copy`, `delete`, `close`, `recover`, `unsafe.Slice` by dispatching on `*ssa.Builtin`
+  before the normal call path.
+- **Detector registry wiring**: `New()` builds a `*detector.Registry` from config flags and
+  `handleLoad`/`handleStore` now call `registry.CheckAccess` after the base `CheckAccess`.
+  `Finish()` calls `registry.Finalize` (replaces manual arena leak loop).
+- **Scheduler wiring**: `New()` instantiates the configured `scheduler.Scheduler`;
+  `ssa.Go` now enqueues tasks in `runQueue`; `Run()` drains the queue via the scheduler
+  after `main` completes.
+- **Verbose access logging fix** (`pkg/shadow/memory.go`): `AccessLog` is initialized in
+  `Allocate` when verbose mode is enabled; `CheckAccess` records each access using a
+  per-allocation `logMu` mutex (no global write-lock upgrade needed).
+- **Unit tests**: `pkg/shadow/memory_test.go`, `pkg/shadow/errors_test.go`,
+  `pkg/detector/detector_test.go`, `pkg/scheduler/scheduler_test.go`.
+- **Integration tests**: `pkg/interpreter/interpreter_integration_test.go` with four
+  programs in `pkg/interpreter/testdata/integration/`: `safe_alloc` (0 violations),
+  `unsafe_oob` (1 violation, unsafe.Pointer OOB), `binop` (0 violations), `multi_return`
+  (0 violations).
+
+### Changed
+
+- `Frame` struct gains `PrevBlock *ssa.BasicBlock` field.
+- `Interpreter` struct gains `sizes`, `registry`, `sched`, `runQueue` fields.
+- `Return` instruction stores multi-value results as `[]Value` tuple (was single value only).
+- `UnOp` handler uses `token.XXX` constants and handles `token.ARROW` (channel receive).
+- `handleAlloc` uses a conservative 8-byte default (callers with concrete types use
+  `Memory.Allocate` + `typeSizeOf` directly).
+
+### Fixed
+
+- `unsafe.Add` was silently ignored (treated as `<dynamic>` call); now correctly intercepted
+  via `*ssa.Builtin` dispatch and triggers `UnsafePointerViolation` on out-of-bounds arithmetic.
+
 ## [0.1.0] - 2026-02-25
 
 ### Added
