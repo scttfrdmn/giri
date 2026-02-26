@@ -14,6 +14,9 @@ jobs:
       matrix:
         go-version: ["1.23", "1.24"]
 
+    env:
+      GOEXPERIMENT: arenas
+
     steps:
       - uses: actions/checkout@v4
 
@@ -31,8 +34,3 @@ jobs:
 
       - name: Test
         run: go test -race ./...
-
-      - name: Test (arenas)
-        run: GOEXPERIMENT=arenas go test ./...
-        # Fails gracefully if the Go version doesn't support arenas.
-        continue-on-error: true
