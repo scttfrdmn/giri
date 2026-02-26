@@ -1,0 +1,22 @@
+# Binaries
+/giri
+*.test
+*.exe
+
+# Coverage
+coverage.out
+coverage.html
+coverage.txt
+
+# Profiles
+*.prof
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
