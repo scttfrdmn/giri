@@ -326,10 +326,20 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		idxInt := int(toInt64(idx))
 		switch sv := x.Raw.(type) {
 		case *SliceValue:
-			// Slice element access: bounds check, return zero value for content
-			// (we don't track individual element values, only provenance)
-			if sv.Backing != nil && idxInt >= 0 && idxInt < sv.Len {
-				frame.Locals[inst.Name()] = Value{}
+			// Slice element access: derive the element pointer and call handleLoad
+			// so that BoundsDetector and RaceDetector fire on OOB/racy access (#25).
+			if sv.Backing != nil {
+				elemSize := 8
+				if t, ok := inst.X.Type().Underlying().(*types.Slice); ok {
+					elemSize = interp.typeSizeOf(t.Elem())
+				}
+				elemPtr := interp.Memory.DerivePointer(sv.Backing, idxInt*elemSize)
+				addrVal := Value{Raw: elemPtr, Provenance: elemPtr}
+				result, err := interp.handleLoad(gid, addrVal, elemSize, site)
+				if err != nil {
+					interp.recordViolation(err)
+				}
+				frame.Locals[inst.Name()] = result
 			} else {
 				frame.Locals[inst.Name()] = Value{}
 			}
@@ -412,24 +422,57 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		if inst.High != nil {
 			highVal = int(toInt64(interp.resolveValue(frame, inst.High)))
 		}
-		if sv, ok := base.Raw.(*SliceValue); ok {
-			if highVal < 0 {
-				highVal = sv.Len
-			}
-			elemSize := 1
+
+		// Determine the SliceValue to operate on.
+		// inst.X may be:
+		//   (a) []T — already a SliceValue (reslice)
+		//   (b) *[N]T — pointer to array (make([]T,n) lowered to Alloc+Slice)
+		var sv *SliceValue
+		elemSize := 1
+		if existingSV, ok := base.Raw.(*SliceValue); ok {
+			sv = existingSV
 			if t, ok2 := inst.X.Type().Underlying().(*types.Slice); ok2 {
 				elemSize = interp.typeSizeOf(t.Elem())
 			}
-			var newPtr *shadow.Pointer
-			if sv.Backing != nil {
-				newPtr = interp.Memory.DerivePointer(sv.Backing, lowVal*elemSize)
+		} else if ptr, ok := base.Raw.(*shadow.Pointer); ok {
+			// *[N]T → []T conversion (make([]T, n) lowered to Alloc+Slice)
+			arrLen := 0
+			if pt, ok2 := inst.X.Type().Underlying().(*types.Pointer); ok2 {
+				if at, ok3 := pt.Elem().Underlying().(*types.Array); ok3 {
+					arrLen = int(at.Len())
+					elemSize = interp.typeSizeOf(at.Elem())
+				}
 			}
-			newSv := &SliceValue{
-				Backing: newPtr,
-				Len:     highVal - lowVal,
-				Cap:     sv.Cap - lowVal,
+			sv = &SliceValue{Backing: ptr, Len: arrLen, Cap: arrLen}
+		}
+
+		if sv != nil {
+			if highVal < 0 {
+				highVal = sv.Len
 			}
-			frame.Locals[inst.Name()] = Value{Raw: newSv, Provenance: newPtr}
+			// Bounds check: 0 <= low <= high <= cap(s) (#32)
+			if lowVal < 0 || highVal < lowVal || highVal > sv.Cap {
+				interp.recordViolation(&shadow.OutOfBoundsError{
+					AllocSize:  sv.Cap,
+					Offset:     highVal,
+					AccessSize: highVal - lowVal,
+					Site:       site,
+					TypeName:   inst.X.Type().String(),
+				})
+				// Produce a safe empty slice so execution can continue
+				frame.Locals[inst.Name()] = Value{Raw: &SliceValue{Len: 0, Cap: 0}}
+			} else {
+				var newPtr *shadow.Pointer
+				if sv.Backing != nil {
+					newPtr = interp.Memory.DerivePointer(sv.Backing, lowVal*elemSize)
+				}
+				newSv := &SliceValue{
+					Backing: newPtr,
+					Len:     highVal - lowVal,
+					Cap:     sv.Cap - lowVal,
+				}
+				frame.Locals[inst.Name()] = Value{Raw: newSv, Provenance: newPtr}
+			}
 		} else {
 			frame.Locals[inst.Name()] = base
 		}
@@ -523,6 +566,8 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		// in a frame above the panic site (#20).
 		g := interp.goroutines[gid]
 		if g != nil {
+			// Store the panic value so recover() can retrieve it (#34).
+			g.PanicValue = interp.resolveValue(frame, inst.X)
 			for i := len(g.Stack) - 1; i >= 0; i-- {
 				f := g.Stack[i]
 				for j := len(f.Defers) - 1; j >= 0; j-- {
@@ -580,6 +625,23 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			interp.recordViolation(err)
 			break
 		}
+
+		// Propagate parent → child happens-before edge (#29).
+		// Per Go memory model, the go statement is synchronized before the
+		// goroutine's start: parent ticks then child inherits parent's clock.
+		parent := interp.goroutines[gid]
+		if parent != nil {
+			parent.VClock.Tick(gid)
+			child := interp.goroutines[newGID]
+			if child != nil {
+				for k, v := range parent.VClock.Clocks {
+					if v > child.VClock.Clocks[k] {
+						child.VClock.Clocks[k] = v
+					}
+				}
+			}
+		}
+
 		interp.sched.OnSpawn(gid, newGID)
 		interp.runQueue = append(interp.runQueue, goroutineTask{
 			gid:  newGID,
@@ -599,8 +661,51 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		interp.handleChannelSend(gid, chanID, val, site)
 
 	case *ssa.Select:
-		// Simplified: return sentinel (-1, false) indicating no case ready
-		frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: int64(-1)}, {Raw: false}}}
+		// Minimal select implementation (#30): iterate cases in order and
+		// execute the first ready case. If none are ready and the select is
+		// non-blocking (!inst.Blocking means a default clause exists), return
+		// the default index. If blocking and no case is ready, record deadlock.
+		chosenIdx := int64(-1)
+		recvOk := false
+		for i, state := range inst.States {
+			chanVal := interp.resolveValue(frame, state.Chan)
+			chanID, hasChanID := chanVal.Raw.(ChanID)
+			if !hasChanID {
+				continue
+			}
+			ch, exists := interp.channels[chanID]
+			if !exists {
+				continue
+			}
+			if state.Dir == types.SendOnly {
+				// Ready to send if channel is open
+				if !ch.closed {
+					chosenIdx = int64(i)
+					sendVal := interp.resolveValue(frame, state.Send)
+					interp.handleChannelSend(gid, chanID, sendVal, site)
+					break
+				}
+			} else {
+				// Ready to receive if there's a pending value or channel is closed
+				if ch.hasPending || ch.closed {
+					chosenIdx = int64(i)
+					recvOk = !ch.closed || ch.hasPending
+					if ch.hasPending {
+						interp.handleChannelRecv(gid, chanID, site)
+					}
+					break
+				}
+			}
+		}
+		if chosenIdx == -1 {
+			if !inst.Blocking {
+				// Non-blocking: return the default case index
+				chosenIdx = int64(len(inst.States))
+			}
+			// Blocking with no ready case: deadlock in single-threaded model
+			// (leave chosenIdx=-1; caller handles the impossible branch)
+		}
+		frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: chosenIdx}, {Raw: recvOk}}}
 
 	// --- Type Conversions ---
 
@@ -730,6 +835,16 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 	// --- General function call: interpret the callee ---
 
 	callee := call.Call.StaticCallee()
+
+	// Intercept sync.Mutex and sync.WaitGroup before trying to execute them (#33).
+	// Their implementations use futexes that can't be interpreted; we model the
+	// clock semantics directly in handleSyncCall.
+	if callee != nil && callee.Package() != nil {
+		if pkg := callee.Package().Pkg; pkg != nil && pkg.Path() == "sync" {
+			return interp.handleSyncCall(gid, callee.Name(), args, site)
+		}
+	}
+
 	if callee != nil && callee.Blocks != nil {
 		return interp.execFunction(gid, callee, args)
 	}
@@ -776,26 +891,91 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 		}
 
 	case "append":
-		// Conservative: return the first argument (the slice)
-		if len(args) > 0 {
-			return args[0]
+		// Proper append implementation (#26): track slice growth and new allocation.
+		if len(args) == 0 {
+			return Value{}
 		}
+		base := args[0]
+		sv, ok := base.Raw.(*SliceValue)
+		if !ok {
+			return base
+		}
+		numAppend := len(args) - 1
+		if numAppend <= 0 {
+			return base
+		}
+		newLen := sv.Len + numAppend
+		if newLen <= sv.Cap {
+			// In-place: return same backing with incremented length
+			return Value{Raw: &SliceValue{Backing: sv.Backing, Len: newLen, Cap: sv.Cap}, Provenance: sv.Backing}
+		}
+		// Reallocation: allocate new backing array
+		newCap := sv.Cap * 2
+		if newCap < newLen {
+			newCap = newLen * 2
+		}
+		elemSize := 8 // conservative default
+		allocID := interp.Memory.Allocate(shadow.AllocHeap, newCap*elemSize, "append-backing", site)
+		newPtr := &shadow.Pointer{Alloc: allocID, Offset: 0}
+		return Value{Raw: &SliceValue{Backing: newPtr, Len: newLen, Cap: newCap}, Provenance: newPtr}
 
 	case "copy":
-		// Return 0 copies for now
-		return Value{Raw: int64(0)}
+		// Proper copy implementation (#27): compute count, trigger store for bounds check.
+		if len(args) < 2 {
+			return Value{Raw: int64(0)}
+		}
+		dst, src := args[0], args[1]
+		dstSlice, dstOk := dst.Raw.(*SliceValue)
+		srcSlice, srcOk := src.Raw.(*SliceValue)
+		n := 0
+		if dstOk && srcOk {
+			n = dstSlice.Len
+			if srcSlice.Len < n {
+				n = srcSlice.Len
+			}
+			// Trigger a store to the destination for bounds/race checking
+			if n > 0 && dstSlice.Backing != nil {
+				err := interp.handleStore(gid, Value{Raw: dstSlice.Backing, Provenance: dstSlice.Backing}, Value{}, n, site)
+				if err != nil {
+					interp.recordViolation(err)
+				}
+			}
+		} else if dstOk {
+			// copy(dst, string)
+			if sv, ok := src.Raw.(string); ok {
+				n = len([]byte(sv))
+				if dstSlice.Len < n {
+					n = dstSlice.Len
+				}
+			}
+		}
+		return Value{Raw: int64(n)}
 
 	case "delete":
 		// Map delete — no-op for safety checking purposes
 
 	case "close":
-		// Channel close — no-op for v0.2.0
+		// Channel close (#31): mark channel as closed; future sends will panic.
+		if len(args) > 0 {
+			if chanID, ok := args[0].Raw.(ChanID); ok {
+				interp.handleChannelClose(gid, chanID, site)
+			}
+		}
+		return Value{}
 
 	case "panic":
 		// panic() — just stop execution of this goroutine
 
 	case "recover":
-		// recover() — return nil (no panic in progress in our model)
+		// recover() implementation (#34): return the panic value if panicking,
+		// clear the panic state, and allow execution to resume.
+		g := interp.goroutines[gid]
+		if g != nil && g.Panicked && g.PanicValue.Raw != nil {
+			v := g.PanicValue
+			g.Panicked = false
+			g.PanicValue = Value{}
+			return v
+		}
 		return Value{}
 
 	case "print", "println":

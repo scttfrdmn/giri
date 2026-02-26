@@ -107,6 +107,9 @@ type Goroutine struct {
 	// are skipped until the goroutine is removed from the run queue.
 	Panicked bool
 
+	// PanicValue holds the value passed to panic(), used by recover() (#34).
+	PanicValue Value
+
 	// Vector clock for happens-before tracking
 	VClock *VectorClock
 }
@@ -166,6 +169,16 @@ type ChanID uint64
 type chanEntry struct {
 	lastSenderGID   int64
 	lastSenderClock map[int64]uint64
+	closed          bool  // set by close(ch) (#31)
+	hasPending      bool  // a value has been sent but not yet received
+	pendingVal      Value // the pending value (for select readiness checks)
+}
+
+// mutexState tracks synchronization state for sync.Mutex and sync.WaitGroup (#33).
+type mutexState struct {
+	locked          bool
+	lockGoroutine   int64
+	lastUnlockClock map[int64]uint64 // clock snapshot at last Unlock/Done
 }
 
 // goroutineTask holds a pending goroutine execution queued by ssa.Go.
@@ -208,6 +221,10 @@ type Interpreter struct {
 	// Channel state for happens-before tracking
 	channels   map[ChanID]*chanEntry
 	nextChanID atomic.Uint64
+
+	// Sync primitive state for sync.Mutex and sync.WaitGroup (#33).
+	// Key is the AllocID of the mutex/waitgroup's shadow memory allocation.
+	mutexes map[shadow.AllocID]*mutexState
 
 	// Total SSA instructions executed (checked against Config.MaxSteps)
 	steps uint64
@@ -295,6 +312,7 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 		Fset:       fset,
 		goroutines: make(map[int64]*Goroutine),
 		channels:   make(map[ChanID]*chanEntry),
+		mutexes:    make(map[shadow.AllocID]*mutexState),
 		config:     config,
 		sizes:      types.SizesFor("gc", runtime.GOARCH),
 	}
@@ -444,7 +462,17 @@ func (interp *Interpreter) handleAlloc(gid int64, typeName, site string, isArena
 // handleLoad interprets a load (dereference) instruction.
 func (interp *Interpreter) handleLoad(gid int64, addr Value, size int, site string) (Value, error) {
 	if addr.Provenance == nil {
-		return Value{}, fmt.Errorf("load from non-pointer value at %s", site)
+		// Distinguish nil pointer dereference from an untracked (opaque) value.
+		// When addr.Raw is also nil, this is a program nil dereference (#36).
+		if addr.Raw == nil {
+			g := interp.goroutines[gid]
+			if g != nil {
+				g.Panicked = true
+			}
+			return Value{}, &shadow.NilPointerDerefError{Site: site, GID: gid}
+		}
+		// Non-nil Raw but no provenance: untracked value, skip shadow checks.
+		return Value{Raw: addr.Raw}, nil
 	}
 
 	g := interp.goroutines[gid]
@@ -470,7 +498,15 @@ func (interp *Interpreter) handleLoad(gid int64, addr Value, size int, site stri
 // handleStore interprets a store instruction.
 func (interp *Interpreter) handleStore(gid int64, addr Value, val Value, size int, site string) error {
 	if addr.Provenance == nil {
-		return fmt.Errorf("store to non-pointer value at %s", site)
+		// Nil pointer store (#36)
+		if addr.Raw == nil {
+			g := interp.goroutines[gid]
+			if g != nil {
+				g.Panicked = true
+			}
+			return &shadow.NilPointerDerefError{Site: site, GID: gid}
+		}
+		return nil // untracked destination, skip
 	}
 
 	g := interp.goroutines[gid]
@@ -488,6 +524,25 @@ func (interp *Interpreter) handleStore(gid int64, addr Value, val Value, size in
 
 	// Mark bytes as initialized
 	interp.Memory.MarkInitialized(addr.Provenance.Alloc, addr.Provenance.Offset, size)
+
+	// Check for arena pointer escape via store to global variable (#35).
+	// Storing an arena-allocated pointer into a global means the pointer
+	// could outlive the arena — flag it as an escape.
+	if interp.config.TrackArenas && val.Provenance != nil {
+		srcAlloc, srcOk := interp.Memory.GetAllocation(val.Provenance.Alloc)
+		if srcOk && srcAlloc.Kind == shadow.AllocArena {
+			destAlloc, destOk := interp.Memory.GetAllocation(addr.Provenance.Alloc)
+			if destOk && destAlloc.Kind == shadow.AllocGlobal {
+				interp.recordViolation(&shadow.EscapedPointerError{
+					AllocID:    srcAlloc.ID,
+					ArenaID:    srcAlloc.Arena,
+					AllocSite:  srcAlloc.AllocSite,
+					EscapeSite: site,
+					EscapeKind: "global",
+				})
+			}
+		}
+	}
 
 	// Track provenance: if storing a pointer, record what's now at this location
 	if val.Provenance != nil {
@@ -699,19 +754,49 @@ func (interp *Interpreter) handleReturn(gid int64, values []Value, site string) 
 	}
 }
 
+// handleChannelClose marks a channel as closed (#31).
+// Subsequent sends to the channel will record a violation.
+func (interp *Interpreter) handleChannelClose(gid int64, chanID ChanID, site string) {
+	if ch, ok := interp.channels[chanID]; ok {
+		if ch.closed {
+			g := interp.goroutines[gid]
+			if g != nil {
+				g.Panicked = true
+			}
+			interp.recordViolation(fmt.Errorf("close of already-closed channel at %s (goroutine %d)", site, gid))
+			return
+		}
+		ch.closed = true
+	}
+}
+
 // handleChannelSend interprets a channel send and checks for escapes.
 // It records the sender's vector clock in the channel state for happens-before propagation.
 func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value, site string) {
+	g := interp.goroutines[gid]
+
+	// Check for send on closed channel (#31)
+	if ch, ok := interp.channels[chanID]; ok && ch.closed {
+		if g != nil {
+			g.Panicked = true
+		}
+		interp.recordViolation(fmt.Errorf("send on closed channel at %s (goroutine %d)", site, gid))
+		return
+	}
+
 	// Synchronize vector clocks and record sender clock in channel state
 	if interp.config.TrackRaces {
-		g := interp.goroutines[gid]
-		g.VClock.Tick(gid)
+		if g != nil {
+			g.VClock.Tick(gid)
+		}
 		if ch, ok := interp.channels[chanID]; ok {
 			ch.lastSenderGID = gid
 			ch.lastSenderClock = make(map[int64]uint64, len(g.VClock.Clocks))
 			for k, v := range g.VClock.Clocks {
 				ch.lastSenderClock[k] = v
 			}
+			ch.hasPending = true
+			ch.pendingVal = val
 		}
 	}
 
@@ -744,6 +829,7 @@ func (interp *Interpreter) handleChannelRecv(gid int64, chanID ChanID, site stri
 				g.VClock.Clocks[id] = t
 			}
 		}
+		ch.hasPending = false // value consumed
 	}
 	g.VClock.Tick(gid)
 }
@@ -780,6 +866,79 @@ func (interp *Interpreter) Finish() []error {
 
 	errs = append(errs, interp.violations...)
 	return errs
+}
+
+// handleSyncCall intercepts sync.Mutex and sync.WaitGroup method calls (#33).
+// These runtime types use futexes that can't be interpreted; we model their
+// clock semantics directly.
+func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, site string) Value {
+	g := interp.goroutines[gid]
+	if g == nil || len(args) == 0 {
+		return Value{}
+	}
+
+	// Extract the AllocID of the sync primitive's backing memory as the map key.
+	var key shadow.AllocID
+	if ptr, ok := args[0].Raw.(*shadow.Pointer); ok {
+		key = ptr.Alloc
+	} else if args[0].Provenance != nil {
+		key = args[0].Provenance.Alloc
+	} else {
+		return Value{} // can't track without shadow provenance
+	}
+
+	if _, exists := interp.mutexes[key]; !exists {
+		interp.mutexes[key] = &mutexState{}
+	}
+	ms := interp.mutexes[key]
+
+	switch name {
+	case "Lock", "RLock":
+		// Merge the last-unlock clock into the current goroutine's clock.
+		// This establishes that everything before the matching Unlock HB this Lock.
+		if ms.lastUnlockClock != nil {
+			for id, t := range ms.lastUnlockClock {
+				if t > g.VClock.Clocks[id] {
+					g.VClock.Clocks[id] = t
+				}
+			}
+		}
+		ms.locked = true
+		ms.lockGoroutine = gid
+
+	case "Unlock", "RUnlock":
+		// Tick the goroutine's clock, then snapshot it into the mutex state.
+		// This establishes that this Unlock HB any subsequent Lock.
+		g.VClock.Tick(gid)
+		ms.locked = false
+		ms.lastUnlockClock = make(map[int64]uint64, len(g.VClock.Clocks))
+		for k, v := range g.VClock.Clocks {
+			ms.lastUnlockClock[k] = v
+		}
+
+	case "Done":
+		// WaitGroup.Done(): tick clock, store snapshot (mirrors Unlock semantics).
+		g.VClock.Tick(gid)
+		ms.lastUnlockClock = make(map[int64]uint64, len(g.VClock.Clocks))
+		for k, v := range g.VClock.Clocks {
+			ms.lastUnlockClock[k] = v
+		}
+
+	case "Wait":
+		// WaitGroup.Wait(): merge the Done-time clock (mirrors Lock semantics).
+		if ms.lastUnlockClock != nil {
+			for id, t := range ms.lastUnlockClock {
+				if t > g.VClock.Clocks[id] {
+					g.VClock.Clocks[id] = t
+				}
+			}
+		}
+
+	case "Add":
+		// WaitGroup.Add(): no clock effect — just tracks the counter.
+	}
+
+	return Value{}
 }
 
 // --- Helpers ---

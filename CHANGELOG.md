@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-02-25
+
+### Added
+
+- **Nil pointer dereference detection** (#36): `handleLoad`/`handleStore` now
+  fire `*shadow.NilPointerDerefError` when the address has both `Raw == nil`
+  and `Provenance == nil`, indicating a true nil dereference. The goroutine is
+  halted via `Panicked = true`.
+- **Send-on-closed-channel detection** (#31): `chanEntry` gains `closed bool`,
+  `hasPending bool`, and `pendingVal Value` fields. `handleChannelSend` fires
+  a violation when the channel is already closed; `handleChannelClose` detects
+  double-close. A new `close` builtin case dispatches to `handleChannelClose`.
+- **Slice re-slice bounds validation** (#32): the `*ssa.Slice` handler now
+  validates `0 ≤ low ≤ high ≤ cap(s)` and records `*shadow.OutOfBoundsError`
+  on violation. Also handles the `*[N]T → []T` lowering that Go SSA applies to
+  `make([]T, n)` with constant `n` (Alloc + Slice rather than MakeSlice).
+- **Goroutine spawn happens-before** (#29): the `ssa.Go` handler ticks the
+  parent goroutine's vector clock before spawning and copies the resulting
+  snapshot into the child's initial clock. This correctly models the Go memory
+  model's spawn edge, eliminating false race reports between parent writes and
+  child reads.
+- **`ssa.Select` minimal implementation** (#30): selects the first ready
+  channel (non-closed sender or pending/closed receiver); falls through to
+  default case if non-blocking and no channel is ready.
+- **`append` proper implementation** (#26): in-place growth returns same
+  backing with updated length; reallocation allocates new heap backing with 2×
+  cap and copies provenance.
+- **`copy` proper implementation** (#27): computes `n = min(dst.Len, src.Len)`,
+  triggers a `handleStore` for bounds/race checking, and returns `n`.
+- **`recover()` semantics** (#34): if the goroutine has `Panicked=true` and a
+  non-nil `PanicValue`, recover returns the panic value and clears the panic
+  state so execution can continue.
+- **sync.Mutex / sync.WaitGroup modeling** (#33): calls to `sync` package
+  methods are intercepted in `execCall` and dispatched to `handleSyncCall`.
+  `Lock`/`RLock`/`Wait` merge the last-unlock snapshot into the current clock
+  (establishing HB); `Unlock`/`RUnlock`/`Done` tick the clock and store a
+  snapshot.
+- **Arena pointer global escape detection** (#35): `handleStore` checks when
+  a value with `AllocArena` provenance is stored into an `AllocGlobal`
+  destination and records `*shadow.EscapedPointerError{EscapeKind: "global"}`.
+- **New integration tests** (#29, #31, #32, #36):
+  - `spawn_hb` — parent writes `*x`, spawns goroutine that reads `*x`; expects
+    0 violations (spawn establishes HB).
+  - `nil_deref` — reads from a nil `*int`; expects ≥ 1 `nil pointer` violation.
+  - `close_panic` — closes then sends on a channel; expects ≥ 1 `closed
+    channel` violation.
+  - `slice_oob` — reslices `make([]int,4)` to `[0:100]`; expects ≥ 1
+    `out-of-bounds` violation.
+
+### Fixed
+
+- **`data_race` test updated**: the previous test used a parent→child access
+  pattern which is NOT a race per the Go memory model (spawn establishes HB).
+  Updated to use two sibling goroutines that both write `*x` without any
+  synchronisation — a genuine data race.
+- **`ssa.Slice` handles Alloc-lowered make**: `make([]T, n)` with constant `n`
+  is lowered by Go SSA to `Alloc(*[n]T) + Slice`, not `MakeSlice`. The Slice
+  handler now recognises a `*shadow.Pointer` base (from Alloc) and derives the
+  initial `SliceValue{Len:n, Cap:n}` from the array type before applying bounds
+  checks.
+
 ## [0.4.0] - 2026-02-26
 
 ### Added

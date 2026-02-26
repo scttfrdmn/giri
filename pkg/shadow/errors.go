@@ -189,6 +189,19 @@ func (e *EscapedPointerError) Error() string {
 	)
 }
 
+// NilPointerDerefError is reported when a nil pointer is dereferenced.
+type NilPointerDerefError struct {
+	Site string
+	GID  int64
+}
+
+func (e *NilPointerDerefError) Error() string {
+	return fmt.Sprintf(
+		"nil pointer dereference (goroutine %d) at %s",
+		e.GID, e.Site,
+	)
+}
+
 // DataRaceError is reported when concurrent unsynchronized access is detected.
 type DataRaceError struct {
 	AllocID         AllocID

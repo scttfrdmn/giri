@@ -125,6 +125,35 @@ var integrationTests = []struct {
 			return c
 		}(),
 	},
+	// v0.5.0 regression tests
+	{
+		name:           "spawn hb",
+		dir:            "spawn_hb",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "nil deref",
+		dir:            "nil_deref",
+		wantViolations: 1,
+		wantCategory:   "nil pointer",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "close panic",
+		dir:            "close_panic",
+		wantViolations: 1,
+		wantCategory:   "closed channel",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "slice oob",
+		dir:            "slice_oob",
+		wantViolations: 1,
+		wantCategory:   "out-of-bounds",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 func TestIntegration(t *testing.T) {
