@@ -61,7 +61,7 @@ var (
 	flagDepth    = flag.Int("depth", 3, "Bug depth for PCT strategy")
 
 	// Output flags
-	flagFormat  = flag.String("format", "text", "Output format: text, json")
+	flagFormat  = flag.String("format", "text", "Output format: text, json, sarif")
 	flagVerbose = flag.Bool("v", false, "Verbose output (show all SSA instructions)")
 
 	// Execution flags
@@ -84,7 +84,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  giri ./...                     Check all packages\n")
 		fmt.Fprintf(os.Stderr, "  giri -arena ./pkg/allocator    Arena safety only\n")
-		fmt.Fprintf(os.Stderr, "  giri -format json ./... > r.json  CI integration\n")
+		fmt.Fprintf(os.Stderr, "  giri -format json ./... > r.json    CI integration\n")
+		fmt.Fprintf(os.Stderr, "  giri -format sarif ./... > r.sarif  GitHub code scanning\n")
 		fmt.Fprintf(os.Stderr, "  giri -seed 42 -strategy pct ./...  Reproducible concurrency testing\n")
 	}
 
@@ -121,8 +122,11 @@ func main() {
 
 	// Output
 	format := report.FormatText
-	if *flagFormat == "json" {
+	switch *flagFormat {
+	case "json":
 		format = report.FormatJSON
+	case "sarif":
+		format = report.FormatSARIF
 	}
 
 	if err := rpt.Write(os.Stdout, format); err != nil {

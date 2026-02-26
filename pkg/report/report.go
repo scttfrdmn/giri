@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/scttfrdmn/giri/pkg/shadow"
@@ -164,6 +167,15 @@ func classifyError(err error) Finding {
 			Hint:     "Protect shared data with sync.Mutex, use channels for communication, or use sync/atomic for simple values.",
 		}
 
+	case *shadow.NilPointerDerefError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "nil-pointer-deref",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "Check for nil before dereferencing. Map lookups and type assertions return zero values for absent keys.",
+		}
+
 	default:
 		return Finding{
 			Severity: SeverityWarning,
@@ -182,6 +194,8 @@ func (r *Report) Write(w io.Writer, format Format) error {
 		return r.writeText(w)
 	case FormatJSON:
 		return r.writeJSON(w)
+	case FormatSARIF:
+		return r.writeSARIF(w)
 	default:
 		return fmt.Errorf("unsupported format: %d", format)
 	}
@@ -227,6 +241,221 @@ func (r *Report) writeJSON(w io.Writer) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(r)
+}
+
+// --- SARIF 2.1.0 support ---
+
+type sarifRoot struct {
+	Schema  string     `json:"$schema"`
+	Version string     `json:"version"`
+	Runs    []sarifRun `json:"runs"`
+}
+
+type sarifRun struct {
+	Tool    sarifTool     `json:"tool"`
+	Results []sarifResult `json:"results"`
+}
+
+type sarifTool struct {
+	Driver sarifDriver `json:"driver"`
+}
+
+type sarifDriver struct {
+	Name           string      `json:"name"`
+	Version        string      `json:"version"`
+	InformationURI string      `json:"informationUri"`
+	Rules          []sarifRule `json:"rules"`
+}
+
+type sarifRule struct {
+	ID               string       `json:"id"`
+	Name             string       `json:"name"`
+	ShortDescription sarifMessage `json:"shortDescription"`
+}
+
+type sarifMessage struct {
+	Text string `json:"text"`
+}
+
+type sarifResult struct {
+	RuleID    string          `json:"ruleId"`
+	Level     string          `json:"level"`
+	Message   sarifMessage    `json:"message"`
+	Locations []sarifLocation `json:"locations,omitempty"`
+}
+
+type sarifLocation struct {
+	PhysicalLocation sarifPhysicalLocation `json:"physicalLocation"`
+}
+
+type sarifPhysicalLocation struct {
+	ArtifactLocation sarifArtifact `json:"artifactLocation"`
+	Region           *sarifRegion  `json:"region,omitempty"`
+}
+
+type sarifArtifact struct {
+	URI       string `json:"uri"`
+	URIBaseID string `json:"uriBaseId,omitempty"`
+}
+
+type sarifRegion struct {
+	StartLine int `json:"startLine"`
+}
+
+func (r *Report) writeSARIF(w io.Writer) error {
+	// Deduplicate rules by ruleId.
+	ruleMap := make(map[string]sarifRule)
+	for _, f := range r.Findings {
+		ruleID := "giri/" + f.Category
+		if _, exists := ruleMap[ruleID]; !exists {
+			ruleMap[ruleID] = sarifRule{
+				ID:               ruleID,
+				Name:             sarifRuleName(f.Category),
+				ShortDescription: sarifMessage{Text: sarifCategoryDesc(f.Category)},
+			}
+		}
+	}
+	rules := make([]sarifRule, 0, len(ruleMap))
+	for _, rule := range ruleMap {
+		rules = append(rules, rule)
+	}
+	sort.Slice(rules, func(i, j int) bool { return rules[i].ID < rules[j].ID })
+
+	// Build results.
+	results := make([]sarifResult, 0, len(r.Findings))
+	for _, f := range r.Findings {
+		res := sarifResult{
+			RuleID:  "giri/" + f.Category,
+			Level:   sarifSeverityLevel(f.Severity),
+			Message: sarifMessage{Text: f.Message},
+		}
+		if loc := parseSARIFLocation(f.Location); loc != nil {
+			res.Locations = []sarifLocation{*loc}
+		}
+		results = append(results, res)
+	}
+
+	root := sarifRoot{
+		Schema:  "https://json.schemastore.org/sarif-2.1.0.json",
+		Version: "2.1.0",
+		Runs: []sarifRun{{
+			Tool: sarifTool{
+				Driver: sarifDriver{
+					Name:           "giri",
+					Version:        "0.6.0",
+					InformationURI: "https://github.com/scttfrdmn/giri",
+					Rules:          rules,
+				},
+			},
+			Results: results,
+		}},
+	}
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(root)
+}
+
+// parseSARIFLocation extracts a SARIF location from a site string.
+// Site strings from the interpreter look like "/abs/path/file.go:42:10" or
+// "/abs/path/file.go:42". Returns nil if parsing fails.
+func parseSARIFLocation(site string) *sarifLocation {
+	if site == "" {
+		return nil
+	}
+	// Try "file:line:col" then "file:line".
+	filePath, line := splitFileLine(site)
+	if filePath == "" || line <= 0 {
+		return nil
+	}
+	uri := filepath.ToSlash(filePath)
+	return &sarifLocation{
+		PhysicalLocation: sarifPhysicalLocation{
+			ArtifactLocation: sarifArtifact{
+				URI:       uri,
+				URIBaseID: "%SRCROOT%",
+			},
+			Region: &sarifRegion{StartLine: line},
+		},
+	}
+}
+
+// splitFileLine parses "file:line" or "file:line:col" into (file, line).
+func splitFileLine(s string) (string, int) {
+	// Strip trailing column if present (file:line:col).
+	lastColon := strings.LastIndex(s, ":")
+	if lastColon < 0 {
+		return "", 0
+	}
+	tail := s[lastColon+1:]
+	col, err := strconv.Atoi(tail)
+	if err != nil || col <= 0 {
+		// Not a column — treat as line.
+		line, err2 := strconv.Atoi(tail)
+		if err2 != nil || line <= 0 {
+			return "", 0
+		}
+		return s[:lastColon], line
+	}
+	// tail is a column; strip it and look for line.
+	rest := s[:lastColon]
+	prevColon := strings.LastIndex(rest, ":")
+	if prevColon < 0 {
+		return "", 0
+	}
+	line, err := strconv.Atoi(rest[prevColon+1:])
+	if err != nil || line <= 0 {
+		return "", 0
+	}
+	return rest[:prevColon], line
+}
+
+func sarifSeverityLevel(s Severity) string {
+	switch s {
+	case SeverityError:
+		return "error"
+	case SeverityWarning:
+		return "warning"
+	default:
+		return "note"
+	}
+}
+
+// sarifRuleName converts a kebab-case category to PascalCase.
+func sarifRuleName(cat string) string {
+	parts := strings.FieldsFunc(cat, func(r rune) bool {
+		return r == '-' || r == '_' || r == '/'
+	})
+	var b strings.Builder
+	for _, p := range parts {
+		if len(p) > 0 {
+			b.WriteString(strings.ToUpper(p[:1]) + p[1:])
+		}
+	}
+	return b.String()
+}
+
+func sarifCategoryDesc(cat string) string {
+	switch {
+	case cat == "use-after-free":
+		return "Memory accessed after it was freed"
+	case cat == "double-free":
+		return "Memory freed more than once"
+	case cat == "out-of-bounds":
+		return "Memory access outside allocation bounds"
+	case cat == "uninitialized-read":
+		return "Memory read before initialization"
+	case cat == "arena-escape":
+		return "Arena-allocated pointer escapes the arena lifetime"
+	case cat == "data-race":
+		return "Concurrent unsynchronized memory access"
+	case cat == "nil-pointer-deref":
+		return "Nil pointer dereference"
+	case strings.HasPrefix(cat, "unsafe-pointer"):
+		return "Violation of Go's unsafe.Pointer conversion rules"
+	default:
+		return "Undefined behavior detected by Giri"
+	}
 }
 
 // ExitCode returns the appropriate process exit code.

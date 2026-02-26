@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-02-26
+
+### Added
+
+- **SARIF output format** (#15): `giri -format sarif ./... > results.sarif` emits
+  SARIF 2.1.0 for GitHub code scanning and IDE integration. Each finding is mapped
+  to a `ruleId` (e.g. `giri/out-of-bounds`), a level (`error`/`warning`/`note`),
+  a human-readable message, and a source location with file path and line number.
+  Rules are deduplicated across findings and sorted for stable output.
+- **`NilPointerDerefError` report classification**: nil-deref violations are now
+  correctly classified as category `nil-pointer-deref` instead of falling through
+  to the generic `other` category.
+- **GitHub Actions CI workflow** (`.github/workflows/ci.yml`): builds and runs
+  `go test -race ./...` on Go 1.23 and 1.24 on every push and PR.
+- **GitHub Actions SARIF upload** (`.github/workflows/sarif.yml`): runs giri on
+  its own codebase on every push to `main` and uploads results to GitHub code
+  scanning via `github/codeql-action/upload-sarif`.
+- **Report package tests** (`pkg/report/report_test.go`): five tests covering
+  exit codes, nil-deref classification, JSON/text/SARIF writers, and location
+  parsing.
+
+### Fixed
+
+- Exit codes were already wired (`os.Exit(rpt.ExitCode())` in `cmd/giri/main.go`);
+  this release confirms the behaviour: exit 0 = clean, exit 1 = violations found,
+  exit 2 = load/internal error.
+
+## [0.5.1] - 2026-02-25
+
 ## [0.5.0] - 2026-02-25
 
 ### Added
