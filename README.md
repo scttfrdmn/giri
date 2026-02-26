@@ -102,7 +102,15 @@ giri -dump-ssa ./pkg/mypackage
 
 ### Arena Programs
 
-Arena programs (`import "arena"`) are detected and analyzed automatically — you do not need to set `GOEXPERIMENT=arenas` before running giri. If the initial load fails because the experiment flag is missing, giri retries with it set automatically.
+If a package imports `"arena"` but `GOEXPERIMENT=arenas` is not set, those packages cannot be compiled. Giri prints a warning, skips the arena packages, and continues analyzing everything else. Arena-specific checks will produce no findings for the skipped packages.
+
+```
+warning: some packages import "arena" but GOEXPERIMENT=arenas is not set.
+  Arena analysis is disabled. To enable it, re-run with:
+  GOEXPERIMENT=arenas giri ./...
+```
+
+To enable full arena analysis, set `GOEXPERIMENT=arenas` — the same flag needed to build the code.
 
 ### CI Integration
 

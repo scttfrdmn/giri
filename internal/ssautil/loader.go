@@ -18,10 +18,11 @@ import (
 // LoadProgram loads a Go package (or packages) into SSA form.
 // patterns follows the same conventions as `go build` (e.g., "./...", "./cmd/foo").
 //
-// If the initial load fails because the target imports the "arena" package but
-// GOEXPERIMENT=arenas is not set in the environment, LoadProgram automatically
-// retries with GOEXPERIMENT=arenas enabled so that arena programs can be
-// analysed without requiring the caller to set the environment variable.
+// If the target imports the "arena" package but GOEXPERIMENT=arenas is not set,
+// those packages cannot be compiled. LoadProgram prints a warning to stderr and
+// continues with whatever packages did load successfully. Arena-specific checks
+// will produce no findings because no arena allocations will be visible. To
+// enable full arena analysis, set GOEXPERIMENT=arenas before running giri.
 func LoadProgram(patterns ...string) (*interpreter.Program, error) {
 	cfg := &packages.Config{
 		Mode: packages.NeedName |
@@ -39,29 +40,39 @@ func LoadProgram(patterns ...string) (*interpreter.Program, error) {
 		return nil, fmt.Errorf("loading packages: %w", err)
 	}
 
-	// Check for loading errors.  If any mention "arena", retry with
-	// GOEXPERIMENT=arenas so that arena programs load transparently.
+	// Check for loading errors.  Arena errors are treated as a soft warning:
+	// the packages that use "arena" are simply absent from the analysis.
+	// All other errors are fatal.
 	var loadErrs []error
 	for _, pkg := range initial {
 		for _, e := range pkg.Errors {
 			loadErrs = append(loadErrs, fmt.Errorf("%s: %s", pkg.PkgPath, e.Msg))
 		}
 	}
-	if len(loadErrs) > 0 && pkgsHaveArenaError(initial) {
-		cfg.Env = withArenaExperiment(os.Environ())
-		initial, err = packages.Load(cfg, patterns...)
-		if err != nil {
-			return nil, fmt.Errorf("loading packages: %w", err)
-		}
-		loadErrs = nil
-		for _, pkg := range initial {
-			for _, e := range pkg.Errors {
-				loadErrs = append(loadErrs, fmt.Errorf("%s: %s", pkg.PkgPath, e.Msg))
-			}
-		}
-	}
 	if len(loadErrs) > 0 {
-		return nil, fmt.Errorf("package errors: %v", loadErrs)
+		if pkgsHaveArenaError(initial) {
+			fmt.Fprintf(os.Stderr,
+				"warning: some packages import \"arena\" but GOEXPERIMENT=arenas is not set.\n"+
+					"  Arena analysis is disabled. To enable it, re-run with:\n"+
+					"  GOEXPERIMENT=arenas giri %s\n",
+				strings.Join(patterns, " "),
+			)
+			// Filter out the arena-related errors; treat the rest as fatal.
+			var nonArenaErrs []error
+			for _, pkg := range initial {
+				for _, e := range pkg.Errors {
+					if !strings.Contains(e.Msg, "arena") {
+						nonArenaErrs = append(nonArenaErrs, fmt.Errorf("%s: %s", pkg.PkgPath, e.Msg))
+					}
+				}
+			}
+			if len(nonArenaErrs) > 0 {
+				return nil, fmt.Errorf("package errors: %v", nonArenaErrs)
+			}
+			// Fall through: build SSA from whatever loaded successfully.
+		} else {
+			return nil, fmt.Errorf("package errors: %v", loadErrs)
+		}
 	}
 
 	// Build SSA
@@ -113,12 +124,14 @@ func LoadTest(pattern string) (*interpreter.Program, []string, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("loading test packages: %w", err)
 	}
+
 	if pkgsHaveArenaError(initial) {
-		cfg.Env = withArenaExperiment(os.Environ())
-		initial, err = packages.Load(cfg, pattern)
-		if err != nil {
-			return nil, nil, fmt.Errorf("loading test packages: %w", err)
-		}
+		fmt.Fprintf(os.Stderr,
+			"warning: this package imports \"arena\" but GOEXPERIMENT=arenas is not set.\n"+
+				"  Arena analysis is disabled. To enable it, re-run with:\n"+
+				"  GOEXPERIMENT=arenas giri %s\n",
+			pattern,
+		)
 	}
 
 	prog, pkgs := ssautil.AllPackages(initial, ssa.InstantiateGenerics)
@@ -157,8 +170,8 @@ func LoadTest(pattern string) (*interpreter.Program, []string, error) {
 }
 
 // pkgsHaveArenaError reports whether any loaded package has an error whose
-// message mentions "arena", which typically means the package imports
-// "arena" but GOEXPERIMENT=arenas is not set.
+// message mentions "arena", indicating the package imports "arena" but
+// GOEXPERIMENT=arenas is not set.
 func pkgsHaveArenaError(pkgs []*packages.Package) bool {
 	for _, pkg := range pkgs {
 		for _, e := range pkg.Errors {
@@ -168,28 +181,6 @@ func pkgsHaveArenaError(pkgs []*packages.Package) bool {
 		}
 	}
 	return false
-}
-
-// withArenaExperiment returns a copy of env with "arenas" merged into the
-// GOEXPERIMENT variable.  If GOEXPERIMENT is absent it is added; if present
-// but "arenas" is not listed, "arenas" is appended to the existing value.
-func withArenaExperiment(env []string) []string {
-	result := make([]string, len(env))
-	copy(result, env)
-	for i, e := range result {
-		if strings.HasPrefix(e, "GOEXPERIMENT=") {
-			if !strings.Contains(e, "arenas") {
-				val := strings.TrimPrefix(e, "GOEXPERIMENT=")
-				if val == "" {
-					result[i] = "GOEXPERIMENT=arenas"
-				} else {
-					result[i] = "GOEXPERIMENT=" + val + ",arenas"
-				}
-			}
-			return result
-		}
-	}
-	return append(result, "GOEXPERIMENT=arenas")
 }
 
 // DumpSSA prints the SSA for a package (useful for debugging).
