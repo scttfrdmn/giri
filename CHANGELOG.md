@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-02-26
+
+### Added
+
+- **safearena v0.5.2 dependency**: `GOEXPERIMENT=arenas` is now required to build Giri.
+  CI updated to set `GOEXPERIMENT=arenas` in the build matrix environment.
+
+### Performance
+
+- **Arena-backed hot-path allocations** (PR #38): `Run()` now wraps interpretation in
+  `safearena.Scoped`, creating a per-run arena freed automatically on return. All
+  short-lived structs on the hot execution path are arena-allocated for the lifetime of
+  the run, eliminating per-object GC overhead for the millions of allocations a typical
+  interpretation produces:
+
+  | Struct | Site | Frequency |
+  |---|---|---|
+  | `shadow.Pointer` (via `DerivePointer`) | every field/index/slice op | ~1M+/run |
+  | `shadow.Pointer` (direct) | `ssa.Alloc`, `ssa.MakeSlice`, `append`, globals init | per alloc op |
+  | `SliceValue` | `ssa.MakeSlice`, `ssa.Slice`, `append`, `unsafe.Slice` | per slice op |
+  | `Frame` | `pushFrame` | per function call |
+  | `Goroutine` | `spawnGoroutine` | per goroutine spawn |
+
+  `newWithArena(fset, config, a)` mirrors `New()` but wires the arena into `shadow.Memory`
+  via `WithPointerArena`. The `arenaNew[T]` generic helper returns `*T` directly, leaving
+  all external APIs unchanged. `New()` (used in unit tests) retains normal heap allocation
+  via the nil-arena fallback in `arenaNew`.
+
 ## [0.7.0] - 2026-02-26
 
 ### Added
@@ -356,7 +384,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the missing import for `github.com/scttfrdmn/giri/pkg/report`.
 - Generated `go.sum` via `go mod tidy`.
 
-[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/scttfrdmn/giri/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/scttfrdmn/giri/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/scttfrdmn/giri/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/scttfrdmn/giri/compare/v0.6.0...v0.6.1
