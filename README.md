@@ -8,16 +8,24 @@ Named after [Miri](https://github.com/rust-lang/miri) (MIR Interpreter for Rust)
 
 ## What It Detects
 
-| Category | Example | Existing Go Tool |
-|---|---|---|
-| Arena use-after-free | Access arena memory after `Free()` | None |
-| Arena pointer escapes | Return/channel/global arena pointers | `arenacheck` (static, limited) |
-| Arena leaks | Forgotten `Free()` | `runtime.SetFinalizer` (delayed) |
-| `unsafe.Pointer` rule violations | All 6 rules from Go spec | `go vet` (partial) |
-| Out-of-bounds via unsafe | Pointer arithmetic past allocation | None |
-| Data races | Including channel ordering bugs | `-race` (partial) |
-| Uninitialized reads | Reading memory before first write | None |
-| Double-free | Freeing memory twice | None |
+| Category | Example | go vet | -race |
+|---|---|---|---|
+| Arena use-after-free | Access arena memory after `Free()` | — | — |
+| Arena pointer escapes | Return/channel/global arena pointers | — | — |
+| Arena leaks | Forgotten `Free()` | — | — |
+| `unsafe.Pointer` rule 1 | Misaligned pointer conversion | — | — |
+| `unsafe.Pointer` rule 2 | `uintptr` held across GC safepoint | — | — |
+| `unsafe.Pointer` rule 3 | Pointer arithmetic past allocation end | — | — |
+| Out-of-bounds slice reslice | `s[0:100]` when `cap(s)==4` | — | — |
+| Data races | Including channel ordering bugs | — | partial |
+| Uninitialized reads | Reading memory before first write | — | — |
+| Nil pointer dereference | On uncovered code paths | — | partial |
+| Send/close on closed channel | `ch <- v` after `close(ch)` | — | — |
+| Double-free | Freeing memory twice | — | — |
+
+## Showcase
+
+The programs in [`testdata/showcase/`](testdata/showcase/) are minimal, self-contained examples that compile cleanly, pass `go vet`, and pass `go test -race` — but Giri detects a real bug in each one. See the [showcase README](testdata/showcase/README.md) for a walkthrough.
 
 ## Architecture
 
@@ -79,12 +87,41 @@ giri -strategy pct -seed 42 -depth 3 ./...
 # JSON output for CI
 giri -format json ./... > giri-report.json
 
+# SARIF output for GitHub code scanning
+giri -format sarif ./... > giri-results.sarif
+
+# Detect uninitialized reads (off by default — slower)
+giri -init ./...
+
 # Verbose mode (print every SSA instruction)
 giri -v ./cmd/server
 
 # Dump SSA for debugging
 giri -dump-ssa ./pkg/mypackage
 ```
+
+### Arena Programs
+
+Arena programs (`import "arena"`) are detected and analyzed automatically — you do not need to set `GOEXPERIMENT=arenas` before running giri. If the initial load fails because the experiment flag is missing, giri retries with it set automatically.
+
+### CI Integration
+
+Giri exits with code 0 (no violations), 1 (violations found), or 2 (load/internal error), making it suitable as a CI gate.
+
+**GitHub Actions (SARIF upload to code scanning):**
+
+```yaml
+- name: Run giri
+  run: giri -format sarif ./... > giri-results.sarif || true
+
+- name: Upload SARIF
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: giri-results.sarif
+    category: giri
+```
+
+See [`.github/workflows/sarif.yml`](.github/workflows/sarif.yml) for the full workflow used on this repository.
 
 ## Example Output
 
@@ -104,17 +141,18 @@ use-after-free: access to *Record (alloc 7) at main.go:25
   hint: Arena-allocated pointer was used after arena.Free().
         Use safearena.Clone() to copy to heap.
 
-── [2] ERROR: arena-escape ──
-arena pointer escape: return (alloc 12, arena 2) escapes via return at server.go:48
-  allocated at: server.go:45
-
-  hint: Copy to heap with Clone() before the arena is freed.
-
-── [3] ERROR: unsafe-pointer-rule 3: pointer arithmetic must stay within allocation ──
-unsafe.Pointer violation (rule 3) at parser.go:112
-  unsafe.Add moved pointer to offset 1048576, allocation is 32 bytes
+── [2] ERROR: unsafe-pointer-rule 2 ──
+unsafe-pointer-violation: rule 2: uintptr held across GC safepoint at main.go:40
+  uintptr converted from unsafe.Pointer at main.go:36
+  GC safepoint (function call) at main.go:39
 
   hint: Review the six rules at https://pkg.go.dev/unsafe#Pointer.
+
+── [3] ERROR: nil-pointer-deref ──
+nil pointer dereference (goroutine 1) at main.go:55
+
+  hint: Check for nil before dereferencing. Map lookups return zero
+        values for absent keys.
 
 ── Summary ──
   ERROR: 3
@@ -159,53 +197,50 @@ giri/
 ├── internal/
 │   └── ssautil/        # SSA loading utilities
 │       └── loader.go       # Package → SSA conversion
-└── testdata/           # Programs with known UB
-    └── ub_patterns.go      # Arena, unsafe, race test cases
+└── testdata/
+    ├── showcase/        # Bugs Giri catches that go vet and -race miss
+    └── integration/     # (via pkg/interpreter/testdata/integration/)
 ```
 
 ## Implementation Status
 
-### Phase 1: Core Interpreter + Arena Safety ← **Current**
-- [x] Shadow memory with allocation tracking
-- [x] Pointer provenance (transitive through casts)
-- [x] Arena lifecycle management
-- [x] Use-after-free, double-free, escape detection
-- [x] SSA instruction walker
-- [x] Deferred call handling (critical for `defer arena.Free()`)
-- [x] Report generation (text + JSON)
-- [ ] Full SSA instruction coverage
-- [ ] Integration test suite
+### Phase 1: Core Interpreter + Arena Safety ✓
+- [x] Shadow memory with allocation tracking and provenance
+- [x] Arena lifecycle management (new, free, double-free, escape)
+- [x] Use-after-free, arena pointer escape, arena leak detection
+- [x] SSA instruction walker (20+ instruction types)
+- [x] Deferred call handling (`defer arena.Free()`)
+- [x] Goroutine spawning, closures, multi-return
+- [x] Report generation (text, JSON, SARIF)
+- [x] Integration test suite (23 tests)
 
-### Phase 2: unsafe.Pointer Rules
+### Phase 2: unsafe.Pointer Rules ✓
+- [x] Rule 1: Alignment verification at conversion sites
+- [x] Rule 2: `uintptr` liveness tracking across GC safepoints
 - [x] Rule 3: Pointer arithmetic bounds checking
-- [x] Error types for all 6 rules
-- [ ] Rule 1: Alignment verification
-- [ ] Rule 2: uintptr liveness tracking across GC points
-- [ ] Rule 5: reflect.Value.Pointer validation
-- [ ] Rule 6: SliceHeader/StringHeader manipulation
+- [ ] Rule 5: `reflect.Value.Pointer` validation
+- [ ] Rule 6: `SliceHeader`/`StringHeader` manipulation
 
-### Phase 3: Concurrency Verification
-- [x] Vector clock infrastructure
-- [x] Scheduler strategies (RoundRobin, Random, PCT)
-- [x] Data race detector framework
-- [ ] Channel happens-before tracking
-- [ ] Mutex happens-before tracking
-- [ ] sync.Pool lifetime verification
-- [ ] Systematic interleaving exploration
+### Phase 3: Concurrency Verification ✓ (core)
+- [x] Vector clock infrastructure (Lamport clocks per goroutine)
+- [x] Scheduling strategies (RoundRobin, Random, PCT)
+- [x] Data race detection (write/write and write/read conflicts)
+- [x] Channel happens-before tracking
+- [x] Goroutine spawn happens-before
+- [x] `sync.Mutex` / `sync.WaitGroup` happens-before
+- [x] Send/close on closed channel detection
+- [ ] Systematic interleaving exploration (PCT schedules but doesn't replay)
 
 ### Phase 4: Advanced
 - [ ] Interprocedural analysis (follow calls across packages)
-- [ ] cgo boundary checking
-- [ ] reflect package safety verification
+- [ ] `cgo` boundary checking
+- [ ] `reflect` package safety verification
 - [ ] `go:linkname` tracking
-- [ ] GC safepoint simulation
-- [ ] SARIF output for IDE integration
 - [ ] `go test -giri` integration
 
 ## Requirements
 
 - Go 1.23+
-- `GOEXPERIMENT=arenas` for arena-related checks
 
 ## License
 

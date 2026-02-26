@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-02-26
+
+### Fixed
+
+- **Arena programs no longer require `GOEXPERIMENT=arenas`** to be set manually
+  before running giri. `ssautil.LoadProgram` and `ssautil.LoadTest` now detect
+  when a load failure is caused by a missing arena experiment and automatically
+  retry with `GOEXPERIMENT=arenas` merged into the build environment. Any
+  other experiments already set (e.g. `GOEXPERIMENT=loopvar`) are preserved.
+
+### Changed
+
+- Updated README: accurate implementation status, SARIF CI example, arena
+  auto-detection note, expanded detection table (nil deref, closed channel,
+  slice OOB), removed stale `GOEXPERIMENT=arenas` requirement from prerequisites.
+
 ## [0.6.0] - 2026-02-26
 
 ### Added
