@@ -24,6 +24,7 @@ import (
 	"golang.org/x/tools/go/ssa"
 
 	"github.com/scttfrdmn/giri/pkg/shadow"
+	"github.com/scttfrdmn/safearena"
 )
 
 // Program represents a loaded Go program ready for interpretation.
@@ -51,67 +52,75 @@ type ExecutionStats struct {
 }
 
 // Run interprets the program and returns all detected violations.
+//
+// Run creates a per-interpretation arena for the lifetime of this call.
+// Hot-path structs (Frame, Goroutine, SliceValue, shadow.Pointer) are
+// arena-allocated via arenaNew, which eliminates per-object GC overhead
+// for the millions of short-lived allocations a typical Run produces.
+// The arena is freed automatically when Run returns.
 func Run(prog *Program, config Config) *RunResult {
-	interp := New(prog.Fset, config)
-	interp.prog = prog.SSA
+	return safearena.Scoped(func(a *safearena.Arena) *RunResult {
+		interp := newWithArena(prog.Fset, config, a)
+		interp.prog = prog.SSA
 
-	// Initialize global variable state: allocate shadow memory for every
-	// package-level variable so loads/stores via *ssa.Global are tracked.
-	interp.globals = make(map[*ssa.Global]Value)
-	for _, pkg := range prog.SSA.AllPackages() {
-		for _, member := range pkg.Members {
-			if g, ok := member.(*ssa.Global); ok {
-				elemType := deref(g.Type())
-				size := interp.typeSizeOf(elemType)
-				if size <= 0 {
-					size = 8
+		// Initialize global variable state: allocate shadow memory for every
+		// package-level variable so loads/stores via *ssa.Global are tracked.
+		interp.globals = make(map[*ssa.Global]Value)
+		for _, pkg := range prog.SSA.AllPackages() {
+			for _, member := range pkg.Members {
+				if g, ok := member.(*ssa.Global); ok {
+					elemType := deref(g.Type())
+					size := interp.typeSizeOf(elemType)
+					if size <= 0 {
+						size = 8
+					}
+					allocID := interp.Memory.Allocate(shadow.AllocGlobal, size, g.Type().String(), g.Name())
+					ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
+					interp.globals[g] = Value{Raw: ptr, Provenance: ptr}
 				}
-				allocID := interp.Memory.Allocate(shadow.AllocGlobal, size, g.Type().String(), g.Name())
-				ptr := &shadow.Pointer{Alloc: allocID, Offset: 0}
-				interp.globals[g] = Value{Raw: ptr, Provenance: ptr}
 			}
 		}
-	}
 
-	// Create the main goroutine
-	mainGID, err := interp.spawnGoroutine("main", "entry")
-	if err != nil {
-		return &RunResult{Violations: []error{err}}
-	}
-
-	// Find and execute main function
-	mainFn := prog.Main.Func("main")
-	if mainFn == nil {
-		mainFn = prog.Main.Func("init")
-	}
-
-	if mainFn != nil {
-		interp.execFunction(mainGID, mainFn, nil)
-	}
-
-	// Drain the run queue: execute spawned goroutines via scheduler
-	for len(interp.runQueue) > 0 {
-		runnable := make([]int64, len(interp.runQueue))
-		for i, t := range interp.runQueue {
-			runnable[i] = t.gid
+		// Create the main goroutine
+		mainGID, err := interp.spawnGoroutine("main", "entry")
+		if err != nil {
+			return &RunResult{Violations: []error{err}}
 		}
-		nextGID := interp.sched.Next(runnable)
-		for i, t := range interp.runQueue {
-			if t.gid == nextGID {
-				interp.runQueue = append(interp.runQueue[:i], interp.runQueue[i+1:]...)
-				interp.execFunction(t.gid, t.fn, t.args)
-				break
+
+		// Find and execute main function
+		mainFn := prog.Main.Func("main")
+		if mainFn == nil {
+			mainFn = prog.Main.Func("init")
+		}
+
+		if mainFn != nil {
+			interp.execFunction(mainGID, mainFn, nil)
+		}
+
+		// Drain the run queue: execute spawned goroutines via scheduler
+		for len(interp.runQueue) > 0 {
+			runnable := make([]int64, len(interp.runQueue))
+			for i, t := range interp.runQueue {
+				runnable[i] = t.gid
+			}
+			nextGID := interp.sched.Next(runnable)
+			for i, t := range interp.runQueue {
+				if t.gid == nextGID {
+					interp.runQueue = append(interp.runQueue[:i], interp.runQueue[i+1:]...)
+					interp.execFunction(t.gid, t.fn, t.args)
+					break
+				}
 			}
 		}
-	}
 
-	// Run finalization checks
-	finalErrs := interp.Finish()
+		// Run finalization checks
+		finalErrs := interp.Finish()
 
-	return &RunResult{
-		Violations: finalErrs,
-		MemStats:   interp.Memory.Stats(),
-	}
+		return &RunResult{
+			Violations: finalErrs,
+			MemStats:   interp.Memory.Stats(),
+		}
+	})
 }
 
 // execFunction interprets a single SSA function.
@@ -222,7 +231,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			kind = shadow.AllocHeap
 		}
 		allocID := interp.Memory.Allocate(kind, size, typeName, site)
-		ptr := &shadow.Pointer{Alloc: allocID, Offset: 0}
+		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
 		frame.Locals[inst.Name()] = Value{Raw: ptr, Provenance: ptr}
 
 	case *ssa.Store:
@@ -409,8 +418,8 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			allocSize = elemSize
 		}
 		allocID := interp.Memory.Allocate(shadow.AllocHeap, allocSize, inst.Type().String(), site)
-		ptr := &shadow.Pointer{Alloc: allocID, Offset: 0}
-		sv := &SliceValue{Backing: ptr, Len: lenN, Cap: capN}
+		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
+		sv := arenaNew(interp.arena, SliceValue{Backing: ptr, Len: lenN, Cap: capN})
 		frame.Locals[inst.Name()] = Value{Raw: sv, Provenance: ptr}
 
 	case *ssa.Slice:
@@ -444,7 +453,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 					elemSize = interp.typeSizeOf(at.Elem())
 				}
 			}
-			sv = &SliceValue{Backing: ptr, Len: arrLen, Cap: arrLen}
+			sv = arenaNew(interp.arena, SliceValue{Backing: ptr, Len: arrLen, Cap: arrLen})
 		}
 
 		if sv != nil {
@@ -461,17 +470,17 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 					TypeName:   inst.X.Type().String(),
 				})
 				// Produce a safe empty slice so execution can continue
-				frame.Locals[inst.Name()] = Value{Raw: &SliceValue{Len: 0, Cap: 0}}
+				frame.Locals[inst.Name()] = Value{Raw: arenaNew(interp.arena, SliceValue{Len: 0, Cap: 0})}
 			} else {
 				var newPtr *shadow.Pointer
 				if sv.Backing != nil {
 					newPtr = interp.Memory.DerivePointer(sv.Backing, lowVal*elemSize)
 				}
-				newSv := &SliceValue{
+				newSv := arenaNew(interp.arena, SliceValue{
 					Backing: newPtr,
 					Len:     highVal - lowVal,
 					Cap:     sv.Cap - lowVal,
-				}
+				})
 				frame.Locals[inst.Name()] = Value{Raw: newSv, Provenance: newPtr}
 			}
 		} else {
@@ -964,7 +973,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 		newLen := sv.Len + numAppend
 		if newLen <= sv.Cap {
 			// In-place: return same backing with incremented length
-			return Value{Raw: &SliceValue{Backing: sv.Backing, Len: newLen, Cap: sv.Cap}, Provenance: sv.Backing}
+			return Value{Raw: arenaNew(interp.arena, SliceValue{Backing: sv.Backing, Len: newLen, Cap: sv.Cap}), Provenance: sv.Backing}
 		}
 		// Reallocation: allocate new backing array
 		newCap := sv.Cap * 2
@@ -973,8 +982,8 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 		}
 		elemSize := 8 // conservative default
 		allocID := interp.Memory.Allocate(shadow.AllocHeap, newCap*elemSize, "append-backing", site)
-		newPtr := &shadow.Pointer{Alloc: allocID, Offset: 0}
-		return Value{Raw: &SliceValue{Backing: newPtr, Len: newLen, Cap: newCap}, Provenance: newPtr}
+		newPtr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
+		return Value{Raw: arenaNew(interp.arena, SliceValue{Backing: newPtr, Len: newLen, Cap: newCap}), Provenance: newPtr}
 
 	case "copy":
 		// Proper copy implementation (#27): compute count, trigger store for bounds check.
@@ -1041,7 +1050,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 	case "Slice": // unsafe.Slice(ptr, len) — create slice from pointer + length
 		if len(args) >= 2 && args[0].Provenance != nil {
 			lenN := int(toInt64(args[1]))
-			sv := &SliceValue{Backing: args[0].Provenance, Len: lenN, Cap: lenN}
+			sv := arenaNew(interp.arena, SliceValue{Backing: args[0].Provenance, Len: lenN, Cap: lenN})
 			return Value{Raw: sv, Provenance: args[0].Provenance}
 		}
 	}
