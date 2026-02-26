@@ -54,6 +54,24 @@ type ExecutionStats struct {
 func Run(prog *Program, config Config) *RunResult {
 	interp := New(prog.Fset, config)
 
+	// Initialize global variable state: allocate shadow memory for every
+	// package-level variable so loads/stores via *ssa.Global are tracked.
+	interp.globals = make(map[*ssa.Global]Value)
+	for _, pkg := range prog.SSA.AllPackages() {
+		for _, member := range pkg.Members {
+			if g, ok := member.(*ssa.Global); ok {
+				elemType := deref(g.Type())
+				size := interp.typeSizeOf(elemType)
+				if size <= 0 {
+					size = 8
+				}
+				allocID := interp.Memory.Allocate(shadow.AllocGlobal, size, g.Type().String(), g.Name())
+				ptr := &shadow.Pointer{Alloc: allocID, Offset: 0}
+				interp.globals[g] = Value{Raw: ptr, Provenance: ptr}
+			}
+		}
+	}
+
 	// Create the main goroutine
 	mainGID, err := interp.spawnGoroutine("main", "entry")
 	if err != nil {
@@ -303,8 +321,31 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		}
 
 	case *ssa.Index:
-		// Array/slice/string index — conservative: return zero value
-		frame.Locals[inst.Name()] = Value{}
+		x := interp.resolveValue(frame, inst.X)
+		idx := interp.resolveValue(frame, inst.Index)
+		idxInt := int(toInt64(idx))
+		switch sv := x.Raw.(type) {
+		case *SliceValue:
+			// Slice element access: bounds check, return zero value for content
+			// (we don't track individual element values, only provenance)
+			if sv.Backing != nil && idxInt >= 0 && idxInt < sv.Len {
+				frame.Locals[inst.Name()] = Value{}
+			} else {
+				frame.Locals[inst.Name()] = Value{}
+			}
+		case string:
+			runes := []rune(sv)
+			if idxInt >= 0 && idxInt < len(runes) {
+				frame.Locals[inst.Name()] = Value{Raw: int64(runes[idxInt])}
+			} else {
+				frame.Locals[inst.Name()] = Value{}
+			}
+		case map[interface{}]Value:
+			// Arrays stored as maps (rare but possible)
+			frame.Locals[inst.Name()] = sv[int64(idxInt)]
+		default:
+			frame.Locals[inst.Name()] = Value{}
+		}
 
 	case *ssa.Extract:
 		// Extract element from a multi-value tuple (e.g. multi-return)
@@ -316,11 +357,31 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		}
 
 	case *ssa.Lookup:
-		// Map key lookup — return zero value for v0.2.0
-		frame.Locals[inst.Name()] = Value{}
+		x := interp.resolveValue(frame, inst.X)
+		key := interp.resolveValue(frame, inst.Index)
+		if m, ok := x.Raw.(map[interface{}]Value); ok {
+			mk := toMapKey(key)
+			val, found := m[mk]
+			if inst.CommaOk {
+				frame.Locals[inst.Name()] = Value{Raw: []Value{val, {Raw: found}}}
+			} else {
+				frame.Locals[inst.Name()] = val
+			}
+		} else {
+			if inst.CommaOk {
+				frame.Locals[inst.Name()] = Value{Raw: []Value{{}, {Raw: false}}}
+			} else {
+				frame.Locals[inst.Name()] = Value{}
+			}
+		}
 
 	case *ssa.MapUpdate:
-		// Map update m[k] = v — no-op for safety checking purposes in v0.2.0
+		m := interp.resolveValue(frame, inst.Map)
+		k := interp.resolveValue(frame, inst.Key)
+		v := interp.resolveValue(frame, inst.Value)
+		if mapVal, ok := m.Raw.(map[interface{}]Value); ok {
+			mapVal[toMapKey(k)] = v
+		}
 
 	case *ssa.MakeSlice:
 		elemType := inst.Type().(*types.Slice).Elem()
@@ -770,8 +831,15 @@ func (interp *Interpreter) resolveValue(frame *Frame, v ssa.Value) Value {
 		return interp.constToValue(c)
 	}
 
-	// Global
+	// Global: look up from the pre-initialized globals table.
+	// The global's value is always a pointer (globals are always address-taken in SSA).
 	if g, ok := v.(*ssa.Global); ok {
+		if interp.globals != nil {
+			if val, found := interp.globals[g]; found {
+				return val
+			}
+		}
+		// Fallback for globals not yet registered (shouldn't happen after Run init)
 		return Value{Raw: g.Name()}
 	}
 
@@ -1019,8 +1087,9 @@ func structFields(st *types.Struct) []*types.Var {
 
 // rangeIter holds iterator state for range over a collection.
 type rangeIter struct {
-	val Value
-	idx int
+	val     Value
+	idx     int
+	mapKeys []interface{} // lazily populated for map iteration
 }
 
 // advance returns the next (ok, key, value) triple from the iterator.
@@ -1042,6 +1111,47 @@ func (ri *rangeIter) advance() (bool, Value, Value) {
 		v := Value{Raw: int64(runes[ri.idx])}
 		ri.idx++
 		return true, k, v
+	case map[interface{}]Value:
+		// Lazily collect map keys on first advance so iteration order is stable.
+		if ri.mapKeys == nil {
+			ri.mapKeys = make([]interface{}, 0, len(sv))
+			for mk := range sv {
+				ri.mapKeys = append(ri.mapKeys, mk)
+			}
+		}
+		if ri.idx >= len(ri.mapKeys) {
+			return false, Value{}, Value{}
+		}
+		mk := ri.mapKeys[ri.idx]
+		ri.idx++
+		return true, valueFromMapKey(mk), sv[mk]
 	}
 	return false, Value{}, Value{}
+}
+
+// toMapKey converts an interpreted Value to a comparable interface{} map key.
+func toMapKey(v Value) interface{} {
+	if v.Raw == nil {
+		return nil
+	}
+	switch r := v.Raw.(type) {
+	case int64, float64, bool, string:
+		return r
+	}
+	return fmt.Sprintf("%v", v.Raw)
+}
+
+// valueFromMapKey converts a map key back to an interpreted Value.
+func valueFromMapKey(mk interface{}) Value {
+	switch k := mk.(type) {
+	case int64:
+		return Value{Raw: k}
+	case float64:
+		return Value{Raw: k}
+	case bool:
+		return Value{Raw: k}
+	case string:
+		return Value{Raw: k}
+	}
+	return Value{Raw: fmt.Sprintf("%v", mk)}
 }

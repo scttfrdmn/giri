@@ -24,8 +24,10 @@ type Detector interface {
 	Description() string
 
 	// CheckAccess is called on every memory access (load/store).
+	// clock is the goroutine's vector clock snapshot at the time of access;
+	// pass nil if clock tracking is disabled or not available.
 	// Return nil if the access is safe, error if UB is detected.
-	CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64) error
+	CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) error
 
 	// CheckFinalize is called when interpretation completes.
 	// Used for leak detection and other end-of-program checks.
@@ -43,7 +45,7 @@ func (d *ArenaDetector) Description() string {
 	return "Detects use-after-free, double-free, and leaks for arena-allocated memory"
 }
 
-func (d *ArenaDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64) error {
+func (d *ArenaDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) error {
 	alloc, ok := mem.GetAllocation(ptr.Alloc)
 	if !ok {
 		return nil // Not tracked
@@ -89,7 +91,7 @@ func (d *BoundsDetector) Description() string {
 	return "Detects out-of-bounds memory access via pointers"
 }
 
-func (d *BoundsDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64) error {
+func (d *BoundsDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) error {
 	alloc, ok := mem.GetAllocation(ptr.Alloc)
 	if !ok {
 		return nil
@@ -136,7 +138,7 @@ func (d *UnsafeDetector) Description() string {
 	return "Checks all six unsafe.Pointer rules from the Go spec"
 }
 
-func (d *UnsafeDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64) error {
+func (d *UnsafeDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) error {
 	// Bounds checking for unsafe-derived pointers
 	if ptr.DerivedFrom != nil {
 		alloc, ok := mem.GetAllocation(ptr.Alloc)
@@ -229,43 +231,64 @@ func (d *RaceDetector) Description() string {
 	return "Detects data races using vector clocks (beyond -race detector)"
 }
 
-func (d *RaceDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64) error {
+func (d *RaceDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) error {
 	// For each byte accessed, check against last access
 	for i := 0; i < size; i++ {
 		key := accessKey{allocID: ptr.Alloc, offset: ptr.Offset + i}
 
 		if last, ok := d.lastAccess[key]; ok {
-			// Race condition: two accesses to same location from different goroutines
-			// where at least one is a write and they're not ordered by happens-before
+			// Race: two accesses from different goroutines where at least one is a
+			// write and neither clock causally precedes the other.
 			if last.goroutine != goroutine && (last.kind == shadow.AccessWrite || kind == shadow.AccessWrite) {
-				// In full implementation: check vector clocks for happens-before
-				// For now, flag concurrent write-write and read-write from different goroutines
-				alloc, _ := mem.GetAllocation(ptr.Alloc)
-				typeName := "unknown"
-				if alloc != nil {
-					typeName = alloc.TypeName
-				}
-				return &shadow.DataRaceError{
-					AllocID:         ptr.Alloc,
-					Offset:          ptr.Offset + i,
-					Write1Site:      last.site,
-					Write1Goroutine: last.goroutine,
-					Write2Site:      site,
-					Write2Goroutine: goroutine,
-					TypeName:        typeName,
+				if !happensBefore(last.clock, clock) && !happensBefore(clock, last.clock) {
+					alloc, _ := mem.GetAllocation(ptr.Alloc)
+					typeName := "unknown"
+					if alloc != nil {
+						typeName = alloc.TypeName
+					}
+					return &shadow.DataRaceError{
+						AllocID:         ptr.Alloc,
+						Offset:          ptr.Offset + i,
+						Write1Site:      last.site,
+						Write1Goroutine: last.goroutine,
+						Write2Site:      site,
+						Write2Goroutine: goroutine,
+						TypeName:        typeName,
+					}
 				}
 			}
 		}
 
-		// Record this access
+		// Record this access with a snapshot of the current clock.
+		clockSnapshot := make(map[int64]uint64, len(clock))
+		for k, v := range clock {
+			clockSnapshot[k] = v
+		}
 		d.lastAccess[key] = &accessEntry{
 			kind:      kind,
 			goroutine: goroutine,
 			site:      site,
+			clock:     clockSnapshot,
 		}
 	}
 
 	return nil
+}
+
+// happensBefore returns true if vector clock a causally precedes (≤) clock b,
+// meaning every component of a is ≤ the corresponding component of b.
+// Returns false if len(a) == 0 (no synchronization recorded) to ensure that
+// nil/empty clocks passed from tests always flag potential races.
+func happensBefore(a, b map[int64]uint64) bool {
+	if len(a) == 0 {
+		return false
+	}
+	for id, ta := range a {
+		if ta > b[id] {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *RaceDetector) CheckFinalize(mem *shadow.Memory) []error { return nil }
@@ -301,10 +324,11 @@ func DefaultRegistry() *Registry {
 }
 
 // CheckAccess runs all detectors on a memory access.
-func (r *Registry) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64) []error {
+// clock is the goroutine's current vector clock; pass nil if not tracking races.
+func (r *Registry) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) []error {
 	var errs []error
 	for _, d := range r.detectors {
-		if err := d.CheckAccess(mem, ptr, size, kind, site, goroutine); err != nil {
+		if err := d.CheckAccess(mem, ptr, size, kind, site, goroutine, clock); err != nil {
 			errs = append(errs, err)
 		}
 	}

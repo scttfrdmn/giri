@@ -28,7 +28,7 @@ func TestArenaDetector_UAF(t *testing.T) {
 	ptr := makeArenaAlloc(t, mem, arenaID, 16)
 	mem.FreeArena(arenaID, "free:1")
 
-	err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "access:1", 1)
+	err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "access:1", 1, nil)
 	if err == nil {
 		t.Fatal("expected UseAfterFreeError for arena allocation after arena free")
 	}
@@ -42,7 +42,7 @@ func TestArenaDetector_CleanOnHeap(t *testing.T) {
 	d := &ArenaDetector{}
 	ptr := makeAlloc(t, mem, shadow.AllocHeap, 16)
 
-	err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "access:1", 1)
+	err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "access:1", 1, nil)
 	if err != nil {
 		t.Errorf("unexpected error for heap allocation: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestBoundsDetector_InBounds(t *testing.T) {
 	d := &BoundsDetector{}
 	ptr := makeAlloc(t, mem, shadow.AllocHeap, 16)
 
-	err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "access:1", 1)
+	err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "access:1", 1, nil)
 	if err != nil {
 		t.Errorf("unexpected error for in-bounds access: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestBoundsDetector_OutOfBounds(t *testing.T) {
 	id := mem.Allocate(shadow.AllocHeap, 8, "T", "alloc:1")
 	ptr := &shadow.Pointer{Alloc: id, Offset: 6}
 
-	err := d.CheckAccess(mem, ptr, 4, shadow.AccessRead, "access:1", 1) // 6+4=10 > 8
+	err := d.CheckAccess(mem, ptr, 4, shadow.AccessRead, "access:1", 1, nil) // 6+4=10 > 8
 	if err == nil {
 		t.Fatal("expected OutOfBoundsError, got nil")
 	}
@@ -108,7 +108,7 @@ func TestUnsafeDetector_DerivedWithOOB(t *testing.T) {
 	base := &shadow.Pointer{Alloc: id, Offset: 0}
 	derived := mem.DerivePointer(base, 100) // Way out of bounds
 
-	err := d.CheckAccess(mem, derived, 1, shadow.AccessRead, "access:1", 1)
+	err := d.CheckAccess(mem, derived, 1, shadow.AccessRead, "access:1", 1, nil)
 	if err == nil {
 		t.Fatal("expected UnsafePointerViolation for out-of-bounds derived pointer, got nil")
 	}
@@ -128,7 +128,7 @@ func TestUnsafeDetector_NoDerivedInBounds(t *testing.T) {
 	base := &shadow.Pointer{Alloc: id, Offset: 0}
 	derived := mem.DerivePointer(base, 8)
 
-	err := d.CheckAccess(mem, derived, 4, shadow.AccessRead, "access:1", 1)
+	err := d.CheckAccess(mem, derived, 4, shadow.AccessRead, "access:1", 1, nil)
 	if err != nil {
 		t.Errorf("unexpected error for in-bounds derived pointer: %v", err)
 	}
@@ -173,8 +173,8 @@ func TestRaceDetector_SameGoroutine_NoRace(t *testing.T) {
 	id := mem.Allocate(shadow.AllocHeap, 8, "T", "alloc:1")
 	ptr := &shadow.Pointer{Alloc: id, Offset: 0}
 
-	d.CheckAccess(mem, ptr, 8, shadow.AccessWrite, "write:1", 1)
-	err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "read:1", 1)
+	d.CheckAccess(mem, ptr, 8, shadow.AccessWrite, "write:1", 1, nil)
+	err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "read:1", 1, nil)
 	if err != nil {
 		t.Errorf("unexpected race error for same goroutine: %v", err)
 	}
@@ -186,8 +186,8 @@ func TestRaceDetector_DifferentGoroutines_Race(t *testing.T) {
 	id := mem.Allocate(shadow.AllocHeap, 8, "T", "alloc:1")
 	ptr := &shadow.Pointer{Alloc: id, Offset: 0}
 
-	d.CheckAccess(mem, ptr, 8, shadow.AccessWrite, "write:1", 1)
-	err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "read:1", 2)
+	d.CheckAccess(mem, ptr, 8, shadow.AccessWrite, "write:1", 1, nil)
+	err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "read:1", 2, nil)
 	if err == nil {
 		t.Fatal("expected DataRaceError for concurrent read-write, got nil")
 	}
@@ -207,7 +207,7 @@ func TestRegistry_CheckAccess_CollectsAll(t *testing.T) {
 	ptr := &shadow.Pointer{Alloc: id, Offset: 8} // OOB by 4 bytes
 
 	r := NewRegistry(&ArenaDetector{}, &BoundsDetector{})
-	errs := r.CheckAccess(mem, ptr, 1, shadow.AccessRead, "access:1", 1)
+	errs := r.CheckAccess(mem, ptr, 1, shadow.AccessRead, "access:1", 1, nil)
 	// Expect at least 2 errors (UAF + OOB)
 	if len(errs) < 2 {
 		t.Errorf("expected >= 2 errors, got %d: %v", len(errs), errs)

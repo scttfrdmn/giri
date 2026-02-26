@@ -211,6 +211,10 @@ type Interpreter struct {
 
 	// Total SSA instructions executed (checked against Config.MaxSteps)
 	steps uint64
+
+	// Global variable state: maps each ssa.Global to its shadow-memory pointer.
+	// Initialized in Run() by iterating all packages before main executes.
+	globals map[*ssa.Global]Value
 }
 
 // Config controls interpreter behavior.
@@ -449,9 +453,9 @@ func (interp *Interpreter) handleLoad(gid int64, addr Value, size int, site stri
 		return Value{}, err
 	}
 
-	// Run all registered detectors
+	// Run all registered detectors (pass vector clock for race detection)
 	if interp.registry != nil {
-		for _, rerr := range interp.registry.CheckAccess(interp.Memory, addr.Provenance, size, shadow.AccessRead, site, g.ID) {
+		for _, rerr := range interp.registry.CheckAccess(interp.Memory, addr.Provenance, size, shadow.AccessRead, site, g.ID, g.VClock.Clocks) {
 			interp.recordViolation(rerr)
 		}
 	}
@@ -475,9 +479,9 @@ func (interp *Interpreter) handleStore(gid int64, addr Value, val Value, size in
 		return err
 	}
 
-	// Run all registered detectors
+	// Run all registered detectors (pass vector clock for race detection)
 	if interp.registry != nil {
-		for _, rerr := range interp.registry.CheckAccess(interp.Memory, addr.Provenance, size, shadow.AccessWrite, site, g.ID) {
+		for _, rerr := range interp.registry.CheckAccess(interp.Memory, addr.Provenance, size, shadow.AccessWrite, site, g.ID, g.VClock.Clocks) {
 			interp.recordViolation(rerr)
 		}
 	}

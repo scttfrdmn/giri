@@ -99,6 +99,32 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.4.0 regression tests
+	{
+		name:           "data race",
+		dir:            "data_race",
+		wantViolations: 1,
+		wantCategory:   "data race",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "no race chan",
+		dir:            "no_race_chan",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "uninit read",
+		dir:            "uninit_read",
+		wantViolations: 1,
+		wantCategory:   "uninitialized",
+		config: func() interpreter.Config {
+			c := interpreter.DefaultConfig()
+			c.TrackInit = true
+			return c
+		}(),
+	},
 }
 
 func TestIntegration(t *testing.T) {

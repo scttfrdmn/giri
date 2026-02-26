@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-02-26
+
+### Added
+
+- **Vector clock race detection** (#23): `Detector.CheckAccess` now accepts a
+  `clock map[int64]uint64` parameter. `RaceDetector.CheckAccess` stores a
+  snapshot of the goroutine's vector clock with every access and uses
+  `happensBefore(a, b map[int64]uint64) bool` to determine whether two
+  conflicting accesses are causally ordered. Races are reported only when
+  neither clock precedes the other — eliminating false positives from
+  channel-synchronized programs.
+- **Global variable tracking** (#21): `Run()` now iterates
+  `prog.SSA.AllPackages()` and allocates `AllocGlobal` shadow memory for every
+  `*ssa.Global` member before `main` executes. `resolveValue` looks globals up
+  in an `Interpreter.globals map[*ssa.Global]Value` table instead of returning
+  a raw string, enabling proper load/store tracking for package-level variables.
+- **Map and array support** (#22): `ssa.Lookup` performs real map key lookup
+  on `map[interface{}]Value` (with `CommaOk` support); `ssa.MapUpdate` mutates
+  the map in place. `ssa.Index` handles slice, string, and map-as-array forms.
+  `rangeIter` gains a `mapKeys []interface{}` field and a map case in
+  `advance()`. New helpers `toMapKey` and `valueFromMapKey` convert between
+  interpreter `Value` and comparable map keys.
+- **Integration tests** (#24): three new programs and test table entries:
+  - `data_race` — main writes to `*x`; goroutine writes to same `*x` without
+    sync; expects ≥ 1 `data race` violation.
+  - `no_race_chan` — writer goroutine writes then signals on channel; reader
+    goroutine receives then reads; expects 0 violations (channel HB).
+  - `uninit_read` — reads from `new(int)` before any write with
+    `Config.TrackInit=true`; expects ≥ 1 `uninitialized` violation.
+
+### Changed
+
+- `Detector.CheckAccess` interface signature extended with
+  `clock map[int64]uint64`; all four implementations (Arena, Bounds, Unsafe,
+  Race) and `Registry.CheckAccess` updated accordingly.
+- `handleLoad` and `handleStore` now pass `g.VClock.Clocks` to
+  `registry.CheckAccess` so the race detector receives live clock data.
+
 ## [0.3.1] - 2026-02-26
 
 ### Fixed
@@ -168,7 +206,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the missing import for `github.com/scttfrdmn/giri/pkg/report`.
 - Generated `go.sum` via `go mod tidy`.
 
-[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/scttfrdmn/giri/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/scttfrdmn/giri/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/scttfrdmn/giri/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/scttfrdmn/giri/compare/v0.1.0...v0.2.0
