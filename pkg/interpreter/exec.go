@@ -191,7 +191,11 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			}
 			frame.Locals[inst.Name()] = result
 		case token.ARROW: // Channel receive (<-ch)
-			interp.handleChannelRecv(gid, 0, site)
+			var chanID ChanID
+			if id, ok := operand.Raw.(ChanID); ok {
+				chanID = id
+			}
+			interp.handleChannelRecv(gid, chanID, site)
 			if inst.CommaOk {
 				frame.Locals[inst.Name()] = Value{Raw: []Value{{}, {Raw: true}}}
 			} else {
@@ -339,7 +343,8 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		frame.Locals[inst.Name()] = Value{Raw: make(map[interface{}]Value)}
 
 	case *ssa.MakeChan:
-		frame.Locals[inst.Name()] = Value{}
+		chanID := interp.createChannel()
+		frame.Locals[inst.Name()] = Value{Raw: chanID}
 
 	case *ssa.Range:
 		base := interp.resolveValue(frame, inst.X)
@@ -453,8 +458,13 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 	// --- Channel Operations ---
 
 	case *ssa.Send:
+		chanVal := interp.resolveValue(frame, inst.Chan)
 		val := interp.resolveValue(frame, inst.X)
-		interp.handleChannelSend(gid, val, site)
+		var chanID ChanID
+		if id, ok := chanVal.Raw.(ChanID); ok {
+			chanID = id
+		}
+		interp.handleChannelSend(gid, chanID, val, site)
 
 	case *ssa.Select:
 		// Simplified: return sentinel (-1, false) indicating no case ready
@@ -466,7 +476,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		val := interp.resolveValue(frame, inst.X)
 		// Check for unsafe.Pointer conversions
 		if isUnsafePointerConversion(inst) {
-			result, err := interp.handleUnsafePointer(gid, classifyUnsafeConversion(inst), val, site)
+			result, err := interp.handleUnsafePointer(gid, classifyUnsafeConversion(inst), val, site, inst.Type(), inst.Name())
 			if err != nil {
 				interp.recordViolation(err)
 			}
@@ -533,9 +543,17 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 		args = append(args, interp.resolveValue(frame, arg))
 	}
 
-	// Handle SSA builtins (unsafe.Add, len, cap, append, etc.)
+	// Handle SSA builtins (unsafe.Add, len, cap, append, etc.) — not GC points.
 	if b, ok := call.Call.Value.(*ssa.Builtin); ok {
 		return interp.execBuiltin(gid, b, args, site)
+	}
+
+	// Non-builtin function call is a potential GC safepoint.
+	// Check for pending uintptr conversions that would be invalidated.
+	if interp.registry != nil {
+		for _, err := range interp.registry.CheckGCPoint(site) {
+			interp.recordViolation(err)
+		}
 	}
 
 	calleeName := interp.callTargetName(call.Call)

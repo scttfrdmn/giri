@@ -45,6 +45,27 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	{
+		name:           "uintptr gc",
+		dir:            "uintptr_gc",
+		wantViolations: 1,
+		wantCategory:   "rule 2",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "safe uintptr",
+		dir:            "safe_uintptr",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "misaligned ptr",
+		dir:            "misaligned_ptr",
+		wantViolations: 1,
+		wantCategory:   "rule 1",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 func TestIntegration(t *testing.T) {

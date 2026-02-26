@@ -168,6 +168,14 @@ func (d *UnsafeDetector) ClearUintptrConversion(valueID string) {
 	delete(d.pendingUintptrs, valueID)
 }
 
+// ClearAllUintptrConversions clears all pending uintptr conversions.
+// Called when any uintptr → unsafe.Pointer conversion happens.
+func (d *UnsafeDetector) ClearAllUintptrConversions() {
+	for k := range d.pendingUintptrs {
+		delete(d.pendingUintptrs, k)
+	}
+}
+
 // CheckGCPoint should be called at potential GC safepoints.
 // Any pending uintptr conversions at a GC point are UB.
 func (d *UnsafeDetector) CheckGCPoint(site string) []error {
@@ -266,12 +274,20 @@ func (d *RaceDetector) CheckFinalize(mem *shadow.Memory) []error { return nil }
 
 // Registry holds all active detectors and dispatches checks to them.
 type Registry struct {
-	detectors []Detector
+	detectors      []Detector
+	unsafeDetector *UnsafeDetector // extracted for direct GC-point and uintptr tracking
 }
 
 // NewRegistry creates a registry with the given detectors.
 func NewRegistry(detectors ...Detector) *Registry {
-	return &Registry{detectors: detectors}
+	r := &Registry{detectors: detectors}
+	for _, d := range detectors {
+		if ud, ok := d.(*UnsafeDetector); ok {
+			r.unsafeDetector = ud
+			break
+		}
+	}
+	return r
 }
 
 // DefaultRegistry returns a registry with all standard detectors enabled.
@@ -302,6 +318,37 @@ func (r *Registry) Finalize(mem *shadow.Memory) []error {
 		errs = append(errs, d.CheckFinalize(mem)...)
 	}
 	return errs
+}
+
+// RecordUintptrConversion tracks an unsafe.Pointer → uintptr conversion.
+// Delegates to the UnsafeDetector if one is registered.
+func (r *Registry) RecordUintptrConversion(valueID, site string, ptr *shadow.Pointer) {
+	if r.unsafeDetector != nil {
+		r.unsafeDetector.RecordUintptrConversion(valueID, site, ptr)
+	}
+}
+
+// ClearUintptrConversion marks a specific uintptr → unsafe.Pointer conversion as safe.
+func (r *Registry) ClearUintptrConversion(valueID string) {
+	if r.unsafeDetector != nil {
+		r.unsafeDetector.ClearUintptrConversion(valueID)
+	}
+}
+
+// ClearAllUintptrConversions clears all pending uintptr conversions.
+func (r *Registry) ClearAllUintptrConversions() {
+	if r.unsafeDetector != nil {
+		r.unsafeDetector.ClearAllUintptrConversions()
+	}
+}
+
+// CheckGCPoint checks for pending uintptr conversions at a GC safepoint.
+// Returns violations for any uintptr values that haven't been converted back.
+func (r *Registry) CheckGCPoint(site string) []error {
+	if r.unsafeDetector != nil {
+		return r.unsafeDetector.CheckGCPoint(site)
+	}
+	return nil
 }
 
 // List returns all registered detector names and descriptions.

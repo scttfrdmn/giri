@@ -146,6 +146,16 @@ func (vc *VectorClock) HappensBefore(other *VectorClock) bool {
 	return true
 }
 
+// ChanID is a unique identifier for an interpreted channel.
+type ChanID uint64
+
+// chanEntry holds synchronization state for a channel, used to propagate
+// happens-before relationships from sender to receiver.
+type chanEntry struct {
+	lastSenderGID   int64
+	lastSenderClock map[int64]uint64
+}
+
 // goroutineTask holds a pending goroutine execution queued by ssa.Go.
 type goroutineTask struct {
 	gid  int64
@@ -182,6 +192,10 @@ type Interpreter struct {
 
 	// Pending goroutine tasks queued by ssa.Go
 	runQueue []goroutineTask
+
+	// Channel state for happens-before tracking
+	channels   map[ChanID]*chanEntry
+	nextChanID atomic.Uint64
 }
 
 // Config controls interpreter behavior.
@@ -261,6 +275,7 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 		Memory:     shadow.NewMemory(memOpts...),
 		Fset:       fset,
 		goroutines: make(map[int64]*Goroutine),
+		channels:   make(map[ChanID]*chanEntry),
 		config:     config,
 		sizes:      types.SizesFor("gc", runtime.GOARCH),
 	}
@@ -493,7 +508,9 @@ func (interp *Interpreter) handleIndexAddr(gid int64, base Value, index, elemSiz
 }
 
 // handleUnsafePointer interprets unsafe.Pointer conversions and arithmetic.
-func (interp *Interpreter) handleUnsafePointer(gid int64, op UnsafeOp, val Value, site string) (Value, error) {
+// targetType is the destination type of the Convert instruction (e.g. *uint32).
+// valueID is the SSA name of the result value (used for uintptr tracking).
+func (interp *Interpreter) handleUnsafePointer(gid int64, op UnsafeOp, val Value, site string, targetType types.Type, valueID string) (Value, error) {
 	if !interp.config.TrackUnsafe {
 		return val, nil
 	}
@@ -504,16 +521,41 @@ func (interp *Interpreter) handleUnsafePointer(gid int64, op UnsafeOp, val Value
 		return val, nil
 
 	case UnsafeOpFromPointer:
-		// unsafe.Pointer → *T: legal if alignment matches, preserve provenance
+		// unsafe.Pointer → *T: legal if the resulting pointer's alignment is satisfied.
+		// Rule 1: the offset into the allocation must be divisible by align(T).
+		if val.Provenance != nil && targetType != nil {
+			elemType := deref(targetType)
+			if elemType != nil {
+				align := int(interp.sizes.Alignof(elemType))
+				if align > 1 && val.Provenance.Offset%align != 0 {
+					return val, &shadow.UnsafePointerViolation{
+						Rule: shadow.RuleConversion,
+						Site: site,
+						Details: fmt.Sprintf(
+							"unsafe.Pointer → %s: offset %d is not aligned to %d bytes",
+							targetType, val.Provenance.Offset, align,
+						),
+					}
+				}
+			}
+		}
 		return val, nil
 
 	case UnsafeOpToUintptr:
-		// unsafe.Pointer → uintptr: legal but dangerous
-		// The resulting uintptr must be converted back before next GC point
+		// unsafe.Pointer → uintptr: legal but dangerous.
+		// Record the pending conversion so we can flag it if a GC point occurs.
+		if interp.registry != nil && val.Provenance != nil {
+			interp.registry.RecordUintptrConversion(valueID, site, val.Provenance)
+		}
 		return val, nil
 
 	case UnsafeOpArithmetic:
-		// uintptr arithmetic → unsafe.Pointer: must stay within allocation
+		// uintptr → unsafe.Pointer: the uintptr is being consumed. Clear it from
+		// pending so we don't flag a false GC-point violation.
+		if interp.registry != nil {
+			interp.registry.ClearAllUintptrConversions()
+		}
+		// Also check bounds (Rule 3) for the resulting pointer
 		if val.Provenance != nil {
 			alloc, ok := interp.Memory.GetAllocation(val.Provenance.Alloc)
 			if ok && (val.Provenance.Offset < 0 || val.Provenance.Offset > alloc.Size) {
@@ -601,6 +643,13 @@ func (interp *Interpreter) resolveArenaID(val Value) (shadow.ArenaID, bool) {
 	return 0, false
 }
 
+// createChannel allocates a new channel and returns its ChanID.
+func (interp *Interpreter) createChannel() ChanID {
+	id := ChanID(interp.nextChanID.Add(1))
+	interp.channels[id] = &chanEntry{}
+	return id
+}
+
 // handleReturn interprets a return instruction.
 // Checks for arena pointer escapes via return values.
 func (interp *Interpreter) handleReturn(gid int64, values []Value, site string) {
@@ -632,11 +681,19 @@ func (interp *Interpreter) handleReturn(gid int64, values []Value, site string) 
 }
 
 // handleChannelSend interprets a channel send and checks for escapes.
-func (interp *Interpreter) handleChannelSend(gid int64, val Value, site string) {
-	// Synchronize vector clocks
+// It records the sender's vector clock in the channel state for happens-before propagation.
+func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value, site string) {
+	// Synchronize vector clocks and record sender clock in channel state
 	if interp.config.TrackRaces {
 		g := interp.goroutines[gid]
 		g.VClock.Tick(gid)
+		if ch, ok := interp.channels[chanID]; ok {
+			ch.lastSenderGID = gid
+			ch.lastSenderClock = make(map[int64]uint64, len(g.VClock.Clocks))
+			for k, v := range g.VClock.Clocks {
+				ch.lastSenderClock[k] = v
+			}
+		}
 	}
 
 	// Check for arena pointer escape via channel
@@ -655,15 +712,19 @@ func (interp *Interpreter) handleChannelSend(gid int64, val Value, site string) 
 }
 
 // handleChannelRecv interprets a channel receive.
-func (interp *Interpreter) handleChannelRecv(gid int64, senderGID int64, site string) {
+// It merges the sender's clock from the channel state into the receiver's clock.
+func (interp *Interpreter) handleChannelRecv(gid int64, chanID ChanID, site string) {
 	if !interp.config.TrackRaces {
 		return
 	}
 
 	g := interp.goroutines[gid]
-	sender := interp.goroutines[senderGID]
-	if sender != nil {
-		g.VClock.Merge(sender.VClock)
+	if ch, ok := interp.channels[chanID]; ok && ch.lastSenderGID != 0 {
+		for id, t := range ch.lastSenderClock {
+			if t > g.VClock.Clocks[id] {
+				g.VClock.Clocks[id] = t
+			}
+		}
 	}
 	g.VClock.Tick(gid)
 }

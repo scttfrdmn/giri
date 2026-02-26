@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-25
+
+### Added
+
+- **unsafe.Pointer Rule 1 – alignment check** (`pkg/interpreter/interpreter.go`):
+  `handleUnsafePointer` now accepts `targetType types.Type` and `valueID string`.
+  For `UnsafeOpFromPointer` (unsafe.Pointer → *T) it verifies that the pointer's
+  byte offset is divisible by `types.Sizes.Alignof(T)`, firing `RuleConversion`
+  when misaligned.
+- **unsafe.Pointer Rule 2 – uintptr GC point tracking** (`pkg/detector/detector.go`,
+  `pkg/interpreter/exec.go`):
+  - `UnsafeDetector.ClearAllUintptrConversions()` clears all pending uintptr entries.
+  - `Registry` gains `unsafeDetector *UnsafeDetector` field extracted in `NewRegistry`;
+    four delegation methods added: `RecordUintptrConversion`, `ClearUintptrConversion`,
+    `ClearAllUintptrConversions`, `CheckGCPoint`.
+  - `execCall` calls `registry.CheckGCPoint(site)` before every non-builtin function
+    call; any live uintptr at that point fires `RuleUintptr`.
+  - `UnsafeOpToUintptr` in `handleUnsafePointer` now calls `registry.RecordUintptrConversion`.
+  - `UnsafeOpArithmetic` (uintptr → unsafe.Pointer) now calls `registry.ClearAllUintptrConversions`.
+- **Channel happens-before tracking** (`pkg/interpreter/interpreter.go`, `exec.go`):
+  Added `ChanID` type, `chanEntry` struct (stores sender GID + clock snapshot),
+  `channels map[ChanID]*chanEntry`, `nextChanID atomic.Uint64`, and `createChannel()`.
+  `MakeChan` now allocates a real `ChanID`; `Send` extracts the `ChanID` and records
+  the sender's vector clock via `handleChannelSend`; channel receive (`<-ch`) extracts
+  the `ChanID` and merges the sender's clock via `handleChannelRecv`.
+- **Integration tests** (3 new programs in `testdata/integration/`):
+  - `uintptr_gc` — uintptr survives to a function call (GC point); expects 1 Rule 2
+    violation.
+  - `safe_uintptr` — uintptr immediately converted back, no intervening call; expects
+    0 violations.
+  - `misaligned_ptr` — unsafe.Add offset 1, convert to `*uint32`; expects 1 Rule 1
+    violation.
+
+### Changed
+
+- `handleUnsafePointer` signature extended with `targetType types.Type, valueID string`.
+- `handleChannelSend` signature changed from `(gid, val, site)` to `(gid, chanID, val, site)`.
+- `handleChannelRecv` signature changed from `(gid, senderGID, site)` to `(gid, chanID, site)`.
+- `Registry.NewRegistry` now scans the detector list to extract the `*UnsafeDetector`
+  for direct delegation (no public API change).
+
 ## [0.2.0] - 2026-02-25
 
 ### Added
@@ -93,5 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the missing import for `github.com/scttfrdmn/giri/pkg/report`.
 - Generated `go.sum` via `go mod tidy`.
 
-[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/scttfrdmn/giri/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/scttfrdmn/giri/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/scttfrdmn/giri/releases/tag/v0.1.0
