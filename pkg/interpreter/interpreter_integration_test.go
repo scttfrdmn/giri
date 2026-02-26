@@ -156,6 +156,121 @@ var integrationTests = []struct {
 	},
 }
 
+var showcaseTests = []struct {
+	name           string
+	dir            string
+	wantViolations int
+	wantCategory   string
+	config         interpreter.Config
+}{
+	{
+		// unsafe.Add moves pointer past end of [4]byte allocation.
+		// go vet: pass, go test -race: pass.
+		name:           "unsafe oob",
+		dir:            "unsafe_oob",
+		wantViolations: 1,
+		wantCategory:   "out-of-bounds",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		// Converts *byte at offset 1 to *uint32 (requires 4-byte alignment).
+		// go vet: pass, go test -race: pass.
+		name:           "unsafe alignment",
+		dir:            "unsafe_alignment",
+		wantViolations: 1,
+		wantCategory:   "rule 1",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		// uintptr held across doWork() GC safepoint.
+		// go vet: pass, go test -race: pass.
+		name:           "uintptr gc hazard",
+		dir:            "uintptr_gc_hazard",
+		wantViolations: 1,
+		wantCategory:   "rule 2",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		// Reads new(AuthToken).value[0] before any write (TrackInit mode).
+		// go vet: pass, go test -race: pass.
+		name: "uninit read",
+		dir:  "uninit_read",
+		config: func() interpreter.Config {
+			c := interpreter.DefaultConfig()
+			c.TrackInit = true
+			return c
+		}(),
+		wantViolations: 1,
+		wantCategory:   "uninitialized",
+	},
+	{
+		// getPort("ftp") dereferences nil from map miss.
+		// go vet: pass, go test -race: pass if "ftp" path not covered.
+		name:           "nil deref",
+		dir:            "nil_deref",
+		wantViolations: 1,
+		wantCategory:   "nil pointer",
+		config:         interpreter.DefaultConfig(),
+	},
+}
+
+// TestShowcase validates that each showcase program produces the expected
+// violation. These programs compile and pass go vet and go test -race, but
+// Giri detects a bug via static SSA interpretation.
+func TestShowcase(t *testing.T) {
+	for _, tt := range showcaseTests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			wd, err := os.Getwd()
+			if err != nil {
+				t.Skipf("could not get working directory: %v", err)
+			}
+			// Showcase programs live at project_root/testdata/showcase/
+			absPath := filepath.Join(wd, "..", "..", "testdata", "showcase", tt.dir)
+
+			prog, err := ssautil.LoadProgram(absPath)
+			if err != nil {
+				t.Skipf("skipping %s: could not load program: %v", tt.name, err)
+				return
+			}
+			if prog.Main == nil {
+				t.Skipf("skipping %s: no main package found", tt.name)
+				return
+			}
+
+			result := interpreter.Run(prog, tt.config)
+			gotViolations := len(result.Violations)
+
+			if tt.wantViolations == 0 {
+				if gotViolations != 0 {
+					t.Errorf("want 0 violations, got %d:", gotViolations)
+					for _, v := range result.Violations {
+						t.Logf("  - %v", v)
+					}
+				}
+			} else {
+				if gotViolations < tt.wantViolations {
+					t.Errorf("want >= %d violations, got %d", tt.wantViolations, gotViolations)
+					t.Logf("  violations: %v", result.Violations)
+				}
+			}
+
+			if tt.wantCategory != "" {
+				found := false
+				for _, v := range result.Violations {
+					if strings.Contains(v.Error(), tt.wantCategory) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("want violation containing %q, got: %v", tt.wantCategory, result.Violations)
+				}
+			}
+		})
+	}
+}
+
 func TestIntegration(t *testing.T) {
 	for _, tt := range integrationTests {
 		tt := tt
