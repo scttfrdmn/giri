@@ -32,6 +32,7 @@ import (
 	"github.com/scttfrdmn/giri/pkg/detector"
 	"github.com/scttfrdmn/giri/pkg/scheduler"
 	"github.com/scttfrdmn/giri/pkg/shadow"
+	"github.com/scttfrdmn/safearena"
 )
 
 // Value represents an interpreted value. It wraps a concrete Go value
@@ -235,6 +236,14 @@ type Interpreter struct {
 
 	// prog is the SSA program, used for interface method dispatch (LookupMethod).
 	prog *ssa.Program
+
+	// arena is a per-interpretation-run arena. Hot-path structs (Frame,
+	// Goroutine, SliceValue, shadow.Pointer) are arena-allocated here to
+	// reduce GC pressure during interpretation. Freed automatically by Run()
+	// via safearena.Scoped when the run completes.
+	//
+	// nil in unit tests that construct Interpreter directly via New().
+	arena *safearena.Arena
 }
 
 // Config controls interpreter behavior.
@@ -351,6 +360,79 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 	return interp
 }
 
+// newWithArena is like New but wires a per-run safearena.Arena into the
+// interpreter and shadow memory system. All hot-path struct allocations
+// (Frame, Goroutine, SliceValue, shadow.Pointer) are arena-backed for the
+// duration of the run, which keeps them off the GC heap and eliminates
+// per-object tracing overhead.
+//
+// Called by Run() via safearena.Scoped; the arena is freed automatically
+// when Run() returns.
+func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Interpreter {
+	memOpts := []shadow.Option{shadow.WithPointerArena(a)}
+	if config.Verbose {
+		memOpts = append(memOpts, shadow.WithVerbose())
+	}
+	if config.TrackInit {
+		memOpts = append(memOpts, shadow.WithInitTracking())
+	}
+
+	interp := &Interpreter{
+		Memory:     shadow.NewMemory(memOpts...),
+		Fset:       fset,
+		goroutines: make(map[int64]*Goroutine),
+		channels:   make(map[ChanID]*chanEntry),
+		mutexes:    make(map[shadow.AllocID]*mutexState),
+		config:     config,
+		sizes:      types.SizesFor("gc", runtime.GOARCH),
+		arena:      a,
+	}
+
+	var dets []detector.Detector
+	if config.TrackArenas {
+		dets = append(dets, &detector.ArenaDetector{})
+	}
+	if config.TrackArenas || config.TrackUnsafe {
+		dets = append(dets, &detector.BoundsDetector{})
+	}
+	if config.TrackUnsafe {
+		dets = append(dets, detector.NewUnsafeDetector())
+	}
+	if config.TrackRaces {
+		dets = append(dets, detector.NewRaceDetector())
+	}
+	interp.registry = detector.NewRegistry(dets...)
+
+	switch config.ScheduleStrategy {
+	case ScheduleRoundRobin:
+		interp.sched = scheduler.NewRoundRobin()
+	case ScheduleRandom:
+		interp.sched = scheduler.NewRandom(config.RandomSeed)
+	case SchedulePCT:
+		interp.sched = scheduler.NewPCT(config.RandomSeed, config.BugDepth)
+	default:
+		interp.sched = scheduler.NewRoundRobin()
+	}
+
+	return interp
+}
+
+// arenaNew allocates a value of type T in the interpreter's per-run arena
+// and returns a raw *T. If no arena is configured (unit tests, or arena
+// support unavailable) it falls back to regular heap allocation.
+//
+// Usage: frame := arenaNew(interp.arena, Frame{FuncName: fn})
+//
+// The returned pointer is valid for the lifetime of the arena (i.e., the
+// entire Run() call). Do not retain it past Run().
+func arenaNew[T any](a *safearena.Arena, val T) *T {
+	if a == nil {
+		v := val
+		return &v
+	}
+	return safearena.Alloc(a, val).Get()
+}
+
 // Violations returns all UB violations detected during interpretation.
 func (interp *Interpreter) Violations() []error {
 	return interp.violations
@@ -371,16 +453,21 @@ func (interp *Interpreter) spawnGoroutine(funcName, site string) (int64, error) 
 		return 0, fmt.Errorf("goroutine limit reached (%d)", interp.config.MaxGoroutines)
 	}
 
-	g := &Goroutine{
+	// Arena-allocate the initial frame and goroutine struct. These are
+	// hot allocations: every goroutine spawn (ssa.Go) and every interpreter
+	// start goes through here.
+	initialFrame := arenaNew(interp.arena, Frame{
+		FuncName: funcName,
+		Site:     site,
+	})
+	initialFrame.Locals = make(map[string]Value)
+
+	g := arenaNew(interp.arena, Goroutine{
 		ID:     id,
 		Status: GoroutineRunning,
 		VClock: NewVectorClock(id),
-		Stack: []*Frame{{
-			FuncName: funcName,
-			Site:     site,
-			Locals:   make(map[string]Value),
-		}},
-	}
+		Stack:  []*Frame{initialFrame},
+	})
 
 	interp.goroutines[id] = g
 	return id, nil
@@ -400,12 +487,12 @@ func (interp *Interpreter) pushFrame(gid int64, funcName, site string) *Frame {
 	g := interp.goroutines[gid]
 	caller := interp.currentFrame(gid)
 
-	frame := &Frame{
+	frame := arenaNew(interp.arena, Frame{
 		FuncName: funcName,
 		Site:     site,
 		Locals:   make(map[string]Value),
 		Caller:   caller,
-	}
+	})
 	g.Stack = append(g.Stack, frame)
 	return frame
 }
@@ -451,10 +538,10 @@ func (interp *Interpreter) handleAlloc(gid int64, typeName, site string, isArena
 		allocID = interp.Memory.Allocate(shadow.AllocHeap, typeSize, typeName, site)
 	}
 
-	ptr := &shadow.Pointer{
+	ptr := arenaNew(interp.arena, shadow.Pointer{
 		Alloc:  allocID,
 		Offset: 0,
-	}
+	})
 
 	return Value{
 		Raw:        ptr,

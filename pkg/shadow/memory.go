@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+
+	"github.com/scttfrdmn/safearena"
 )
 
 // AllocID uniquely identifies an allocation across the program lifetime.
@@ -134,6 +136,13 @@ type Memory struct {
 	// Configuration
 	verbose   bool // Track access logs
 	trackInit bool // Track initialization state per byte
+
+	// ptrArena, when non-nil, arena-allocates every Pointer created by
+	// DerivePointer. This is the hottest allocation site in the interpreter
+	// (~1M+ Pointer structs per run). The caller must ensure the arena
+	// outlives all derived pointers — Run() satisfies this by scoping the
+	// arena to the full interpretation run.
+	ptrArena *safearena.Arena
 }
 
 // NewMemory creates a new shadow memory system.
@@ -160,6 +169,17 @@ func WithVerbose() Option {
 // WithInitTracking enables per-byte initialization tracking.
 func WithInitTracking() Option {
 	return func(m *Memory) { m.trackInit = true }
+}
+
+// WithPointerArena configures the Memory to arena-allocate Pointer structs via
+// DerivePointer. This is the single highest-impact arena adoption point: derived
+// Pointers are created for every field access, index operation, and pointer
+// arithmetic step in the interpreted program.
+//
+// The provided arena must outlive the Memory instance. The standard pattern is
+// to pass the per-Run arena created in interpreter.Run().
+func WithPointerArena(a *safearena.Arena) Option {
+	return func(m *Memory) { m.ptrArena = a }
 }
 
 // --- Allocation Lifecycle ---
@@ -303,12 +323,21 @@ func (m *Memory) GetProvenance(valueID string) (*Pointer, bool) {
 
 // DerivePointer creates a new pointer derived from an existing one
 // (e.g., via pointer arithmetic or field access).
+//
+// When a pointer arena has been configured via WithPointerArena, the Pointer
+// struct is arena-allocated (no GC overhead). This is the hottest allocation
+// site in Giri — called for every field access, index operation, and slice
+// reslice in the interpreted program.
 func (m *Memory) DerivePointer(base *Pointer, offsetDelta int) *Pointer {
-	return &Pointer{
+	derived := Pointer{
 		Alloc:       base.Alloc,
 		Offset:      base.Offset + offsetDelta,
 		DerivedFrom: base,
 	}
+	if m.ptrArena != nil {
+		return safearena.Alloc(m.ptrArena, derived).Get()
+	}
+	return &derived
 }
 
 // --- Validation ---
