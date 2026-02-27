@@ -228,6 +228,28 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.11.0 regression tests
+	{
+		name:           "strings intercept",
+		dir:            "strings_intercept",
+		wantViolations: 1,
+		wantCategory:   "rule 1",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "strconv atoi",
+		dir:            "strconv_atoi",
+		wantViolations: 1,
+		wantCategory:   "rule 1",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "fmt sprintf",
+		dir:            "fmt_sprintf",
+		wantViolations: 1,
+		wantCategory:   "rule 1",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {

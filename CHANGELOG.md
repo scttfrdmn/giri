@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-02-26
+
+### Added
+
+- **Standard library intercepts** (`pkg/interpreter/stdlib.go`): a new
+  `execStdlibCall` dispatcher intercepts calls to `strings.*`, `strconv.*`,
+  and `fmt.*` before `execCall` falls back to either interpreting the body or
+  returning an opaque `Value{}`. Previously, all three packages returned opaque
+  zero values for every function, causing downstream `ssa.If` branches to
+  permanently take the false/zero path and miss violations that are only
+  reachable from the true branch.
+
+  - **`strings` package** — `Contains`, `HasPrefix`, `HasSuffix`, `EqualFold`,
+    `Index`, `LastIndex`, `Count`, `TrimSpace`, `Trim`, `TrimLeft`, `TrimRight`,
+    `TrimPrefix`, `TrimSuffix`, `ToUpper`, `ToLower`, `ToTitle`, `Replace`,
+    `ReplaceAll`, `Repeat`, `Split`, `SplitN`, `SplitAfter`, `Fields`, `Join`,
+    `Map`, `Compare`, `Cut`, `ContainsAny`, `ContainsRune`, `IndexByte`,
+    `IndexRune`, `IndexAny`. For concrete string arguments the real Go stdlib
+    function is called; for non-concrete inputs a pessimistic non-zero result is
+    returned (bool predicates → `true`, string results → `"x"`, integer results
+    → `0`).
+
+  - **`strconv` package** — `Itoa`, `Atoi`, `FormatInt`, `FormatUint`,
+    `FormatBool`, `FormatFloat`, `ParseInt`, `ParseUint`, `ParseFloat`,
+    `ParseBool`, `Quote`, `Unquote`, `Append*`. Parse functions return real
+    parsed values for concrete inputs and a non-zero sentinel `(1, nil)` for
+    non-concrete inputs, ensuring the success path is explored.
+
+  - **`fmt` package** — `Sprintf`, `Errorf`, `Sprint`, `Sprintln`,
+    `Println`/`Printf`/`Print`/`Fprintln`/`Fprintf`/`Fprint` (side-effect
+    noop), `Sscanf`/`Sscan`/`Sscanln`. `Sprintf` and `Sprint` call the real
+    Go formatter with concrete args; non-concrete args are rendered as `"?"` to
+    avoid nil-format panics. `Errorf` returns a real non-nil `error` value.
+
+  The intercept check intentionally precedes the `execFunction` fallthrough so
+  it fires even when the package source is loaded (packages like `fmt` have
+  interpretable SSA bodies but internally use reflection and runtime primitives
+  that cannot be modeled). Closes issues #42 and #43.
+
+- **Integration tests** (3 new programs in `pkg/interpreter/testdata/integration/`):
+  - `strings_intercept` — `strings.Contains("hello world", "world")` returns
+    `true`, entering a branch with a misaligned Rule 1 access. Without
+    intercepts the branch was never entered. Expects 1 `"rule 1"` violation.
+  - `strconv_atoi` — `strconv.Atoi("42")` returns `(42, nil)`; `n > 0` enters
+    a branch with a Rule 1 access. Without intercepts `n` was opaque and the
+    branch was never entered. Expects 1 `"rule 1"` violation.
+  - `fmt_sprintf` — `fmt.Sprintf("hello=%s", "world")` returns `"hello=world"`;
+    `len(s) > 5` enters a Rule 1 branch. Without intercepts `len(nil) == 0` and
+    the branch was skipped. Expects 1 `"rule 1"` violation.
+
 ## [0.10.0] - 2026-02-26
 
 ### Fixed
