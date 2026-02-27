@@ -256,6 +256,37 @@ func (e *GoroutineLeakError) Error() string {
 	)
 }
 
+// DeadlockError is reported when all goroutines are simultaneously blocked.
+// This is equivalent to Go's "all goroutines are asleep — deadlock!" panic.
+// It differs from GoroutineLeakError, which fires when main exits normally but
+// some goroutines are blocked; DeadlockError fires when NO goroutine has finished.
+type DeadlockError struct {
+	GoroutineCount int
+}
+
+func (e *DeadlockError) Error() string {
+	return fmt.Sprintf(
+		"deadlock: all goroutines are asleep — %d goroutine(s) blocked",
+		e.GoroutineCount,
+	)
+}
+
+// WaitGroupNegativeError is reported when a sync.WaitGroup counter goes below zero.
+// This happens when Done() is called more times than Add(), which panics at runtime
+// with "sync: negative WaitGroup counter".
+type WaitGroupNegativeError struct {
+	Site    string
+	GID     int64
+	Counter int // the value the counter reached (negative)
+}
+
+func (e *WaitGroupNegativeError) Error() string {
+	return fmt.Sprintf(
+		"waitgroup: negative WaitGroup counter (%d) (goroutine %d) at %s",
+		e.Counter, e.GID, e.Site,
+	)
+}
+
 // DoubleCloseError is reported when a channel is closed more than once.
 // In Go this panics at runtime: "close of closed channel".
 type DoubleCloseError struct {

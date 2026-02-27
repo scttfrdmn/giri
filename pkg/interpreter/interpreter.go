@@ -260,6 +260,7 @@ type mutexState struct {
 	locked          bool
 	lockGoroutine   int64
 	lastUnlockClock map[int64]uint64 // clock snapshot at last Unlock/Done
+	wgCounter       int              // WaitGroup counter; negative → violation (#57)
 }
 
 // goroutineTask holds a pending goroutine execution queued by ssa.Go.
@@ -1269,6 +1270,8 @@ func (interp *Interpreter) StackTrace(gid int64) string {
 // channel with no corresponding counterpart. A recv-blocked goroutine is not
 // a leak if a sender ran on that channel; a send-blocked goroutine is not a
 // leak if a receiver ran on that channel.
+// Also detects global deadlock: when ALL goroutines are blocked simultaneously
+// and none has finished (i.e. main itself is blocked, not just spawned goroutines).
 func (interp *Interpreter) checkGoroutineLeaks() []error {
 	var leaks []error
 	for _, g := range interp.goroutines {
@@ -1299,6 +1302,31 @@ func (interp *Interpreter) checkGoroutineLeaks() []error {
 			})
 		}
 	}
+
+	// Deadlock detection (#56): if ALL goroutines are blocked and none has
+	// finished, no goroutine can ever unblock the others — global deadlock.
+	// Distinguished from goroutine leak: leak = main finished, some blocked;
+	// deadlock = nobody finished (main is blocked too).
+	allBlocked := true
+	anyFinished := false
+	blocked := 0
+	for _, g := range interp.goroutines {
+		if g.Panicked {
+			continue // panicked goroutine is effectively dead
+		}
+		switch g.Status {
+		case GoroutineFinished:
+			anyFinished = true
+		case GoroutineBlocked:
+			blocked++
+		default: // GoroutineRunning — shouldn't happen at Finish() time
+			allBlocked = false
+		}
+	}
+	if allBlocked && blocked > 0 && !anyFinished {
+		leaks = append(leaks, &shadow.DeadlockError{GoroutineCount: blocked})
+	}
+
 	return leaks
 }
 
@@ -1369,11 +1397,20 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 		}
 
 	case "Done":
-		// WaitGroup.Done(): tick clock, store snapshot (mirrors Unlock semantics).
+		// WaitGroup.Done(): equivalent to Add(-1). Tick clock and snapshot it,
+		// then decrement the counter and check for negative (#57).
 		g.VClock.Tick(gid)
 		ms.lastUnlockClock = make(map[int64]uint64, len(g.VClock.Clocks))
 		for k, v := range g.VClock.Clocks {
 			ms.lastUnlockClock[k] = v
+		}
+		ms.wgCounter--
+		if ms.wgCounter < 0 {
+			interp.recordViolation(gid, &shadow.WaitGroupNegativeError{
+				Site:    site,
+				GID:     gid,
+				Counter: ms.wgCounter,
+			})
 		}
 
 	case "Wait":
@@ -1387,7 +1424,18 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 		}
 
 	case "Add":
-		// WaitGroup.Add(): no clock effect — just tracks the counter.
+		// WaitGroup.Add(delta): update the counter; negative → violation (#57).
+		if len(args) >= 2 {
+			delta := int(toInt64(args[1]))
+			ms.wgCounter += delta
+			if ms.wgCounter < 0 {
+				interp.recordViolation(gid, &shadow.WaitGroupNegativeError{
+					Site:    site,
+					GID:     gid,
+					Counter: ms.wgCounter,
+				})
+			}
+		}
 
 	case "Store", "Delete", "Swap", "CompareAndSwap", "CompareAndDelete":
 		// sync.Map write methods (#46): modeled as noop — the map is already

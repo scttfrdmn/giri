@@ -20,6 +20,11 @@ Each program in this directory demonstrates a class of bug that:
 | [`type_assert`](#type_assert) | ✅ pass | ✅ pass | ❌ type-assertion failure |
 | [`reflect_unsafe`](#reflect_unsafe) | ✅ pass | ✅ pass | ❌ unsafe-pointer rule 5 |
 | [`goroutine_leak`](#goroutine_leak) | ✅ pass | ✅ pass | ❌ goroutine leak |
+| [`deadlock`](#deadlock) | ✅ pass | ✅ pass | ❌ global deadlock |
+| [`wg_negative`](#wg_negative) | ✅ pass | ✅ pass | ❌ waitgroup negative counter |
+| [`pct_race`](#pct_race) | ✅ pass | ✅ pass | ❌ waitgroup (PCT only)\* |
+
+\*\* Requires `--runs N` flag (multi-run PCT scheduling).
 
 \* Requires `--track-init` flag.
 † Passes if the failing code path is not covered by tests.
@@ -263,6 +268,106 @@ VIOLATION goroutine-leak: goroutine 2 blocked on channel receive
   blocked at: goroutine_leak/main.go:14
   hint: Ensure every goroutine that reads from a channel has a corresponding
         sender, or use select with a default clause to avoid permanent blocking.
+```
+
+---
+
+## deadlock
+
+**File:** `deadlock/main.go`
+
+Both `main` and a spawned goroutine wait forever on the same channel.
+Nobody ever sends — all goroutines are simultaneously blocked.
+Go's runtime would print "all goroutines are asleep — deadlock!" and abort.
+
+```go
+func recv(ch chan int) { <-ch }
+
+func main() {
+    ch := make(chan int)
+    go recv(ch) // blocks forever
+    recv(ch)    // main also blocks — deadlock
+}
+```
+
+**Why `go vet` misses it:** channel operations are type-correct.
+**Why `-race` misses it:** no concurrent *data* access.
+**Why Giri catches it:** at finalization, every goroutine is in `GoroutineBlocked`
+state and none has finished. Giri recognizes the all-blocked condition as a global
+deadlock, distinct from a goroutine leak (where main exits normally).
+
+```
+$ giri ./testdata/showcase/deadlock
+VIOLATION deadlock: all goroutines are asleep — 2 goroutine(s) blocked
+  hint: Check for circular channel dependencies or missing sends.
+```
+
+---
+
+## wg_negative
+
+**File:** `wg_negative/main.go`
+
+A worker pool where the caller's cleanup code calls `Done()` one extra time.
+When the goroutine finishes and also calls `Done()`, the counter goes below zero
+and panics: `"sync: negative WaitGroup counter"`.
+
+```go
+func process(wg *sync.WaitGroup, id int) {
+    defer wg.Done()   // one Done for the goroutine
+    _ = id * 2
+}
+
+func main() {
+    var wg sync.WaitGroup
+    wg.Add(1)
+    go process(&wg, 42)
+    wg.Done()         // BUG: extra Done — total Dones = 2 for one Add
+    wg.Wait()
+}
+```
+
+**Why `go vet` misses it:** `Done()` is a valid method call.
+**Why `-race` misses it:** no concurrent unsynchronized data access.
+**Why Giri catches it:** Giri tracks the WaitGroup counter through every `Add`,
+`Done` call and reports when the counter goes negative.
+
+```
+$ giri ./testdata/showcase/wg_negative
+VIOLATION waitgroup: negative WaitGroup counter (-1) (goroutine 2) at ...
+  hint: Each Done() call must be matched by an Add(1).
+```
+
+---
+
+## pct_race
+
+**File:** `pct_race/main.go`
+
+A WaitGroup misuse that is invisible under the default round-robin schedule
+but discovered by PCT multi-run scheduling.
+
+`work()` (GID 2) calls `Done()` and `setup()` (GID 3) calls `Add(1)`.
+Round-robin always runs the higher-GID goroutine first: `setup()` runs before
+`work()`, the counter goes 0→1→0 — no violation. PCT randomizes priorities,
+so in some runs `work()` executes before `setup()`: the counter goes 0→-1 —
+WaitGroup negative counter violation.
+
+```go
+var wg sync.WaitGroup
+func setup() { wg.Add(1) }      // GID 3 — runs first with round-robin
+func work()  { wg.Done() }      // GID 2 — runs second with round-robin
+                                 //         BUT sometimes first with PCT → violation
+```
+
+**Why single-run Giri misses it:** round-robin always picks `setup()` first.
+**Why `RunN` finds it:** PCT tries different orderings; in the `work()`-first
+ordering, `Done()` decrements from 0 to -1.
+
+```
+$ giri --runs 20 ./testdata/showcase/pct_race
+VIOLATION waitgroup: negative WaitGroup counter (-1) (goroutine 2) at ...
+  hint: Each Done() call must be matched by an Add(1).
 ```
 
 ---

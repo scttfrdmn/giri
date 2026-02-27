@@ -67,6 +67,7 @@ var (
 	// Execution flags
 	flagMaxSteps      = flag.Uint64("max-steps", 10_000_000, "Maximum SSA instructions to execute")
 	flagMaxGoroutines = flag.Int("max-goroutines", 1000, "Maximum concurrent goroutines")
+	flagRuns          = flag.Int("runs", 1, "Number of PCT scheduling runs (>1 enables RunN multi-interleaving)")
 
 	// Mode flags
 	flagDump = flag.Bool("dump-ssa", false, "Dump SSA and exit (for debugging)")
@@ -114,8 +115,14 @@ func main() {
 	}
 
 	// Run interpretation
-	fmt.Fprintf(os.Stderr, "Interpreting with %s scheduler (seed=%d)...\n", *flagStrategy, *flagSeed)
-	result := interpreter.Run(prog, config)
+	var result *interpreter.RunResult
+	if *flagRuns > 1 {
+		fmt.Fprintf(os.Stderr, "Interpreting with PCT scheduler (%d runs, seed=%d)...\n", *flagRuns, *flagSeed)
+		result = interpreter.RunN(prog, config, *flagRuns, *flagSeed)
+	} else {
+		fmt.Fprintf(os.Stderr, "Interpreting with %s scheduler (seed=%d)...\n", *flagStrategy, *flagSeed)
+		result = interpreter.Run(prog, config)
+	}
 
 	// Build report
 	rpt := report.Build(result.Violations, &result.MemStats)

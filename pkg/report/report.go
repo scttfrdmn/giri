@@ -222,6 +222,24 @@ func classifyError(err error) Finding {
 				"permanent blocking.",
 		}
 
+	case *shadow.DeadlockError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "deadlock",
+			Message:  e.Error(),
+			Hint: "All goroutines are blocked. Check for circular channel dependencies, " +
+				"missing sends, or missing closes that leave receivers waiting forever.",
+		}
+
+	case *shadow.WaitGroupNegativeError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "waitgroup",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "Each Done() call must be matched by an Add(1). Check that Add is called before spawning goroutines and that Done is not called more times than Add.",
+		}
+
 	case *shadow.DoubleCloseError:
 		return Finding{
 			Severity: SeverityError,

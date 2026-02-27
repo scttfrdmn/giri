@@ -19,6 +19,7 @@ import (
 	"go/constant"
 	"go/token"
 	"go/types"
+	"math/rand"
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
@@ -142,6 +143,37 @@ func Run(prog *Program, config Config) *RunResult {
 			MemStats:   interp.Memory.Stats(),
 		}
 	})
+}
+
+// RunN interprets the program up to n times with randomized PCT scheduling,
+// returning the union of all violations found across interleavings (#50).
+//
+// Each run uses a fresh interpreter and a PCT scheduler seeded differently.
+// Violations are deduplicated by error string so that the same bug found in
+// multiple runs is reported only once. The union surface covers bugs that only
+// manifest under non-default goroutine orderings (e.g. a nil dereference that
+// requires goroutine B to execute before goroutine A).
+//
+// RunN is intended for concurrency-heavy programs. For single-goroutine programs,
+// Run is sufficient and faster.
+func RunN(prog *Program, config Config, n int, seed int64) *RunResult {
+	rng := rand.New(rand.NewSource(seed))
+	seen := make(map[string]bool)
+	var all []error
+	for i := 0; i < n; i++ {
+		c := config
+		c.ScheduleStrategy = SchedulePCT
+		c.RandomSeed = rng.Int63()
+		r := Run(prog, c)
+		for _, v := range r.Violations {
+			key := v.Error()
+			if !seen[key] {
+				seen[key] = true
+				all = append(all, v)
+			}
+		}
+	}
+	return &RunResult{Violations: all}
 }
 
 // execFunction interprets a single SSA function.

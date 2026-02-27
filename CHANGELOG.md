@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-02-27
+
+### Added
+
+- **Deadlock detection** (issue #56): `checkGoroutineLeaks` now distinguishes between
+  a goroutine leak (main exits normally, spawned goroutines blocked) and a global
+  deadlock (all goroutines blocked, none finished). A `shadow.DeadlockError` is emitted
+  when `allBlocked && blocked > 0 && !anyFinished`. The `GoroutineCount` field reports
+  how many goroutines are stuck. Mirrors Go runtime's "all goroutines are asleep —
+  deadlock!" message. New integration test: `deadlock` (1 violation, "deadlock").
+  New showcase: `testdata/showcase/deadlock`.
+
+- **WaitGroup negative counter detection** (issue #57): `mutexState` gains a `wgCounter int`
+  field. The `handleSyncCall` handler now tracks `Add(delta)` (increments) and `Done()`
+  (decrements, equivalent to `Add(-1)`). When the counter goes below zero a
+  `shadow.WaitGroupNegativeError` is recorded with the goroutine ID and site. Catches
+  both `wg.Done()` called without a prior `Add(1)` and extra `Done()` calls in deferred
+  cleanup. New integration test: `wg_negative` (1 violation, "waitgroup").
+  New showcase: `testdata/showcase/wg_negative`.
+
+- **PCT MultiRun — `RunN`** (issue #50): new exported function
+  `RunN(prog *Program, config Config, n int, seed int64) *RunResult` in
+  `pkg/interpreter/exec.go`. Runs the program `n` times, each with a fresh PCT
+  schedule derived from successive seeds. Violations are deduplicated by error string;
+  the first unique occurrence per class is returned. The `--runs N` CLI flag
+  (N > 1) activates `RunN` and implies PCT scheduling. `TestShowcase` is extended
+  to support `runs`/`seed` fields, using `RunN` when `runs > 0`.
+  New showcase: `testdata/showcase/pct_race` — a WaitGroup ordering bug that
+  round-robin scheduling always misses but PCT finds in ~41% of individual runs.
+
+- Two new error types in `pkg/shadow/errors.go`: `DeadlockError`, `WaitGroupNegativeError`.
+  Two new `classifyError` cases in `pkg/report/report.go`.
+
+- Closes issues #50, #56, #57.
+
 ## [0.14.0] - 2026-02-27
 
 ### Added

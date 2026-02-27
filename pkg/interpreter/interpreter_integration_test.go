@@ -286,6 +286,21 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.15.0 regression tests
+	{
+		name:           "deadlock",
+		dir:            "deadlock",
+		wantViolations: 1,
+		wantCategory:   "deadlock",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "wg negative",
+		dir:            "wg_negative",
+		wantViolations: 1,
+		wantCategory:   "waitgroup",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.14.0 regression tests
 	{
 		name:           "double close",
@@ -345,6 +360,8 @@ var showcaseTests = []struct {
 	wantViolations int
 	wantCategory   string
 	config         interpreter.Config
+	runs           int   // >0 → use RunN instead of Run
+	seed           int64 // seed for RunN
 }{
 	{
 		// unsafe.Add moves pointer past end of [4]byte allocation.
@@ -427,6 +444,42 @@ var showcaseTests = []struct {
 		wantCategory:   "goroutine leak",
 		config:         interpreter.DefaultConfig(),
 	},
+	{
+		// Both goroutines block on the same channel with no sender.
+		// go vet: pass, go test -race: pass.
+		// Giri: all goroutines are asleep — global deadlock.
+		name:           "deadlock",
+		dir:            "deadlock",
+		wantViolations: 1,
+		wantCategory:   "deadlock",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		// process() workers call Done() but the caller also calls Done(),
+		// driving the WaitGroup counter negative when goroutines finish.
+		// go vet: pass, go test -race: pass.
+		// Giri: intercepts Done() and detects counter < 0.
+		name:           "wg negative",
+		dir:            "wg_negative",
+		wantViolations: 1,
+		wantCategory:   "waitgroup",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		// work() calls Done() without a prior Add(). Round-robin always runs
+		// setup() (higher GID) first: Add(1) then Done → counter=0, no fault.
+		// PCT sometimes runs work() (lower GID) first: Done → counter=-1 →
+		// WaitGroup negative counter violation.
+		// go vet: pass, go test -race: pass.
+		// Giri + RunN: waitgroup negative counter found within PCT runs.
+		name:           "pct race",
+		dir:            "pct_race",
+		wantViolations: 1,
+		wantCategory:   "waitgroup",
+		config:         interpreter.DefaultConfig(),
+		runs:           20,
+		seed:           42,
+	},
 }
 
 // TestShowcase validates that each showcase program produces the expected
@@ -453,7 +506,12 @@ func TestShowcase(t *testing.T) {
 				return
 			}
 
-			result := interpreter.Run(prog, tt.config)
+			var result *interpreter.RunResult
+			if tt.runs > 0 {
+				result = interpreter.RunN(prog, tt.config, tt.runs, tt.seed)
+			} else {
+				result = interpreter.Run(prog, tt.config)
+			}
 			gotViolations := len(result.Violations)
 
 			if tt.wantViolations == 0 {
