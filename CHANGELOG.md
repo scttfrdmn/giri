@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-02-27
+
+### Added
+
+- **`bytes.*` intercepts** (issue #66): New `handleBytesCall` in `stdlib.go` mirrors
+  `handleStringsCall`. Covers 30+ functions: predicates (`Contains`, `HasPrefix`,
+  `HasSuffix`, `Equal`, `EqualFold`), index functions (`Index`, `Count`, `LastIndex`),
+  transformers (`ToLower`, `ToUpper`, `TrimSpace`, `TrimPrefix`, `TrimSuffix`,
+  `Replace`, `ReplaceAll`, `Repeat`), splitters (`Split`, `Fields`), and combiners
+  (`Join`, `Cut`, `CutPrefix`, `CutSuffix`). `"bytes"` registered in `execStdlibCall`.
+
+- **`errors.*` intercepts** (issue #67): New `handleErrorsCall` in `stdlib.go`.
+  `errors.New(msg)` returns a real Go `error`; `errors.Is` compares error strings;
+  `errors.As` returns `false` (conservative); `errors.Unwrap` returns nil;
+  `errors.Join` returns the first non-nil error. `"errors"` registered in
+  `execStdlibCall`.
+
+- **`sort.*` intercepts** (issue #68): New `handleSortCall(gid, name, args, site)` in
+  `stdlib.go`. `sort.Slice` and `sort.SliceStable` probe the comparator with `(0, 1)`
+  to surface violations in user callbacks. `sort.Search` probes `f(n/2)`. `sort.Strings`,
+  `sort.Ints`, `sort.Float64s` are noops. `sort.Find` probes `cmp(0)`.
+  `execStdlibCall` signature extended with `gid int64` and `site string` to enable
+  callbacks; the one additional call site in `executeDeferred` updated accordingly.
+
+### Fixed
+
+- **`fmt` output function return values** (issue #65): `fmt.Printf`, `fmt.Println`,
+  `fmt.Print`, `fmt.Fprintf`, `fmt.Fprintln`, and `fmt.Fprint` now return
+  `(n=1, err=nil)` instead of an empty `Value{}`. Callers that check `err != nil`
+  or `n == 0` now take the correct non-error path.
+
+- **`sort` callback free-variable ordering**: `probeCallback` in `handleSortCall` was
+  prepending free variables before explicit params (wrong order). Fixed to append free
+  vars after params, matching `execFunction`'s binding convention.
+
+- **5 new integration tests**: `fmt_print_return`, `bytes_ops`, `errors_new`,
+  `sort_slice`, `sort_strings`. Total: 60 tests.
+
 ## [0.18.0] - 2026-02-27
 
 ### Added

@@ -17,12 +17,18 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+
+	"golang.org/x/tools/go/ssa"
 )
 
 // execStdlibCall intercepts standard library function calls in packages
-// "strings", "strconv", "fmt", "time", "os", and "math/rand".
-// Returns (result, true) when intercepted, (Value{}, false) otherwise.
-func (interp *Interpreter) execStdlibCall(pkgPath, name string, args []Value) (Value, bool) {
+// "strings", "strconv", "fmt", "time", "os", "math/rand", "bytes",
+// "errors", and "sort". Returns (result, true) when intercepted,
+// (Value{}, false) otherwise.
+//
+// gid and site are required by handlers that invoke user callbacks
+// (e.g. sort.Slice calls the less function via execFunction).
+func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string, args []Value) (Value, bool) {
 	switch pkgPath {
 	case "strings":
 		return interp.handleStringsCall(name, args)
@@ -36,6 +42,12 @@ func (interp *Interpreter) execStdlibCall(pkgPath, name string, args []Value) (V
 		return interp.handleOSCall(name, args)
 	case "math/rand":
 		return interp.handleMathRandCall(name, args)
+	case "bytes":
+		return interp.handleBytesCall(name, args)
+	case "errors":
+		return interp.handleErrorsCall(name, args)
+	case "sort":
+		return interp.handleSortCall(gid, name, args, site)
 	}
 	return Value{}, false
 }
@@ -402,8 +414,10 @@ func (interp *Interpreter) handleFmtCall(name string, args []Value) (Value, bool
 		return Value{Raw: fmt.Sprintln(valuesToInterfaces(args)...)}, true
 
 	case "Println", "Printf", "Print", "Fprintln", "Fprintf", "Fprint":
-		// Side-effecting output — no meaningful return value to model.
-		return Value{}, true
+		// Return (1, nil): 1 byte written, nil error (#65).
+		// Callers checking err != nil take the non-error path; callers
+		// checking n == 0 see a plausible non-zero byte count.
+		return Value{Raw: []Value{{Raw: int64(1)}, {}}}, true
 
 	case "Sscanf", "Sscan", "Sscanln":
 		// Return (0, nil): 0 items scanned, nil error.
@@ -575,6 +589,318 @@ func (interp *Interpreter) handleMathRandCall(name string, args []Value) (Value,
 		return Value{Raw: []Value{{Raw: n}, {}}}, true
 	case "NormFloat64", "ExpFloat64":
 		return Value{Raw: rng.NormFloat64()}, true
+	}
+	return Value{}, false
+}
+
+// handleBytesCall models bytes.* functions (#66).
+// Mirrors handleStringsCall: for concrete byte-slice arguments the equivalent
+// strings function is used (treating []byte as string); for opaque arguments
+// conservative/pessimistic values are returned.
+func (interp *Interpreter) handleBytesCall(name string, args []Value) (Value, bool) {
+	// Helper: extract bytes arg as string (best-effort; opaque if not concrete).
+	asStr := func(i int) (string, bool) {
+		if i >= len(args) {
+			return "", false
+		}
+		switch v := args[i].Raw.(type) {
+		case string:
+			return v, true
+		case []byte:
+			return string(v), true
+		}
+		return "", false
+	}
+	s0, s0ok := asStr(0)
+	s1, s1ok := asStr(1)
+
+	switch name {
+	// --- Predicates (return true conservatively when args are opaque) ---
+	case "Contains":
+		if s0ok && s1ok {
+			return Value{Raw: strings.Contains(s0, s1)}, true
+		}
+		return Value{Raw: true}, true
+	case "ContainsAny":
+		if s0ok && s1ok {
+			return Value{Raw: strings.ContainsAny(s0, s1)}, true
+		}
+		return Value{Raw: true}, true
+	case "ContainsRune":
+		return Value{Raw: true}, true
+	case "HasPrefix":
+		if s0ok && s1ok {
+			return Value{Raw: strings.HasPrefix(s0, s1)}, true
+		}
+		return Value{Raw: true}, true
+	case "HasSuffix":
+		if s0ok && s1ok {
+			return Value{Raw: strings.HasSuffix(s0, s1)}, true
+		}
+		return Value{Raw: true}, true
+	case "Equal":
+		if s0ok && s1ok {
+			return Value{Raw: s0 == s1}, true
+		}
+		return Value{Raw: true}, true
+	case "EqualFold":
+		if s0ok && s1ok {
+			return Value{Raw: strings.EqualFold(s0, s1)}, true
+		}
+		return Value{Raw: true}, true
+	case "Compare":
+		if s0ok && s1ok {
+			return Value{Raw: int64(strings.Compare(s0, s1))}, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	// --- Index functions (return 0 / non-negative for opaque args) ---
+	case "Count":
+		if s0ok && s1ok {
+			return Value{Raw: int64(strings.Count(s0, s1))}, true
+		}
+		return Value{Raw: int64(1)}, true
+	case "Index":
+		if s0ok && s1ok {
+			return Value{Raw: int64(strings.Index(s0, s1))}, true
+		}
+		return Value{Raw: int64(0)}, true
+	case "IndexAny":
+		if s0ok && s1ok {
+			return Value{Raw: int64(strings.IndexAny(s0, s1))}, true
+		}
+		return Value{Raw: int64(0)}, true
+	case "IndexByte":
+		return Value{Raw: int64(0)}, true
+	case "IndexRune":
+		return Value{Raw: int64(0)}, true
+	case "LastIndex":
+		if s0ok && s1ok {
+			return Value{Raw: int64(strings.LastIndex(s0, s1))}, true
+		}
+		return Value{Raw: int64(0)}, true
+	case "LastIndexAny":
+		if s0ok && s1ok {
+			return Value{Raw: int64(strings.LastIndexAny(s0, s1))}, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	// --- Transforming functions (return input unchanged for opaque args) ---
+	case "ToLower":
+		if s0ok {
+			return Value{Raw: []byte(strings.ToLower(s0))}, true
+		}
+		return Value{Raw: args[0].Raw}, true
+	case "ToUpper":
+		if s0ok {
+			return Value{Raw: []byte(strings.ToUpper(s0))}, true
+		}
+		return Value{Raw: args[0].Raw}, true
+	case "ToTitle":
+		if s0ok {
+			return Value{Raw: []byte(strings.ToTitle(s0))}, true
+		}
+		return Value{Raw: args[0].Raw}, true
+	case "Title":
+		if s0ok {
+			return Value{Raw: []byte(strings.Title(s0))}, true //nolint:staticcheck
+		}
+		return Value{Raw: args[0].Raw}, true
+	case "TrimSpace":
+		if s0ok {
+			return Value{Raw: []byte(strings.TrimSpace(s0))}, true
+		}
+		return Value{Raw: args[0].Raw}, true
+	case "Trim", "TrimLeft", "TrimRight":
+		if s0ok {
+			return Value{Raw: args[0].Raw}, true
+		}
+		return Value{Raw: args[0].Raw}, true
+	case "TrimFunc", "TrimLeftFunc", "TrimRightFunc", "Map":
+		return Value{Raw: args[0].Raw}, true
+	case "TrimPrefix":
+		if s0ok && s1ok {
+			return Value{Raw: []byte(strings.TrimPrefix(s0, s1))}, true
+		}
+		return Value{Raw: args[0].Raw}, true
+	case "TrimSuffix":
+		if s0ok && s1ok {
+			return Value{Raw: []byte(strings.TrimSuffix(s0, s1))}, true
+		}
+		return Value{Raw: args[0].Raw}, true
+	case "Replace":
+		if s0ok && s1ok {
+			s2, _ := asStr(2)
+			n := -1
+			if len(args) >= 4 {
+				n = int(toInt64(args[3]))
+			}
+			return Value{Raw: []byte(strings.Replace(s0, s1, s2, n))}, true
+		}
+		return Value{Raw: args[0].Raw}, true
+	case "ReplaceAll":
+		if s0ok && s1ok {
+			s2, _ := asStr(2)
+			return Value{Raw: []byte(strings.ReplaceAll(s0, s1, s2))}, true
+		}
+		return Value{Raw: args[0].Raw}, true
+	case "Repeat":
+		if s0ok {
+			n := 1
+			if len(args) >= 2 {
+				n = int(toInt64(args[1]))
+			}
+			return Value{Raw: []byte(strings.Repeat(s0, n))}, true
+		}
+		return Value{Raw: args[0].Raw}, true
+
+	// --- Splitting functions (return single-element slice for opaque args) ---
+	case "Split", "SplitN", "SplitAfter", "SplitAfterN":
+		if s0ok && s1ok {
+			parts := strings.Split(s0, s1)
+			vs := make([]Value, len(parts))
+			for i, p := range parts {
+				vs[i] = Value{Raw: []byte(p)}
+			}
+			return Value{Raw: vs}, true
+		}
+		return Value{Raw: []Value{args[0]}}, true
+	case "Fields":
+		if s0ok {
+			parts := strings.Fields(s0)
+			vs := make([]Value, len(parts))
+			for i, p := range parts {
+				vs[i] = Value{Raw: []byte(p)}
+			}
+			return Value{Raw: vs}, true
+		}
+		return Value{Raw: []Value{args[0]}}, true
+	case "Join":
+		return Value{Raw: args[0].Raw}, true
+	case "Cut":
+		if s0ok && s1ok {
+			before, after, found := strings.Cut(s0, s1)
+			return Value{Raw: []Value{{Raw: []byte(before)}, {Raw: []byte(after)}, {Raw: found}}}, true
+		}
+		return Value{Raw: []Value{args[0], {Raw: []byte{}}, {Raw: false}}}, true
+	case "CutPrefix":
+		if s0ok && s1ok {
+			after, found := strings.CutPrefix(s0, s1)
+			return Value{Raw: []Value{{Raw: []byte(after)}, {Raw: found}}}, true
+		}
+		return Value{Raw: []Value{args[0], {Raw: false}}}, true
+	case "CutSuffix":
+		if s0ok && s1ok {
+			before, found := strings.CutSuffix(s0, s1)
+			return Value{Raw: []Value{{Raw: []byte(before)}, {Raw: found}}}, true
+		}
+		return Value{Raw: []Value{args[0], {Raw: false}}}, true
+	case "Clone":
+		return Value{Raw: args[0].Raw}, true
+	}
+	return Value{}, false
+}
+
+// handleErrorsCall models errors.* functions (#67).
+func (interp *Interpreter) handleErrorsCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "New":
+		msg := "<error>"
+		if s, ok := stdlibArgString(args, 0); ok {
+			msg = s
+		}
+		return Value{Raw: fmt.Errorf("%s", msg)}, true //nolint:err113
+
+	case "Is":
+		// Conservative: compare error strings if both are concrete errors.
+		if len(args) >= 2 {
+			if args[0].Raw == nil && args[1].Raw == nil {
+				return Value{Raw: false}, true
+			}
+			e1, ok1 := args[0].Raw.(error)
+			e2, ok2 := args[1].Raw.(error)
+			if ok1 && ok2 {
+				return Value{Raw: e1.Error() == e2.Error()}, true
+			}
+			// One or both not concrete — conservatively return false (no match).
+		}
+		return Value{Raw: false}, true
+
+	case "As":
+		// Conservative: always return false (no unwrapping chain modelled).
+		return Value{Raw: false}, true
+
+	case "Unwrap":
+		// Conservative: no wrapping chain; return nil.
+		return Value{}, true
+
+	case "Join":
+		// errors.Join(errs ...error) — return first non-nil if any.
+		for _, a := range args {
+			if a.Raw != nil {
+				return Value{Raw: a.Raw}, true
+			}
+		}
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleSortCall models sort.* functions (#68).
+// For functions that accept a user callback (less func, f func), the callback
+// is probed once with representative arguments to surface any violations in it.
+func (interp *Interpreter) handleSortCall(gid int64, name string, args []Value, site string) (Value, bool) {
+	// probeCallback invokes a function-value arg at position argIdx with the
+	// given explicit callArgs. For closures, FreeVars follow the explicit params
+	// (matching how execFunction binds free variables: params[0..n-1] then freeVars[0..m-1]).
+	probeCallback := func(argIdx int, callArgs []Value) {
+		if argIdx >= len(args) {
+			return
+		}
+		switch fn := args[argIdx].Raw.(type) {
+		case *ssa.Function:
+			if fn.Blocks != nil {
+				interp.execFunction(gid, fn, callArgs)
+			}
+		case *ClosureValue:
+			// Params come first, then free vars (see execFunction param binding).
+			all := append(callArgs, fn.FreeVars...)
+			interp.execFunction(gid, fn.Fn, all)
+		}
+	}
+
+	switch name {
+	case "Slice", "SliceStable":
+		// Probe comparator with (0, 1) to detect violations in the callback.
+		probeCallback(1, []Value{{Raw: int64(0)}, {Raw: int64(1)}})
+		return Value{}, true
+
+	case "SliceIsSorted":
+		probeCallback(1, []Value{{Raw: int64(0)}, {Raw: int64(1)}})
+		return Value{Raw: true}, true
+
+	case "Search":
+		// sort.Search(n int, f func(int) bool) int: probe f with n/2.
+		n := int64(0)
+		if len(args) > 0 {
+			n = toInt64(args[0])
+		}
+		mid := n / 2
+		probeCallback(1, []Value{{Raw: mid}})
+		return Value{Raw: mid}, true
+
+	case "Strings", "Ints", "Float64s":
+		// Noop — sort in-place, no memory safety implications.
+		return Value{}, true
+
+	case "Sort", "Stable", "Reverse", "IsSorted":
+		// sort.Interface operations — noop.
+		return Value{}, true
+
+	case "Find":
+		// sort.Find(n int, cmp func(int) int) (int, bool): probe cmp with 0.
+		probeCallback(1, []Value{{Raw: int64(0)}})
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
 	}
 	return Value{}, false
 }

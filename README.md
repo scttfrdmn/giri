@@ -254,7 +254,7 @@ giri/
 - [x] Deferred call handling (`defer arena.Free()`)
 - [x] Goroutine spawning, closures, multi-return
 - [x] Report generation (text, JSON, SARIF)
-- [x] Integration test suite (55 tests)
+- [x] Integration test suite (60 tests)
 
 ### Phase 2: unsafe.Pointer Rules ✓
 - [x] Rule 1: Alignment verification at conversion sites
@@ -275,7 +275,7 @@ giri/
 
 ### Phase 4: Advanced
 - [x] Interprocedural analysis (follow calls across packages) — v0.17.0
-- [x] Standard library intercepts (`strings`, `strconv`, `fmt`, `time`, `os`, `math/rand`, `sync`) — v0.11–0.18
+- [x] Standard library intercepts (`strings`, `strconv`, `fmt`, `time`, `os`, `math/rand`, `sync`, `bytes`, `errors`, `sort`) — v0.11–0.19
 - [ ] `cgo` boundary checking
 - [ ] `reflect` package safety verification
 - [ ] `go:linkname` tracking

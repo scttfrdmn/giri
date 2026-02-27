@@ -1097,13 +1097,13 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 		}
 	}
 
-	// Intercept strings, strconv, and fmt stdlib calls (#42, #43).
+	// Intercept stdlib calls (#42, #43, #65-#68).
 	// These packages use reflect, runtime, and sync primitives that the
 	// interpreter cannot fully execute; we model their semantics directly.
 	// The check must precede execFunction so it fires even when source is loaded.
 	if callee != nil && callee.Package() != nil {
 		if pkg := callee.Package().Pkg; pkg != nil {
-			if result, ok := interp.execStdlibCall(pkg.Path(), callee.Name(), args); ok {
+			if result, ok := interp.execStdlibCall(gid, site, pkg.Path(), callee.Name(), args); ok {
 				return result
 			}
 		}

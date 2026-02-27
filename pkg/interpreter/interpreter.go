@@ -783,7 +783,7 @@ func (interp *Interpreter) executeDeferred(gid int64, d DeferredCall) {
 
 	// stdlib intercept (strings, strconv, fmt, time, …): modeled directly.
 	if d.PkgPath != "" && d.FuncName != "" && d.Callee != nil {
-		if _, ok := interp.execStdlibCall(d.PkgPath, d.FuncName, d.Args); ok {
+		if _, ok := interp.execStdlibCall(gid, d.Site, d.PkgPath, d.FuncName, d.Args); ok {
 			return
 		}
 	}
