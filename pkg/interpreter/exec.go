@@ -550,8 +550,15 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			concreteType = iv.Type
 		}
 
-		// If concreteType is unknown (not boxed via MakeInterface), be conservative.
-		ok := concreteType == nil || typeAssertSucceeds(concreteType, assertedType)
+		var ok bool
+		if concreteType == nil {
+			// Unknown concrete type (value not boxed via MakeInterface in this trace).
+			// CommaOk (type-switch chain): return false so we fall to the next case.
+			// Direct assertion: remain conservative (true) to avoid false-positive panics.
+			ok = !inst.CommaOk
+		} else {
+			ok = typeAssertSucceeds(concreteType, assertedType)
+		}
 
 		if inst.CommaOk {
 			if ok {

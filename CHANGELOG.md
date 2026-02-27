@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-02-26
+
+### Fixed
+
+- **`ssa.TypeAssert` nil-safe guard** (`pkg/interpreter/exec.go`): when the concrete type
+  of an interface value is unknown (i.e. the value was not boxed via `MakeInterface` in the
+  current trace, such as a nil interface variable), the old code returned `ok = true` for
+  every case in a type-switch chain. This caused the first typed case to always be taken,
+  regardless of the actual dynamic type. The fix distinguishes two contexts:
+  - **CommaOk = true** (type-switch chain): unknown concrete type → `ok = false`, allowing
+    execution to fall through to the next case or the default branch.
+  - **CommaOk = false** (direct type assertion): unknown concrete type → `ok = true`
+    (conservative), avoiding false-positive `TypeAssertionError` violations.
+  Closes issue #41.
+
+### Added
+
+- **Integration tests** (2 new programs in `pkg/interpreter/testdata/integration/`):
+  - `type_switch_dispatch` — 3-case type switch (`*Dog`, `*Cat`, `*Bird`) with all cases
+    exercised via known concrete types. Regression guard for correct multi-case dispatch.
+    Expects 0 violations.
+  - `type_switch_nil` — nil interface dispatched through a type switch whose first case
+    body contains an intentional misaligned `unsafe.Pointer` access (Rule 1). Without the
+    fix, nil would incorrectly enter the `*Dog` case and trigger a violation. With the fix,
+    nil correctly reaches the `default` branch. Expects 0 violations.
+
 ## [0.9.0] - 2026-02-26
 
 ### Added
