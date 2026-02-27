@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-02-27
+
+### Fixed
+
+- **`ssa.Index` string byte semantics** (issue #73): `s[i]` now returns the
+  **byte** at byte position `i` (Go's actual semantics). Previously the string
+  was converted to `[]rune` and indexed by rune position, which produced wrong
+  results for multibyte UTF-8 characters.
+
+- **`rangeIter.advance()` string byte offsets** (issue #73): `for i, r := range s`
+  now yields **byte offsets** as `i`. Fixed by replacing `[]rune` iteration with
+  `utf8.DecodeRuneInString` so each step advances by the byte width of the decoded
+  rune. Import `"unicode/utf8"` added to `exec.go`.
+
+- **`ssa.Convert` type conversions** (issue #74): New `convertValue` helper in
+  `exec.go` implements three previously-missing conversion patterns:
+  - `int`/`rune` → `string`: `string(65)` now produces `"A"` (not the integer)
+  - `string` → `[]byte`: `[]byte("hi")` now produces `{0x68,0x69}`
+  - `[]byte` → `string`: `string([]byte{…})` now produces the correct string
+  - `float64` → `int64` truncation and `int64` → `float64` promotion also corrected.
+  Called from the non-unsafe branch of `*ssa.Convert`.
+
+### Added
+
+- **`unicode/utf8` intercepts** (issue #75): New `handleUTF8Call` in `stdlib.go`.
+  `RuneCountInString`, `ValidString`, `ValidRune`, `RuneLen`, `EncodeRune`,
+  `DecodeRuneInString`, `DecodeLastRuneInString`, `FullRune*` all use the real
+  `unicode/utf8` functions for concrete args; return conservative values for opaque.
+
+- **`unicode` intercepts** (issue #75): New `handleUnicodeCall` in `stdlib.go`.
+  `IsLetter`, `IsDigit`, `IsSpace`, `IsUpper`, `IsLower`, `IsPunct`, `IsNumber`,
+  `IsGraphic`, `IsPrint` use real `unicode` functions for concrete rune args.
+  `ToLower`, `ToUpper`, `ToTitle`, `SimpleFold` convert concretely.
+  `"unicode/utf8"` and `"unicode"` registered in `execStdlibCall`.
+
+- **`context` package intercepts** (issue #76): New `handleContextCall` in
+  `stdlib.go`. `context.Background` and `context.TODO` return an opaque non-nil
+  value; `WithCancel`, `WithTimeout`, `WithDeadline`, `WithCancelCause` return
+  `(ctx, cancelFn)` tuples; `WithValue` returns an opaque context; `Err`, `Done`,
+  `Value`, `Deadline`, `Cause` return conservative nil/false values.
+  `"context"` registered in `execStdlibCall`.
+
+- **6 new integration tests** (issues #73–#76): `string_byte_index`,
+  `string_range_utf8`, `convert_string_rune`, `convert_bytes_string`,
+  `utf8_rune_count`, `context_basic`. Total: **71 tests**.
+
 ## [0.20.0] - 2026-02-27
 
 ### Added

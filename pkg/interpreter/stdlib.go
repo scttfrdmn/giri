@@ -18,6 +18,8 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -55,6 +57,12 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleRegexpCall(gid, name, args, site)
 	case "math":
 		return interp.handleMathCall(name, args)
+	case "unicode/utf8":
+		return interp.handleUTF8Call(name, args)
+	case "unicode":
+		return interp.handleUnicodeCall(name, args)
+	case "context":
+		return interp.handleContextCall(name, args)
 	}
 	return Value{}, false
 }
@@ -1417,6 +1425,259 @@ func (interp *Interpreter) handleMathCall(name string, args []Value) (Value, boo
 			}
 		}
 		return Value{Raw: float64(0)}, true
+	}
+	return Value{}, false
+}
+
+// handleUTF8Call models unicode/utf8.* functions (#75).
+// For concrete string/rune arguments the real utf8 function is called; otherwise
+// conservative non-zero values are returned to avoid blocking execution paths.
+func (interp *Interpreter) handleUTF8Call(name string, args []Value) (Value, bool) {
+	s0, s0ok := stdlibArgString(args, 0)
+	r0, r0ok := stdlibArgInt(args, 0)
+
+	switch name {
+	case "RuneCountInString":
+		if s0ok {
+			return Value{Raw: int64(utf8.RuneCountInString(s0))}, true
+		}
+		return Value{Raw: int64(1)}, true
+
+	case "RuneCount":
+		// RuneCount(p []byte) int — conservative.
+		return Value{Raw: int64(1)}, true
+
+	case "ValidString":
+		if s0ok {
+			return Value{Raw: utf8.ValidString(s0)}, true
+		}
+		return Value{Raw: true}, true
+
+	case "Valid":
+		return Value{Raw: true}, true
+
+	case "ValidRune":
+		if r0ok {
+			return Value{Raw: utf8.ValidRune(rune(r0))}, true
+		}
+		return Value{Raw: true}, true
+
+	case "RuneLen":
+		if r0ok {
+			return Value{Raw: int64(utf8.RuneLen(rune(r0)))}, true
+		}
+		return Value{Raw: int64(1)}, true
+
+	case "EncodeRune":
+		// EncodeRune(p []byte, r rune) int — return byte size of the rune.
+		r1, r1ok := stdlibArgInt(args, 1)
+		if r1ok {
+			return Value{Raw: int64(utf8.RuneLen(rune(r1)))}, true
+		}
+		return Value{Raw: int64(1)}, true
+
+	case "DecodeRuneInString":
+		// Returns (r rune, size int).
+		if s0ok && len(s0) > 0 {
+			r, size := utf8.DecodeRuneInString(s0)
+			return Value{Raw: []Value{{Raw: int64(r)}, {Raw: int64(size)}}}, true
+		}
+		return Value{Raw: []Value{{Raw: int64('?')}, {Raw: int64(1)}}}, true
+
+	case "DecodeRune":
+		// Returns (r rune, size int).
+		return Value{Raw: []Value{{Raw: int64('?')}, {Raw: int64(1)}}}, true
+
+	case "DecodeLastRuneInString":
+		if s0ok && len(s0) > 0 {
+			r, size := utf8.DecodeLastRuneInString(s0)
+			return Value{Raw: []Value{{Raw: int64(r)}, {Raw: int64(size)}}}, true
+		}
+		return Value{Raw: []Value{{Raw: int64('?')}, {Raw: int64(1)}}}, true
+
+	case "DecodeLastRune":
+		return Value{Raw: []Value{{Raw: int64('?')}, {Raw: int64(1)}}}, true
+
+	case "FullRune", "FullRuneInString":
+		return Value{Raw: true}, true
+
+	case "AppendRune":
+		// AppendRune(p []byte, r rune) []byte — conservative: return p unchanged.
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{Raw: []byte{}}, true
+
+	case "RuneError":
+		return Value{Raw: int64(utf8.RuneError)}, true
+
+	case "MaxRune":
+		return Value{Raw: int64(utf8.MaxRune)}, true
+
+	case "UTFMax":
+		return Value{Raw: int64(utf8.UTFMax)}, true
+	}
+	// Suppress unused variable warnings for r0/r0ok used only in some branches.
+	_ = r0
+	_ = r0ok
+	return Value{}, false
+}
+
+// handleUnicodeCall models unicode.* functions (#75).
+// Predicates return true conservatively; transforms pass through.
+func (interp *Interpreter) handleUnicodeCall(name string, args []Value) (Value, bool) {
+	r0, r0ok := stdlibArgInt(args, 0)
+
+	switch name {
+	case "IsLetter":
+		if r0ok {
+			return Value{Raw: unicode.IsLetter(rune(r0))}, true
+		}
+		return Value{Raw: true}, true
+
+	case "IsDigit":
+		if r0ok {
+			return Value{Raw: unicode.IsDigit(rune(r0))}, true
+		}
+		return Value{Raw: true}, true
+
+	case "IsSpace":
+		if r0ok {
+			return Value{Raw: unicode.IsSpace(rune(r0))}, true
+		}
+		return Value{Raw: true}, true
+
+	case "IsUpper":
+		if r0ok {
+			return Value{Raw: unicode.IsUpper(rune(r0))}, true
+		}
+		return Value{Raw: false}, true
+
+	case "IsLower":
+		if r0ok {
+			return Value{Raw: unicode.IsLower(rune(r0))}, true
+		}
+		return Value{Raw: true}, true
+
+	case "IsPunct":
+		if r0ok {
+			return Value{Raw: unicode.IsPunct(rune(r0))}, true
+		}
+		return Value{Raw: false}, true
+
+	case "IsNumber":
+		if r0ok {
+			return Value{Raw: unicode.IsNumber(rune(r0))}, true
+		}
+		return Value{Raw: true}, true
+
+	case "IsMark":
+		if r0ok {
+			return Value{Raw: unicode.IsMark(rune(r0))}, true
+		}
+		return Value{Raw: false}, true
+
+	case "IsControl":
+		if r0ok {
+			return Value{Raw: unicode.IsControl(rune(r0))}, true
+		}
+		return Value{Raw: false}, true
+
+	case "IsGraphic", "IsPrint":
+		if r0ok {
+			return Value{Raw: unicode.IsGraphic(rune(r0))}, true
+		}
+		return Value{Raw: true}, true
+
+	case "IsTitle":
+		if r0ok {
+			return Value{Raw: unicode.IsTitle(rune(r0))}, true
+		}
+		return Value{Raw: false}, true
+
+	case "ToLower":
+		if r0ok {
+			return Value{Raw: int64(unicode.ToLower(rune(r0)))}, true
+		}
+		return Value{Raw: r0}, true
+
+	case "ToUpper":
+		if r0ok {
+			return Value{Raw: int64(unicode.ToUpper(rune(r0)))}, true
+		}
+		return Value{Raw: r0}, true
+
+	case "ToTitle":
+		if r0ok {
+			return Value{Raw: int64(unicode.ToTitle(rune(r0)))}, true
+		}
+		return Value{Raw: r0}, true
+
+	case "In":
+		// unicode.In(r rune, ranges ...*RangeTable) bool — conservative.
+		return Value{Raw: true}, true
+
+	case "Is":
+		// unicode.Is(rangeTab *RangeTable, r rune) bool — conservative.
+		return Value{Raw: true}, true
+
+	case "SimpleFold":
+		if r0ok {
+			return Value{Raw: int64(unicode.SimpleFold(rune(r0)))}, true
+		}
+		return Value{Raw: r0}, true
+	}
+	_ = r0
+	_ = r0ok
+	return Value{}, false
+}
+
+// handleContextCall models context.* functions (#76).
+// context.Background/TODO return an opaque non-nil value so downstream
+// nil-checks on the context pass correctly.  WithCancel/WithTimeout/WithDeadline
+// return a (ctx, cancelFunc) tuple where both values are opaque non-nil.
+func (interp *Interpreter) handleContextCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+
+	switch name {
+	case "Background", "TODO":
+		return opaque, true
+
+	case "WithCancel":
+		// Returns (Context, CancelFunc).
+		return Value{Raw: []Value{opaque, opaque}}, true
+
+	case "WithTimeout", "WithDeadline":
+		// Returns (Context, CancelFunc).
+		return Value{Raw: []Value{opaque, opaque}}, true
+
+	case "WithValue":
+		// Returns Context (ignores key/value pair).
+		return opaque, true
+
+	case "WithCancelCause":
+		// Go 1.20+: returns (Context, CancelCauseFunc).
+		return Value{Raw: []Value{opaque, opaque}}, true
+
+	case "Cause":
+		// Returns nil error.
+		return Value{}, true
+
+	case "Done":
+		// ctx.Done() returns a nil channel (never fires in our model).
+		return Value{}, true
+
+	case "Err":
+		// ctx.Err() returns nil (no cancellation modelled).
+		return Value{}, true
+
+	case "Value":
+		// ctx.Value(key) returns nil (no value propagation modelled).
+		return Value{}, true
+
+	case "Deadline":
+		// ctx.Deadline() returns (zero time, false).
+		return Value{Raw: []Value{{}, {Raw: false}}}, true
 	}
 	return Value{}, false
 }

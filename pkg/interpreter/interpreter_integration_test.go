@@ -286,6 +286,49 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.21.0 regression tests
+	{
+		name:           "string byte index",
+		dir:            "string_byte_index",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "string range utf8",
+		dir:            "string_range_utf8",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "convert string rune",
+		dir:            "convert_string_rune",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "convert bytes string",
+		dir:            "convert_bytes_string",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "utf8 rune count",
+		dir:            "utf8_rune_count",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "context basic",
+		dir:            "context_basic",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.20.0 regression tests
 	{
 		name:           "min max builtins",

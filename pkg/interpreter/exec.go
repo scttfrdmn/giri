@@ -21,6 +21,7 @@ import (
 	"go/types"
 	"math/rand"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/tools/go/ssa"
 
@@ -436,9 +437,9 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 				frame.Locals[inst.Name()] = Value{}
 			}
 		case string:
-			runes := []rune(sv)
-			if idxInt >= 0 && idxInt < len(runes) {
-				frame.Locals[inst.Name()] = Value{Raw: int64(runes[idxInt])}
+			// s[i] returns the byte at byte position i (#73), not a rune.
+			if idxInt >= 0 && idxInt < len(sv) {
+				frame.Locals[inst.Name()] = Value{Raw: int64(sv[idxInt])}
 			} else {
 				frame.Locals[inst.Name()] = Value{}
 			}
@@ -926,7 +927,8 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			}
 			frame.Locals[inst.Name()] = result
 		} else {
-			frame.Locals[inst.Name()] = val
+			// Apply concrete type conversion for string↔bytes and numeric types (#74).
+			frame.Locals[inst.Name()] = convertValue(val, inst.X.Type(), inst.Type())
 		}
 
 	case *ssa.ChangeType:
@@ -1645,13 +1647,14 @@ func (ri *rangeIter) advance() (bool, Value, Value) {
 		ri.idx++
 		return true, k, Value{}
 	case string:
-		runes := []rune(sv)
-		if ri.idx >= len(runes) {
+		// for i, r := range s yields byte offsets as i (#73).
+		if ri.idx >= len(sv) {
 			return false, Value{}, Value{}
 		}
+		r, size := utf8.DecodeRuneInString(sv[ri.idx:])
 		k := Value{Raw: int64(ri.idx)}
-		v := Value{Raw: int64(runes[ri.idx])}
-		ri.idx++
+		v := Value{Raw: int64(r)}
+		ri.idx += size // advance by byte width of the rune
 		return true, k, v
 	case map[interface{}]Value:
 		// Lazily collect map keys on first advance so iteration order is stable.
@@ -1696,6 +1699,78 @@ func valueFromMapKey(mk interface{}) Value {
 		return Value{Raw: k}
 	}
 	return Value{Raw: fmt.Sprintf("%v", mk)}
+}
+
+// convertValue applies a Go type conversion to a Value (#74).
+// Handles the three common non-unsafe conversion patterns that would otherwise
+// silently produce wrong values:
+//   - integer / rune → string  (string(65) = "A")
+//   - string → []byte           ([]byte("hi") = {0x68, 0x69})
+//   - []byte → string           (string([]byte{0x68,0x69}) = "hi")
+//
+// For numeric conversions between integer types, Go semantics are emulated:
+//   - float → int  (truncation)
+//   - int → float  (exact promotion)
+//
+// All other conversions pass the value through unchanged (safe for our model).
+func convertValue(v Value, srcType, dstType types.Type) Value {
+	srcUnderlying := srcType.Underlying()
+	dstUnderlying := dstType.Underlying()
+
+	srcBasic, srcIsBasic := srcUnderlying.(*types.Basic)
+	dstBasic, dstIsBasic := dstUnderlying.(*types.Basic)
+
+	// integer / rune → string: string(65) = "A", string('€') = "€"
+	if srcIsBasic && dstIsBasic && dstBasic.Kind() == types.String {
+		if srcBasic.Info()&types.IsInteger != 0 {
+			return Value{Raw: string(rune(toInt64(v)))}
+		}
+	}
+
+	// string → []byte
+	if srcIsBasic && srcBasic.Kind() == types.String {
+		if dstSlice, ok := dstUnderlying.(*types.Slice); ok {
+			if elem, ok := dstSlice.Elem().Underlying().(*types.Basic); ok && elem.Kind() == types.Uint8 {
+				if s, ok := v.Raw.(string); ok {
+					return Value{Raw: []byte(s)}
+				}
+			}
+		}
+	}
+
+	// []byte → string
+	if srcSlice, ok := srcUnderlying.(*types.Slice); ok {
+		if elem, ok := srcSlice.Elem().Underlying().(*types.Basic); ok && elem.Kind() == types.Uint8 {
+			if dstIsBasic && dstBasic.Kind() == types.String {
+				switch b := v.Raw.(type) {
+				case []byte:
+					return Value{Raw: string(b)}
+				case []Value:
+					bs := make([]byte, len(b))
+					for i, bv := range b {
+						bs[i] = byte(toInt64(bv))
+					}
+					return Value{Raw: string(bs)}
+				}
+			}
+		}
+	}
+
+	// Numeric conversions between basic types.
+	if srcIsBasic && dstIsBasic {
+		// float → int truncation
+		if srcBasic.Info()&types.IsFloat != 0 && dstBasic.Info()&types.IsInteger != 0 {
+			if f, ok := v.Raw.(float64); ok {
+				return Value{Raw: int64(f)}
+			}
+		}
+		// int → float promotion
+		if srcBasic.Info()&types.IsInteger != 0 && dstBasic.Info()&types.IsFloat != 0 {
+			return Value{Raw: float64(toInt64(v))}
+		}
+	}
+
+	return v // all other conversions pass through unchanged
 }
 
 // typeAssertSucceeds reports whether a type assertion from concreteType to
