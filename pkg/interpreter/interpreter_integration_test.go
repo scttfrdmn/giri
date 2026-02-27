@@ -250,6 +250,42 @@ var integrationTests = []struct {
 		wantCategory:   "rule 1",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.12.0 regression tests
+	{
+		name:           "buffered chan overflow",
+		dir:            "buffered_chan_overflow",
+		wantViolations: 1,
+		wantCategory:   "goroutine leak",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "select default",
+		dir:            "select_default",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "select timeout",
+		dir:            "select_timeout",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "map race",
+		dir:            "map_race",
+		wantViolations: 1,
+		wantCategory:   "data race",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "sync map no race",
+		dir:            "sync_map_no_race",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {

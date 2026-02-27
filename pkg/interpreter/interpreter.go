@@ -165,6 +165,10 @@ type Goroutine struct {
 	// BlockChanID is the channel this goroutine is blocked on.
 	// Only meaningful when Status == GoroutineBlocked.
 	BlockChanID ChanID
+
+	// BlockOnSend is true when the goroutine blocked trying to send (vs. receive).
+	// Used by checkGoroutineLeaks to distinguish send-blocked from recv-blocked.
+	BlockOnSend bool
 }
 
 // GoroutineStatus tracks goroutine lifecycle.
@@ -225,6 +229,8 @@ type chanEntry struct {
 	closed          bool  // set by close(ch) (#31)
 	hasPending      bool  // a value has been sent but not yet received
 	pendingVal      Value // the pending value (for select readiness checks)
+	capacity     int  // buffered channel capacity (0 = unbuffered)
+	pendingCount int  // number of buffered values currently held (#44)
 }
 
 // mutexState tracks synchronization state for sync.Mutex and sync.WaitGroup (#33).
@@ -279,6 +285,11 @@ type Interpreter struct {
 	// Used by checkGoroutineLeaks: a goroutine blocked on channel C is only
 	// reported as leaked if no goroutine ever sent on C.
 	channelSenders map[ChanID]bool
+
+	// channelReceivers tracks channels that have had at least one receive.
+	// Used by checkGoroutineLeaks: a goroutine blocked on a send is not a leak
+	// if a receiver already consumed (or will consume) from that channel.
+	channelReceivers map[ChanID]bool
 
 	// Sync primitive state for sync.Mutex and sync.WaitGroup (#33).
 	// Key is the AllocID of the mutex/waitgroup's shadow memory allocation.
@@ -377,14 +388,15 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 	}
 
 	interp := &Interpreter{
-		Memory:         shadow.NewMemory(memOpts...),
-		Fset:           fset,
-		goroutines:     make(map[int64]*Goroutine),
-		channels:       make(map[ChanID]*chanEntry),
-		channelSenders: make(map[ChanID]bool),
-		mutexes:        make(map[shadow.AllocID]*mutexState),
-		config:         config,
-		sizes:          types.SizesFor("gc", runtime.GOARCH),
+		Memory:           shadow.NewMemory(memOpts...),
+		Fset:             fset,
+		goroutines:       make(map[int64]*Goroutine),
+		channels:         make(map[ChanID]*chanEntry),
+		channelSenders:   make(map[ChanID]bool),
+		channelReceivers: make(map[ChanID]bool),
+		mutexes:          make(map[shadow.AllocID]*mutexState),
+		config:           config,
+		sizes:            types.SizesFor("gc", runtime.GOARCH),
 	}
 
 	// Build detector registry from config flags
@@ -436,15 +448,16 @@ func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Inter
 	}
 
 	interp := &Interpreter{
-		Memory:         shadow.NewMemory(memOpts...),
-		Fset:           fset,
-		goroutines:     make(map[int64]*Goroutine),
-		channels:       make(map[ChanID]*chanEntry),
-		channelSenders: make(map[ChanID]bool),
-		mutexes:        make(map[shadow.AllocID]*mutexState),
-		config:         config,
-		sizes:          types.SizesFor("gc", runtime.GOARCH),
-		arena:          a,
+		Memory:           shadow.NewMemory(memOpts...),
+		Fset:             fset,
+		goroutines:       make(map[int64]*Goroutine),
+		channels:         make(map[ChanID]*chanEntry),
+		channelSenders:   make(map[ChanID]bool),
+		channelReceivers: make(map[ChanID]bool),
+		mutexes:          make(map[shadow.AllocID]*mutexState),
+		config:           config,
+		sizes:            types.SizesFor("gc", runtime.GOARCH),
+		arena:            a,
 	}
 
 	var dets []detector.Detector
@@ -922,9 +935,10 @@ func (interp *Interpreter) resolveArenaID(val Value) (shadow.ArenaID, bool) {
 }
 
 // createChannel allocates a new channel and returns its ChanID.
-func (interp *Interpreter) createChannel() ChanID {
+// capacity == 0 creates an unbuffered channel; capacity > 0 creates a buffered channel.
+func (interp *Interpreter) createChannel(capacity int) ChanID {
 	id := ChanID(interp.nextChanID.Add(1))
-	interp.channels[id] = &chanEntry{}
+	interp.channels[id] = &chanEntry{capacity: capacity}
 	return id
 }
 
@@ -976,15 +990,30 @@ func (interp *Interpreter) handleChannelClose(gid int64, chanID ChanID, site str
 
 // handleChannelSend interprets a channel send and checks for escapes.
 // It records the sender's vector clock in the channel state for happens-before propagation.
+// For buffered channels (capacity > 0): blocks the goroutine when the buffer is full.
 func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value, site string) {
 	g := interp.goroutines[gid]
 
 	// Check for send on closed channel (#31)
-	if ch, ok := interp.channels[chanID]; ok && ch.closed {
+	ch, ok := interp.channels[chanID]
+	if ok && ch.closed {
 		if g != nil {
 			g.Panicked = true
 		}
 		interp.recordViolation(gid, fmt.Errorf("send on closed channel at %s (goroutine %d)", site, gid))
+		return
+	}
+
+	// Buffered channel: block the goroutine if the buffer is full (#44)
+	if ok && ch.capacity > 0 && ch.pendingCount >= ch.capacity {
+		if g != nil {
+			g.Status = GoroutineBlocked
+			g.BlockSite = site
+			g.BlockChanID = chanID
+			g.BlockOnSend = true
+		}
+		// Still record that this channel has a sender.
+		interp.channelSenders[chanID] = true
 		return
 	}
 
@@ -993,7 +1022,7 @@ func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value
 		if g != nil {
 			g.VClock.Tick(gid)
 		}
-		if ch, ok := interp.channels[chanID]; ok {
+		if ok {
 			ch.lastSenderGID = gid
 			ch.lastSenderClock = make(map[int64]uint64, len(g.VClock.Clocks))
 			for k, v := range g.VClock.Clocks {
@@ -1001,13 +1030,19 @@ func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value
 			}
 			ch.hasPending = true
 			ch.pendingVal = val
+			if ch.capacity > 0 {
+				ch.pendingCount++
+			}
 		}
 	} else {
 		// Even without race tracking, mark the channel as having a pending value
 		// so goroutine leak detection works correctly (a receiver is not a leak
 		// if a sender exists, regardless of scheduling order).
-		if ch, ok := interp.channels[chanID]; ok {
+		if ok {
 			ch.hasPending = true
+			if ch.capacity > 0 {
+				ch.pendingCount++
+			}
 		}
 	}
 
@@ -1016,8 +1051,8 @@ func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value
 
 	// Check for arena pointer escape via channel
 	if interp.config.TrackArenas && val.Provenance != nil {
-		alloc, ok := interp.Memory.GetAllocation(val.Provenance.Alloc)
-		if ok && alloc.Kind == shadow.AllocArena {
+		alloc, allocOk := interp.Memory.GetAllocation(val.Provenance.Alloc)
+		if allocOk && alloc.Kind == shadow.AllocArena {
 			interp.recordViolation(gid, &shadow.EscapedPointerError{
 				AllocID:    alloc.ID,
 				ArenaID:    alloc.Arena,
@@ -1031,8 +1066,19 @@ func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value
 
 // handleChannelRecv interprets a channel receive.
 // It merges the sender's clock from the channel state into the receiver's clock.
+// For buffered channels, decrements pendingCount when a buffered value is consumed.
 func (interp *Interpreter) handleChannelRecv(gid int64, chanID ChanID, site string) {
+	// Track that this channel has had a receiver.
+	interp.channelReceivers[chanID] = true
+
 	if !interp.config.TrackRaces {
+		// Still decrement pendingCount for buffered channels (#44)
+		if ch, ok := interp.channels[chanID]; ok && ch.capacity > 0 && ch.pendingCount > 0 {
+			ch.pendingCount--
+			if ch.pendingCount == 0 {
+				ch.hasPending = false
+			}
+		}
 		return
 	}
 
@@ -1043,7 +1089,12 @@ func (interp *Interpreter) handleChannelRecv(gid int64, chanID ChanID, site stri
 				g.VClock.Clocks[id] = t
 			}
 		}
-		ch.hasPending = false // value consumed
+		if ch.capacity > 0 && ch.pendingCount > 0 {
+			ch.pendingCount--
+		}
+		if ch.pendingCount == 0 {
+			ch.hasPending = false // value consumed
+		}
 	}
 	g.VClock.Tick(gid)
 }
@@ -1069,27 +1120,38 @@ func (interp *Interpreter) StackTrace(gid int64) string {
 // --- Finalization ---
 
 // checkGoroutineLeaks reports goroutines that are permanently blocked on a
-// channel receive with no corresponding sender. A goroutine blocked on channel
-// C is only reported as a leak if no goroutine ever sent on C; if a sender
-// exists (regardless of scheduling order), the block is not flagged.
+// channel with no corresponding counterpart. A recv-blocked goroutine is not
+// a leak if a sender ran on that channel; a send-blocked goroutine is not a
+// leak if a receiver ran on that channel.
 func (interp *Interpreter) checkGoroutineLeaks() []error {
 	var leaks []error
 	for _, g := range interp.goroutines {
 		if g.Status != GoroutineBlocked {
 			continue
 		}
-		// If a sender ran on this channel (in any goroutine, at any point),
-		// this is not a leak — the scheduling order just happened to run the
-		// receiver first.
-		if g.BlockChanID != 0 && interp.channelSenders[g.BlockChanID] {
-			continue
+		if g.BlockOnSend {
+			// Goroutine is blocked trying to send. Not a leak if a receiver ran.
+			if g.BlockChanID != 0 && interp.channelReceivers[g.BlockChanID] {
+				continue
+			}
+			leaks = append(leaks, &shadow.GoroutineLeakError{
+				GID:       g.ID,
+				SpawnSite: g.SpawnSite,
+				BlockSite: g.BlockSite,
+				BlockKind: "channel send",
+			})
+		} else {
+			// Goroutine is blocked trying to receive. Not a leak if a sender ran.
+			if g.BlockChanID != 0 && interp.channelSenders[g.BlockChanID] {
+				continue
+			}
+			leaks = append(leaks, &shadow.GoroutineLeakError{
+				GID:       g.ID,
+				SpawnSite: g.SpawnSite,
+				BlockSite: g.BlockSite,
+				BlockKind: "channel receive",
+			})
 		}
-		leaks = append(leaks, &shadow.GoroutineLeakError{
-			GID:       g.ID,
-			SpawnSite: g.SpawnSite,
-			BlockSite: g.BlockSite,
-			BlockKind: "channel receive",
-		})
 	}
 	return leaks
 }
@@ -1180,6 +1242,17 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 
 	case "Add":
 		// WaitGroup.Add(): no clock effect — just tracks the counter.
+
+	case "Store", "Delete", "Swap", "CompareAndSwap", "CompareAndDelete":
+		// sync.Map write methods (#46): modeled as noop — the map is already
+		// tracked separately; intercepting here prevents false-positive races.
+
+	case "Load", "LoadOrStore", "LoadAndDelete":
+		// sync.Map read methods (#46): return (Value{}, false) tuple.
+		return Value{Raw: []Value{{}, {Raw: false}}}
+
+	case "Range":
+		// sync.Map.Range (#46): noop (can't iterate without concrete values).
 	}
 
 	return Value{}

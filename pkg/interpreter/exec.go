@@ -399,6 +399,12 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 	case *ssa.Lookup:
 		x := interp.resolveValue(frame, inst.X)
 		key := interp.resolveValue(frame, inst.Index)
+		// Race check on map read (#46): use the map's shadow provenance.
+		if x.Provenance != nil {
+			if _, rerr := interp.handleLoad(gid, x, 8, site); rerr != nil {
+				interp.recordViolation(gid, rerr)
+			}
+		}
 		if m, ok := x.Raw.(map[interface{}]Value); ok {
 			mk := toMapKey(key)
 			val, found := m[mk]
@@ -419,6 +425,12 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		m := interp.resolveValue(frame, inst.Map)
 		k := interp.resolveValue(frame, inst.Key)
 		v := interp.resolveValue(frame, inst.Value)
+		// Race check on map write (#46): use the map's shadow provenance.
+		if m.Provenance != nil {
+			if werr := interp.handleStore(gid, m, v, 8, site); werr != nil {
+				interp.recordViolation(gid, werr)
+			}
+		}
 		if mapVal, ok := m.Raw.(map[interface{}]Value); ok {
 			mapVal[toMapKey(k)] = v
 		}
@@ -519,10 +531,20 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		frame.Locals[inst.Name()] = Value{Raw: &ClosureValue{Fn: fn, FreeVars: freeVars}}
 
 	case *ssa.MakeMap:
-		frame.Locals[inst.Name()] = Value{Raw: make(map[interface{}]Value)}
+		// Allocate a shadow pointer for the map so race detection can track
+		// concurrent reads and writes to the same map (#46).
+		allocID := interp.Memory.Allocate(shadow.AllocHeap, 8, inst.Type().String(), site)
+		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
+		frame.Locals[inst.Name()] = Value{Raw: make(map[interface{}]Value), Provenance: ptr}
 
 	case *ssa.MakeChan:
-		chanID := interp.createChannel()
+		// Extract the channel capacity from the instruction operand (#44).
+		capVal := interp.resolveValue(frame, inst.Size)
+		capacity := int(toInt64(capVal))
+		if capacity < 0 {
+			capacity = 0
+		}
+		chanID := interp.createChannel(capacity)
 		frame.Locals[inst.Name()] = Value{Raw: chanID}
 
 	case *ssa.Range:
@@ -782,9 +804,15 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			if !inst.Blocking {
 				// Non-blocking: return the default case index
 				chosenIdx = int64(len(inst.States))
+			} else {
+				// Blocking select with no ready case: mark goroutine as blocked (#45).
+				g := interp.goroutines[gid]
+				if g != nil {
+					g.Status = GoroutineBlocked
+					g.BlockSite = site
+					// No single channel to blame; BlockChanID stays 0.
+				}
 			}
-			// Blocking with no ready case: deadlock in single-threaded model
-			// (leave chosenIdx=-1; caller handles the impossible branch)
 		}
 		frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: chosenIdx}, {Raw: recvOk}}}
 

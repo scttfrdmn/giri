@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-02-26
+
+### Added
+
+- **Buffered channel capacity modeling** (issue #44): `chanEntry` now tracks
+  `capacity` and `pendingCount` fields. `createChannel(capacity int)` accepts a
+  capacity argument, populated from the `ssa.MakeChan` operand. Send to a full
+  buffered channel marks the sending goroutine `GoroutineBlocked` with
+  `BlockOnSend = true`; `handleChannelRecv` decrements `pendingCount` when a
+  buffered value is consumed. `checkGoroutineLeaks` now reports both recv-blocked
+  and send-blocked goroutines, using `channelReceivers` (new, symmetric to
+  `channelSenders`) to suppress false positives.
+
+- **Blocking select goroutine detection** (issue #45): `ssa.Select` with
+  `inst.Blocking = true` and no ready case now marks the current goroutine
+  `GoroutineBlocked`, enabling goroutine-leak detection for select-blocked
+  goroutines.
+
+- **`time.After` / `time.Sleep` intercepts** (issue #45): `time.After` creates a
+  buffered channel (capacity 1) pre-populated with a pending value so select
+  timeout arms fire immediately without blocking. `time.Sleep`, `time.Now`,
+  `time.Since`, `time.Unix`, `time.NewTimer`, and `time.NewTicker` are modeled
+  as noops.
+
+- **Map race detection via shadow memory** (issue #46): `ssa.MakeMap` now
+  allocates a shadow `*Pointer` stored as the `Value.Provenance` of the map.
+  `ssa.Lookup` and `ssa.MapUpdate` call `handleLoad`/`handleStore` through the
+  race detector when the map has a shadow provenance, enabling vector-clock race
+  detection for unsynchronized concurrent map access.
+
+- **`sync.Map` noop intercepts** (issue #46): `handleSyncCall` now intercepts
+  `sync.Map` methods (`Store`, `Load`, `LoadOrStore`, `Delete`, `LoadAndDelete`,
+  `Range`, `Swap`, `CompareAndSwap`, `CompareAndDelete`) as noops, preventing
+  false-positive races on `sync.Map`-backed storage.
+
+- **Five new integration tests**:
+  - `buffered_chan_overflow` — goroutine blocked sending to a full buffered
+    channel with no receiver (1 violation, "goroutine leak")
+  - `select_default` — non-blocking select with default; no ready case takes
+    default without blocking (0 violations)
+  - `select_timeout` — blocking select with `time.After` arm; timeout fires
+    immediately via intercept (0 violations)
+  - `map_race` — two sibling goroutines writing to the same map without sync
+    (1 violation, "data race")
+  - `sync_map_no_race` — concurrent `sync.Map` access (0 violations)
+
+### Closes
+- Issue #44 (buffered channel capacity modeling)
+- Issue #45 (blocking select / time.After)
+- Issue #46 (map race detection / sync.Map)
+
 ## [0.11.0] - 2026-02-26
 
 ### Added

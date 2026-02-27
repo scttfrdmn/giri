@@ -19,11 +19,8 @@ import (
 )
 
 // execStdlibCall intercepts standard library function calls in packages
-// "strings", "strconv", and "fmt". Returns (result, true) when intercepted,
-// (Value{}, false) otherwise.
-//
-// Only fires when callee.Blocks == nil (external function); the caller guards
-// on this so we never shadow an interpretable body.
+// "strings", "strconv", "fmt", and "time". Returns (result, true) when
+// intercepted, (Value{}, false) otherwise.
 func (interp *Interpreter) execStdlibCall(pkgPath, name string, args []Value) (Value, bool) {
 	switch pkgPath {
 	case "strings":
@@ -32,6 +29,8 @@ func (interp *Interpreter) execStdlibCall(pkgPath, name string, args []Value) (V
 		return interp.handleStrconvCall(name, args)
 	case "fmt":
 		return interp.handleFmtCall(name, args)
+	case "time":
+		return interp.handleTimeCall(name, args)
 	}
 	return Value{}, false
 }
@@ -453,6 +452,28 @@ func stringsToValues(ss []string) []Value {
 		vs[i] = Value{Raw: s}
 	}
 	return vs
+}
+
+// handleTimeCall models time.* functions (#45).
+// time.After returns a channel that immediately has a value (simulates a fired timer).
+// time.Sleep is a noop.
+func (interp *Interpreter) handleTimeCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "After":
+		// Create a buffered channel with capacity 1 and pre-populate it so that
+		// any select case waiting on time.After fires immediately.
+		chanID := interp.createChannel(1)
+		if ch, ok := interp.channels[chanID]; ok {
+			ch.hasPending = true
+			ch.pendingCount = 1
+		}
+		interp.channelSenders[chanID] = true
+		return Value{Raw: chanID}, true
+	case "Sleep", "NewTimer", "NewTicker", "Since", "Now", "Unix":
+		// Noop — no side effects the interpreter needs to model.
+		return Value{}, true
+	}
+	return Value{}, false
 }
 
 // valuesToInterfaces converts []Value to []interface{} for real fmt.* calls.
