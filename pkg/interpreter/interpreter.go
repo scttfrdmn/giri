@@ -128,13 +128,27 @@ type Frame struct {
 
 	// Previous basic block (for Phi node resolution)
 	PrevBlock *ssa.BasicBlock
+
+	// ReturnInst holds the ssa.Return instruction so popFrame can re-evaluate
+	// named return values after executing deferred calls that may have modified
+	// named-return allocs (#49). Nil for functions without named returns.
+	ReturnInst *ssa.Return
 }
 
 // DeferredCall represents a deferred function invocation.
 type DeferredCall struct {
-	Fn   string  // Function name
-	Args []Value // Captured arguments
-	Site string  // Where defer was declared
+	// Callee is the resolved SSA function (nil for unresolved dynamic calls).
+	Callee *ssa.Function
+	// IsClosure is true when the call target is a closure value.
+	IsClosure bool
+	// ClosureVal holds the closure when IsClosure is true.
+	ClosureVal *ClosureValue
+	// PkgPath is the package path of the callee (e.g. "sync") for intercepted calls.
+	PkgPath string
+	// FuncName is the method/function name (e.g. "Unlock") for dispatching.
+	FuncName string
+	Args     []Value // Captured arguments
+	Site     string  // Where defer was declared
 }
 
 // Goroutine represents a single goroutine's execution state.
@@ -143,12 +157,20 @@ type Goroutine struct {
 	Stack  []*Frame // Call stack, top of stack = last element
 	Status GoroutineStatus
 
-	// Panicked is set when this goroutine has panicked or been halted
-	// (e.g. execution step limit exceeded). All subsequent instructions
-	// are skipped until the goroutine is removed from the run queue.
+	// Panicked is set when this goroutine has been halted by a fatal condition
+	// (violation-detected panic, step limit exceeded, or unrecovered ssa.Panic).
+	// All subsequent instructions are skipped.
 	Panicked bool
 
-	// PanicValue holds the value passed to panic(), used by recover() (#34).
+	// Panicking is set when an ssa.Panic is in-flight and defer unwinding is
+	// in progress. Unlike Panicked, Panicking can be cleared by recover() (#48).
+	Panicking bool
+
+	// Recovered is set by recover() to signal to popFrame that the current
+	// defer has caught the in-flight panic. Reset before each defer runs.
+	Recovered bool
+
+	// PanicValue holds the value passed to panic(), used by recover() (#34, #48).
 	PanicValue Value
 
 	// Vector clock for happens-before tracking
@@ -312,6 +334,11 @@ type Interpreter struct {
 	//
 	// nil in unit tests that construct Interpreter directly via New().
 	arena *safearena.Arena
+
+	// valueStore tracks the most recent value written through a pointer address.
+	// Keyed by AllocID. Used by popFrame to re-evaluate named return values after
+	// deferred closures may have modified named-return allocs (#49).
+	valueStore map[shadow.AllocID]Value
 }
 
 // Config controls interpreter behavior.
@@ -395,6 +422,7 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 		channelSenders:   make(map[ChanID]bool),
 		channelReceivers: make(map[ChanID]bool),
 		mutexes:          make(map[shadow.AllocID]*mutexState),
+		valueStore:       make(map[shadow.AllocID]Value),
 		config:           config,
 		sizes:            types.SizesFor("gc", runtime.GOARCH),
 	}
@@ -455,6 +483,7 @@ func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Inter
 		channelSenders:   make(map[ChanID]bool),
 		channelReceivers: make(map[ChanID]bool),
 		mutexes:          make(map[shadow.AllocID]*mutexState),
+		valueStore:       make(map[shadow.AllocID]Value),
 		config:           config,
 		sizes:            types.SizesFor("gc", runtime.GOARCH),
 		arena:            a,
@@ -595,29 +624,129 @@ func (interp *Interpreter) pushFrame(gid int64, funcName, site string) *Frame {
 }
 
 // popFrame pops the call frame, running deferred calls in LIFO order.
+// During panic unwinding (g.Panicking=true), each defer is given a chance
+// to call recover(). If recovery occurs, unwinding stops and execution
+// resumes normally in the caller (#48).
 func (interp *Interpreter) popFrame(gid int64) {
 	g := interp.goroutines[gid]
-	if len(g.Stack) == 0 {
+	if g == nil || len(g.Stack) == 0 {
 		return
 	}
 
 	frame := g.Stack[len(g.Stack)-1]
 
-	// Execute deferred calls in LIFO order
+	// Execute deferred calls in LIFO order.
 	for i := len(frame.Defers) - 1; i >= 0; i-- {
 		d := frame.Defers[i]
-		interp.executeDeferred(gid, d)
+		if g.Panicking {
+			// During panic unwind: temporarily clear Panicking so the deferred
+			// function can execute normally and potentially call recover().
+			g.Panicking = false
+			g.Recovered = false
+			interp.executeDeferred(gid, d)
+			if g.Recovered {
+				// recover() was called — panic is suppressed; stop unwinding.
+				g.Recovered = false
+				break
+			}
+			// recover() was not called. If a new panic fired inside the defer,
+			// g.Panicking is already true; otherwise restore it for the next defer.
+			if !g.Panicking {
+				g.Panicking = true
+			}
+		} else {
+			interp.executeDeferred(gid, d)
+		}
+	}
+
+	// Re-evaluate named return values if deferred closures may have modified
+	// named-return allocs (e.g. `func f() (err error) { defer func() { err = wrap(err) }() }`).
+	// Only applies when execution is NOT unwinding (g.Panicking would mean the
+	// return path was aborted by a panic that wasn't recovered in this frame).
+	if !g.Panicking && !g.Panicked && frame.ReturnInst != nil {
+		interp.recomputeNamedReturns(frame)
 	}
 
 	g.Stack = g.Stack[:len(g.Stack)-1]
 }
 
-// executeDeferred runs a single deferred call.
-func (interp *Interpreter) executeDeferred(gid int64, d DeferredCall) {
-	// Key: if this is arena.Free(), we need to poison all arena allocations
-	if strings.HasSuffix(d.Fn, ".Free") && len(d.Args) > 0 {
-		interp.handleArenaFree(gid, d)
+// recomputeNamedReturns re-evaluates the return values from a function's
+// ssa.Return instruction after deferred closures have run. For each result
+// that is a load from an alloc (named return variable), the latest value
+// from valueStore is used if available (#49).
+func (interp *Interpreter) recomputeNamedReturns(frame *Frame) {
+	ri := frame.ReturnInst
+	if ri == nil || interp.valueStore == nil {
+		return
 	}
+	newVals := make([]Value, len(ri.Results))
+	changed := false
+	for i, r := range ri.Results {
+		// Named return pattern: `t_n = *alloc_result; return t_n`
+		// In SSA, r is an *ssa.UnOp with Op=token.MUL (pointer dereference).
+		if unop, ok := r.(*ssa.UnOp); ok && unop.Op == token.MUL {
+			allocName := unop.X.Name()
+			if allocV, ok2 := frame.Locals[allocName]; ok2 && allocV.Provenance != nil {
+				if stored, ok3 := interp.valueStore[allocV.Provenance.Alloc]; ok3 {
+					newVals[i] = stored
+					changed = true
+					continue
+				}
+			}
+		}
+		// Fall back to the value captured at ssa.Return time.
+		if v, ok := frame.Locals[r.Name()]; ok {
+			newVals[i] = v
+		}
+	}
+	if !changed {
+		return
+	}
+	switch len(newVals) {
+	case 0:
+	case 1:
+		frame.Locals["__return__"] = newVals[0]
+	default:
+		frame.Locals["__return__"] = Value{Raw: newVals}
+	}
+}
+
+// executeDeferred runs a single deferred call, dispatching to the appropriate
+// handler: closure, sync package call, stdlib call, arena.Free, or general
+// SSA function (#47).
+func (interp *Interpreter) executeDeferred(gid int64, d DeferredCall) {
+	// Closure call: deferred anonymous function with captured free variables.
+	if d.IsClosure && d.ClosureVal != nil {
+		allArgs := append(d.Args, d.ClosureVal.FreeVars...)
+		interp.execFunction(gid, d.ClosureVal.Fn, allArgs)
+		return
+	}
+
+	// sync package: Unlock, Done, etc. — modeled as vector-clock updates.
+	if d.PkgPath == "sync" && d.FuncName != "" {
+		interp.handleSyncCall(gid, d.FuncName, d.Args, d.Site)
+		return
+	}
+
+	// stdlib intercept (strings, strconv, fmt, time, …): modeled directly.
+	if d.PkgPath != "" && d.FuncName != "" && d.Callee != nil {
+		if _, ok := interp.execStdlibCall(d.PkgPath, d.FuncName, d.Args); ok {
+			return
+		}
+	}
+
+	// arena.Free() special case: poisons arena allocations.
+	if d.Callee != nil && strings.HasSuffix(d.Callee.String(), ".Free") && len(d.Args) > 0 {
+		interp.handleArenaFree(gid, d)
+		return
+	}
+
+	// General SSA function with an interpretable body.
+	if d.Callee != nil && d.Callee.Blocks != nil {
+		interp.execFunction(gid, d.Callee, d.Args)
+		return
+	}
+	// Unresolved / external callee: silently ignore (can't interpret).
 }
 
 // --- Instruction Interpretation Stubs ---
@@ -672,6 +801,16 @@ func (interp *Interpreter) handleLoad(gid int64, addr Value, size int, site stri
 	if interp.registry != nil {
 		for _, rerr := range interp.registry.CheckAccess(interp.Memory, addr.Provenance, size, shadow.AccessRead, site, g.ID, g.VClock.Clocks) {
 			interp.recordViolation(gid, rerr)
+		}
+	}
+
+	// If a concrete value was stored at this address, return it. This provides
+	// proper load/store semantics for pointer indirection (e.g. **int loads,
+	// closure-captured variables, and named-return allocs). Only applies to
+	// offset-0 loads to avoid confusion with field/index addresses (#47, #49).
+	if addr.Provenance.Offset == 0 && interp.valueStore != nil {
+		if stored, ok := interp.valueStore[addr.Provenance.Alloc]; ok {
+			return stored, nil
 		}
 	}
 
@@ -737,6 +876,13 @@ func (interp *Interpreter) handleStore(gid int64, addr Value, val Value, size in
 			fmt.Sprintf("store@%s", site),
 			val.Provenance,
 		)
+	}
+
+	// Record the stored value for named-return defer re-evaluation (#49).
+	// Only track stores to offset 0 (scalar or the first field of a struct)
+	// to avoid clobbering struct-field tracking with partial writes.
+	if addr.Provenance != nil && addr.Provenance.Offset == 0 && interp.valueStore != nil {
+		interp.valueStore[addr.Provenance.Alloc] = val
 	}
 
 	return nil

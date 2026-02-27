@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-02-26
+
+### Fixed
+
+- **`executeDeferred` silently dropped non-arena deferred calls** (issue #47):
+  `DeferredCall` now carries a full callable reference (`Callee *ssa.Function`,
+  `IsClosure bool`, `ClosureVal *ClosureValue`, `PkgPath`, `FuncName`).
+  `executeDeferred` dispatches to: closure via `execFunction` with free-var
+  bindings, sync package via `handleSyncCall`, stdlib via `execStdlibCall`,
+  arena.Free, or general SSA function body. Previously all non-arena defers
+  were silently ignored.
+
+- **`ssa.MakeClosure` in `ssa.Defer` / `ssa.Go`** (part of issue #47): The SSA
+  library's `StaticCallee()` looks through `*ssa.MakeClosure` and returns the
+  underlying function, making `inst.Call.Args` appear empty. Both `ssa.Defer`
+  and `ssa.Go` handlers now detect `inst.Call.Value.(*ssa.MakeClosure)` and
+  extract the free-variable bindings from `mc.Bindings` directly, fixing
+  nil-pointer dereferences in deferred/goroutine closures that capture variables.
+
+- **Multi-level panic/recover broken** (issue #48): `ssa.Panic` previously
+  cleared the call stack eagerly before any deferred `recover()` could fire.
+  The interpreter now uses a lazy unwind model: `ssa.Panic` sets `g.Panicking`
+  and returns; the existing Go-level `defer interp.popFrame(gid)` in
+  `execFunction` handles per-frame unwinding. `popFrame` temporarily clears
+  `Panicking` before each deferred call so `recover()` can intercept it.
+  `recover()` sets `g.Recovered = true` to signal `popFrame` to stop unwinding.
+
+- **Named return values not updated by deferred functions** (issue #49): Added
+  `valueStore map[shadow.AllocID]Value` to the interpreter tracking the last
+  value written through each allocation. `handleStore` records every offset-0
+  store; `handleLoad` returns the stored value when available. After all defers
+  run, `recomputeNamedReturns` re-reads named-return allocs from `valueStore` so
+  the actual return value reflects deferred mutations.
+
+### Added
+
+- **Four new integration tests** (v0.13.0 regression suite):
+  - `defer_unlock` — deferred `sync.Mutex.Unlock()` dispatched via sync handler
+    (0 violations)
+  - `defer_user_func` — deferred named user function with pointer arg executed
+    via `execFunction` (0 violations)
+  - `multi_recover` — inner panic recovered by deferred `recover()` in outer
+    function; main continues normally (0 violations)
+  - `named_return_defer` — deferred closure multiplies named return value; result
+    reflects the deferred write (0 violations)
+
+### Closes
+- Issue #47 (executeDeferred silently drops non-arena deferred calls)
+- Issue #48 (multi-level panic/recover broken)
+- Issue #49 (named return values not updated by deferred functions)
+
 ## [0.12.0] - 2026-02-26
 
 ### Added

@@ -95,9 +95,16 @@ func Run(prog *Program, config Config) *RunResult {
 
 		if mainFn != nil {
 			interp.execFunction(mainGID, mainFn, nil)
-			// Mark main goroutine as finished if it completed normally.
-			if g := interp.goroutines[mainGID]; g != nil && g.Status == GoroutineRunning && !g.Panicked {
-				g.Status = GoroutineFinished
+			// Mark main goroutine as finished.
+			if g := interp.goroutines[mainGID]; g != nil && g.Status == GoroutineRunning {
+				if g.Panicking {
+					// Unrecovered panic propagated to the top — goroutine terminates.
+					g.Panicking = false
+					g.Panicked = true
+				}
+				if !g.Panicked {
+					g.Status = GoroutineFinished
+				}
 			}
 		}
 
@@ -113,8 +120,14 @@ func Run(prog *Program, config Config) *RunResult {
 					interp.runQueue = append(interp.runQueue[:i], interp.runQueue[i+1:]...)
 					interp.execFunction(t.gid, t.fn, t.args)
 					// Mark goroutine as finished if it completed normally (not blocked).
-					if g := interp.goroutines[t.gid]; g != nil && g.Status == GoroutineRunning && !g.Panicked {
-						g.Status = GoroutineFinished
+					if g := interp.goroutines[t.gid]; g != nil && g.Status == GoroutineRunning {
+						if g.Panicking {
+							g.Panicking = false
+							g.Panicked = true
+						}
+						if !g.Panicked {
+							g.Status = GoroutineFinished
+						}
 					}
 					break
 				}
@@ -163,7 +176,7 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 	block := fn.Blocks[0]
 	for block != nil {
 		g := interp.goroutines[gid]
-		if g != nil && (g.Panicked || g.Status == GoroutineBlocked) {
+		if g != nil && (g.Panicked || g.Panicking || g.Status == GoroutineBlocked) {
 			return Value{}
 		}
 		if f := interp.currentFrame(gid); f != nil {
@@ -190,8 +203,8 @@ func (interp *Interpreter) execBlock(gid int64, fn *ssa.Function, block *ssa.Bas
 	}
 
 	for _, instr := range block.Instrs {
-		// Stop if the goroutine has panicked or blocked on a channel receive.
-		if g := interp.goroutines[gid]; g != nil && (g.Panicked || g.Status == GoroutineBlocked) {
+		// Stop if the goroutine has panicked, is unwinding a panic, or is blocked.
+		if g := interp.goroutines[gid]; g != nil && (g.Panicked || g.Panicking || g.Status == GoroutineBlocked) {
 			return nil
 		}
 		next := interp.execInstruction(gid, fn, instr)
@@ -655,27 +668,23 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			// Multi-value return: store as a tuple Value for Extract to pick apart
 			frame.Locals["__return__"] = Value{Raw: retVals}
 		}
+		// Store the ssa.Return instruction so popFrame can re-evaluate named
+		// return values after deferred closures may have modified them (#49).
+		if frame != nil {
+			frame.ReturnInst = inst
+		}
 		return nil // End of function
 
 	case *ssa.Panic:
-		// Program panicked: run all deferred calls across the entire goroutine
-		// stack in LIFO order (innermost frame first), then halt the goroutine.
-		// This prevents false arena-leak reports when defer a.Free() was set up
-		// in a frame above the panic site (#20).
+		// Set the Panicking flag and store the panic value. Actual stack unwinding
+		// happens lazily: execFunction's block loop detects Panicking and exits,
+		// which triggers the Go-level `defer interp.popFrame(gid)` in execFunction.
+		// popFrame runs each frame's SSA defers, giving recover() a chance to fire
+		// before the goroutine is fully terminated (#48).
 		g := interp.goroutines[gid]
 		if g != nil {
-			// Store the panic value so recover() can retrieve it (#34).
 			g.PanicValue = interp.resolveValue(frame, inst.X)
-			for i := len(g.Stack) - 1; i >= 0; i-- {
-				f := g.Stack[i]
-				for j := len(f.Defers) - 1; j >= 0; j-- {
-					interp.executeDeferred(gid, f.Defers[j])
-				}
-				f.Defers = nil // prevent double-execution in popFrame
-			}
-			g.Stack = nil
-			g.Status = GoroutineFinished
-			g.Panicked = true
+			g.Panicking = true
 		}
 		return nil
 
@@ -688,13 +697,39 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		}
 
 	case *ssa.Defer:
-		// Record deferred call for execution when frame pops
-		d := DeferredCall{
-			Fn:   interp.callTargetName(inst.Call),
-			Site: site,
-		}
+		// Record deferred call for execution when frame pops.
+		// Resolve the callee exactly as ssa.Go does so executeDeferred can
+		// actually call the function (#47).
+		d := DeferredCall{Site: site}
 		for _, arg := range inst.Call.Args {
 			d.Args = append(d.Args, interp.resolveValue(frame, arg))
+		}
+		callee := inst.Call.StaticCallee()
+		// StaticCallee() looks through *ssa.MakeClosure to return the underlying
+		// function. When that happens, inst.Call.Args is empty and the free var
+		// bindings are in the MakeClosure node — we must extract them (#47).
+		if mc, ok := inst.Call.Value.(*ssa.MakeClosure); ok {
+			fn := mc.Fn.(*ssa.Function)
+			freeVars := make([]Value, len(mc.Bindings))
+			for i, binding := range mc.Bindings {
+				freeVars[i] = interp.resolveValue(frame, binding)
+			}
+			d.IsClosure = true
+			d.ClosureVal = &ClosureValue{Fn: fn, FreeVars: freeVars}
+		} else if callee == nil && !inst.Call.IsInvoke() {
+			// Dynamic call — check if the resolved value is a ClosureValue.
+			calleeVal := interp.resolveValue(frame, inst.Call.Value)
+			if cv, ok := calleeVal.Raw.(*ClosureValue); ok {
+				d.IsClosure = true
+				d.ClosureVal = cv
+			}
+		}
+		if callee != nil && !d.IsClosure {
+			d.Callee = callee
+			if callee.Package() != nil && callee.Package().Pkg != nil {
+				d.PkgPath = callee.Package().Pkg.Path()
+				d.FuncName = callee.Name()
+			}
 		}
 		frame.Defers = append(frame.Defers, d)
 
@@ -706,8 +741,17 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			args = append(args, interp.resolveValue(frame, arg))
 		}
 		callee := inst.Call.StaticCallee()
-		// If no static callee, check if the call value is a ClosureValue
-		if callee == nil {
+		// StaticCallee() looks through *ssa.MakeClosure to return the underlying
+		// function. When that happens inst.Call.Args is empty and free var bindings
+		// live in the MakeClosure node — extract them explicitly.
+		if mc, ok := inst.Call.Value.(*ssa.MakeClosure); ok {
+			fn := mc.Fn.(*ssa.Function)
+			callee = fn
+			for _, binding := range mc.Bindings {
+				args = append(args, interp.resolveValue(frame, binding))
+			}
+		} else if callee == nil {
+			// Dynamic call — check if the resolved value is a ClosureValue.
 			calleeVal := interp.resolveValue(frame, inst.Call.Value)
 			if cv, ok := calleeVal.Raw.(*ClosureValue); ok {
 				callee = cv.Fn
@@ -1121,13 +1165,17 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 		// panic() — just stop execution of this goroutine
 
 	case "recover":
-		// recover() implementation (#34): return the panic value if panicking,
-		// clear the panic state, and allow execution to resume.
+		// recover() implementation (#34, #48): return the panic value if a panic
+		// is in-flight (g.Panicking=true, set temporarily to false by popFrame
+		// before running each defer). Signal recovery via g.Recovered so popFrame
+		// stops unwinding after this defer returns.
 		g := interp.goroutines[gid]
-		if g != nil && g.Panicked && g.PanicValue.Raw != nil {
+		if g != nil && !g.Panicking && g.PanicValue.Raw != nil {
+			// popFrame cleared Panicking before calling this defer; the PanicValue
+			// still set indicates we are in a defer during panic unwinding.
 			v := g.PanicValue
-			g.Panicked = false
 			g.PanicValue = Value{}
+			g.Recovered = true
 			return v
 		}
 		return Value{}
