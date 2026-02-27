@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-02-27
+
+### Added
+
+- **Go 1.21+ `min()` and `max()` builtins** (issue #69): `execBuiltin` now handles
+  `"min"` and `"max"` (both variadic). Supports concrete `int64`, `float64`, and
+  `string` raw values; returns conservative `Value{}` for opaque arguments.
+
+- **Go 1.21+ `clear()` builtin** (issue #69): `execBuiltin` handles `"clear"` for
+  both maps (race-checks via `handleStore`, then empties the interpreter map) and
+  slices (race-checked no-op). Nil map/slice triggers `NilMapWriteError`, consistent
+  with `delete`.
+
+- **`encoding/json` intercepts** (issue #70): New `handleJSONCall` in `stdlib.go`.
+  `json.Marshal` / `json.MarshalIndent` return `([]byte, nil)`; `json.Unmarshal`
+  returns nil error; `json.NewDecoder` / `json.NewEncoder` return opaque values so
+  downstream method calls are intercepted; `json.Valid` returns true; multi-return
+  codec methods (`Decode`, `Encode`, `Token`) return conservative values.
+  `"encoding/json"` registered in `execStdlibCall`.
+
+- **`regexp` intercepts** (issue #71): New `handleRegexpCall` in `stdlib.go`.
+  `regexp.Compile` returns `(*Regexp, nil)`; `regexp.MustCompile` returns an opaque
+  Regexp; package-level `Match*` functions return `(true, nil)`; `*Regexp` method
+  calls (`MatchString`, `FindString`, `FindAllString`, `ReplaceAllString`,
+  `ReplaceAllStringFunc`, `Split`) return conservative values. `ReplaceAllStringFunc`
+  probes its callback to surface any violations inside it. `"regexp"` registered in
+  `execStdlibCall`.
+
+- **`math` package intercepts** (issue #72): New `handleMathCall` in `stdlib.go`.
+  Covers `Abs`, `Floor`, `Ceil`, `Round`, `Trunc`, `Sqrt`, `Cbrt`, `Pow`, `Pow10`,
+  `Log`, `Log2`, `Log10`, `Exp`, `Exp2`, `Sin`, `Cos`, `Tan`, `Asin`, `Acos`,
+  `Atan`, `Atan2`, `Min`, `Max`, `Mod`, `Hypot`, `Dim`, `Inf`, `IsInf`, `IsNaN`,
+  `NaN`, `Signbit`, `Copysign`, `Frexp`, `Modf`, `Lgamma`, `Gamma`, and more.
+  Concrete `float64` arguments call the real `math.*` function; opaque arguments
+  return a safe non-NaN sentinel. `"math"` registered in `execStdlibCall`.
+
+- **5 new integration tests**: `min_max_builtins`, `clear_map`, `json_marshal`,
+  `regexp_match`, `math_ops`. Total: 65 tests.
+
 ## [0.19.0] - 2026-02-27
 
 ### Added

@@ -14,6 +14,7 @@ package interpreter
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"strconv"
 	"strings"
@@ -48,6 +49,12 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleErrorsCall(name, args)
 	case "sort":
 		return interp.handleSortCall(gid, name, args, site)
+	case "encoding/json":
+		return interp.handleJSONCall(name, args)
+	case "regexp":
+		return interp.handleRegexpCall(gid, name, args, site)
+	case "math":
+		return interp.handleMathCall(name, args)
 	}
 	return Value{}, false
 }
@@ -901,6 +908,515 @@ func (interp *Interpreter) handleSortCall(gid int64, name string, args []Value, 
 		// sort.Find(n int, cmp func(int) int) (int, bool): probe cmp with 0.
 		probeCallback(1, []Value{{Raw: int64(0)}})
 		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
+	}
+	return Value{}, false
+}
+
+// handleJSONCall models encoding/json.* functions (#70).
+// Marshal and MarshalIndent return ([]byte, nil). Unmarshal returns nil error.
+// Decoder/Encoder creation and methods return opaque or nil values.
+func (interp *Interpreter) handleJSONCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Marshal", "MarshalIndent":
+		// Returns ([]byte, error). Return non-nil bytes so callers checking len(b) > 0 succeed.
+		return Value{Raw: []Value{{Raw: []byte(`null`)}, {}}}, true
+
+	case "Unmarshal":
+		// Returns error (nil). We don't model the actual deserialization into the target.
+		return Value{}, true
+
+	case "NewDecoder", "NewEncoder":
+		// Return an opaque value so method calls on the result are intercepted
+		// via the same "encoding/json" package path.
+		return Value{Raw: struct{}{}}, true
+
+	case "Decode", "Encode":
+		// Decoder.Decode / Encoder.Encode: return nil error.
+		return Value{}, true
+
+	case "More":
+		// Conservative: always more tokens.
+		return Value{Raw: true}, true
+
+	case "Token":
+		// Returns (Token, error): return ("", nil).
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+
+	case "Valid":
+		return Value{Raw: true}, true
+
+	case "Compact", "Indent", "HTMLEscape":
+		// Returns error (nil for Compact/Indent); HTMLEscape is void.
+		return Value{}, true
+
+	case "Number":
+		return Value{Raw: ""}, true
+	}
+	return Value{}, false
+}
+
+// handleRegexpCall models regexp.* package-level functions and *Regexp methods (#71).
+// For package-level Match* that return (bool, error), a tuple is returned.
+// For method calls (receiver = args[0] is an opaque Regexp), a plain bool is returned.
+// The two cases are distinguished by whether args[0] is a string (package-level pattern).
+func (interp *Interpreter) handleRegexpCall(gid int64, name string, args []Value, site string) (Value, bool) {
+	// probeCallback invokes a function-value at position argIdx with the given callArgs.
+	probeCallback := func(argIdx int, callArgs []Value) {
+		if argIdx >= len(args) {
+			return
+		}
+		switch fn := args[argIdx].Raw.(type) {
+		case *ssa.Function:
+			if fn.Blocks != nil {
+				interp.execFunction(gid, fn, callArgs)
+			}
+		case *ClosureValue:
+			all := append(callArgs, fn.FreeVars...)
+			interp.execFunction(gid, fn.Fn, all)
+		}
+	}
+
+	// isPackageLevel: true when args[0] is a string (the pattern argument of
+	// regexp.MatchString/Match/etc.) rather than a *Regexp receiver.
+	isPackageLevel := len(args) > 0
+	if len(args) > 0 {
+		_, isPackageLevel = args[0].Raw.(string)
+	}
+
+	switch name {
+	case "Compile":
+		// (expr string) (*Regexp, error)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
+
+	case "MustCompile":
+		// (expr string) *Regexp
+		return Value{Raw: struct{}{}}, true
+
+	case "Match":
+		if isPackageLevel {
+			return Value{Raw: []Value{{Raw: true}, {}}}, true
+		}
+		return Value{Raw: true}, true
+
+	case "MatchString":
+		if isPackageLevel {
+			return Value{Raw: []Value{{Raw: true}, {}}}, true
+		}
+		return Value{Raw: true}, true
+
+	case "MatchReader":
+		if isPackageLevel {
+			return Value{Raw: []Value{{Raw: true}, {}}}, true
+		}
+		return Value{Raw: true}, true
+
+	case "QuoteMeta":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: regexp_quoteMeta(s)}, true
+		}
+		return Value{Raw: ""}, true
+
+	case "FindString":
+		// receiver = args[0], src = args[1]
+		return Value{Raw: ""}, true
+
+	case "FindStringIndex":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(0)}}}, true
+
+	case "FindStringSubmatch":
+		return Value{Raw: []Value{}}, true
+
+	case "FindAllString":
+		return Value{Raw: []Value{}}, true
+
+	case "FindAllStringSubmatch":
+		return Value{Raw: []Value{}}, true
+
+	case "FindAllStringIndex":
+		return Value{Raw: []Value{}}, true
+
+	case "ReplaceAllString":
+		// receiver = args[0], src = args[1], repl = args[2]; return src unchanged.
+		if len(args) > 1 {
+			if s, ok := args[1].Raw.(string); ok {
+				return Value{Raw: s}, true
+			}
+		}
+		return Value{Raw: ""}, true
+
+	case "ReplaceAllLiteralString":
+		// Return the replacement string.
+		if len(args) > 2 {
+			if s, ok := args[2].Raw.(string); ok {
+				return Value{Raw: s}, true
+			}
+		}
+		return Value{Raw: ""}, true
+
+	case "ReplaceAllStringFunc":
+		// Probe the callback with "" to surface violations inside it.
+		probeCallback(2, []Value{{Raw: ""}})
+		if len(args) > 1 {
+			return args[1], true
+		}
+		return Value{Raw: ""}, true
+
+	case "ReplaceAll":
+		if len(args) > 1 {
+			return args[1], true
+		}
+		return Value{Raw: []byte{}}, true
+
+	case "ReplaceAllLiteral":
+		if len(args) > 2 {
+			return args[2], true
+		}
+		return Value{Raw: []byte{}}, true
+
+	case "Split":
+		if len(args) > 1 {
+			return Value{Raw: []Value{args[1]}}, true
+		}
+		return Value{Raw: []Value{}}, true
+
+	case "SubexpNames":
+		return Value{Raw: []Value{}}, true
+
+	case "SubexpIndex":
+		return Value{Raw: int64(-1)}, true
+
+	case "NumSubexp":
+		return Value{Raw: int64(0)}, true
+
+	case "String":
+		return Value{Raw: ""}, true
+
+	case "Longest", "Copy":
+		return Value{Raw: struct{}{}}, true
+
+	case "Find", "FindIndex", "FindSubmatch", "FindAll", "FindAllIndex", "FindAllSubmatch":
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, false
+}
+
+// regexp_quoteMeta is a thin wrapper around regexp.QuoteMeta used from handleRegexpCall.
+// It lives here to avoid a package-level import of "regexp" that would add a large import.
+func regexp_quoteMeta(s string) string {
+	const special = `\.+*?()|[]{}^$`
+	var b strings.Builder
+	for _, r := range s {
+		if strings.ContainsRune(special, r) {
+			b.WriteRune('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// handleMathCall models math.* functions (#72).
+// For concrete float64 arguments the real math function is called directly.
+// For opaque arguments a conservative (non-NaN, non-Inf) sentinel is returned.
+func (interp *Interpreter) handleMathCall(name string, args []Value) (Value, bool) {
+	x, xok := stdlibArgFloat(args, 0)
+	y, yok := stdlibArgFloat(args, 1)
+
+	switch name {
+	case "Abs":
+		if xok {
+			return Value{Raw: math.Abs(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Floor":
+		if xok {
+			return Value{Raw: math.Floor(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Ceil":
+		if xok {
+			return Value{Raw: math.Ceil(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Round":
+		if xok {
+			return Value{Raw: math.Round(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Trunc":
+		if xok {
+			return Value{Raw: math.Trunc(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Sqrt":
+		if xok {
+			return Value{Raw: math.Sqrt(x)}, true
+		}
+		return Value{Raw: float64(1)}, true
+
+	case "Cbrt":
+		if xok {
+			return Value{Raw: math.Cbrt(x)}, true
+		}
+		return Value{Raw: float64(1)}, true
+
+	case "Pow":
+		if xok && yok {
+			return Value{Raw: math.Pow(x, y)}, true
+		}
+		return Value{Raw: float64(1)}, true
+
+	case "Pow10":
+		n, nok := stdlibArgInt(args, 0)
+		if nok {
+			return Value{Raw: math.Pow10(int(n))}, true
+		}
+		return Value{Raw: float64(1)}, true
+
+	case "Log":
+		if xok {
+			return Value{Raw: math.Log(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Log2":
+		if xok {
+			return Value{Raw: math.Log2(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Log10":
+		if xok {
+			return Value{Raw: math.Log10(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Log1p":
+		if xok {
+			return Value{Raw: math.Log1p(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Exp":
+		if xok {
+			return Value{Raw: math.Exp(x)}, true
+		}
+		return Value{Raw: float64(1)}, true
+
+	case "Exp2":
+		if xok {
+			return Value{Raw: math.Exp2(x)}, true
+		}
+		return Value{Raw: float64(1)}, true
+
+	case "Expm1":
+		if xok {
+			return Value{Raw: math.Expm1(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Sin":
+		if xok {
+			return Value{Raw: math.Sin(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Cos":
+		if xok {
+			return Value{Raw: math.Cos(x)}, true
+		}
+		return Value{Raw: float64(1)}, true
+
+	case "Tan":
+		if xok {
+			return Value{Raw: math.Tan(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Asin":
+		if xok {
+			return Value{Raw: math.Asin(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Acos":
+		if xok {
+			return Value{Raw: math.Acos(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Atan":
+		if xok {
+			return Value{Raw: math.Atan(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Atan2":
+		if xok && yok {
+			return Value{Raw: math.Atan2(x, y)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Sinh", "Cosh", "Tanh":
+		if xok {
+			switch name {
+			case "Sinh":
+				return Value{Raw: math.Sinh(x)}, true
+			case "Cosh":
+				return Value{Raw: math.Cosh(x)}, true
+			case "Tanh":
+				return Value{Raw: math.Tanh(x)}, true
+			}
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Hypot":
+		if xok && yok {
+			return Value{Raw: math.Hypot(x, y)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Min":
+		if xok && yok {
+			return Value{Raw: math.Min(x, y)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Max":
+		if xok && yok {
+			return Value{Raw: math.Max(x, y)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Mod":
+		if xok && yok {
+			return Value{Raw: math.Mod(x, y)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Remainder":
+		if xok && yok {
+			return Value{Raw: math.Remainder(x, y)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Dim":
+		if xok && yok {
+			return Value{Raw: math.Dim(x, y)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Inf":
+		sign, sok := stdlibArgInt(args, 0)
+		if sok {
+			return Value{Raw: math.Inf(int(sign))}, true
+		}
+		return Value{Raw: math.Inf(1)}, true
+
+	case "IsInf":
+		if xok {
+			sign := int64(0)
+			if n, nok := stdlibArgInt(args, 1); nok {
+				sign = n
+			}
+			return Value{Raw: math.IsInf(x, int(sign))}, true
+		}
+		return Value{Raw: false}, true
+
+	case "IsNaN":
+		if xok {
+			return Value{Raw: math.IsNaN(x)}, true
+		}
+		return Value{Raw: false}, true
+
+	case "NaN":
+		return Value{Raw: math.NaN()}, true
+
+	case "Signbit":
+		if xok {
+			return Value{Raw: math.Signbit(x)}, true
+		}
+		return Value{Raw: false}, true
+
+	case "Copysign":
+		if xok && yok {
+			return Value{Raw: math.Copysign(x, y)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Logb":
+		if xok {
+			return Value{Raw: math.Logb(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Ilogb":
+		if xok {
+			return Value{Raw: int64(math.Ilogb(x))}, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "Frexp":
+		if xok {
+			frac, exp := math.Frexp(x)
+			return Value{Raw: []Value{{Raw: frac}, {Raw: int64(exp)}}}, true
+		}
+		return Value{Raw: []Value{{Raw: float64(0)}, {Raw: int64(0)}}}, true
+
+	case "Ldexp":
+		if xok {
+			exp, eok := stdlibArgInt(args, 1)
+			if eok {
+				return Value{Raw: math.Ldexp(x, int(exp))}, true
+			}
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Modf":
+		if xok {
+			i, f := math.Modf(x)
+			return Value{Raw: []Value{{Raw: float64(i)}, {Raw: f}}}, true
+		}
+		return Value{Raw: []Value{{Raw: float64(0)}, {Raw: float64(0)}}}, true
+
+	case "J0", "J1":
+		if xok {
+			switch name {
+			case "J0":
+				return Value{Raw: math.J0(x)}, true
+			case "J1":
+				return Value{Raw: math.J1(x)}, true
+			}
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Gamma":
+		if xok {
+			return Value{Raw: math.Gamma(x)}, true
+		}
+		return Value{Raw: float64(1)}, true
+
+	case "Lgamma":
+		if xok {
+			lg, sign := math.Lgamma(x)
+			return Value{Raw: []Value{{Raw: lg}, {Raw: int64(sign)}}}, true
+		}
+		return Value{Raw: []Value{{Raw: float64(0)}, {Raw: int64(1)}}}, true
+
+	case "Erf", "Erfc":
+		if xok {
+			switch name {
+			case "Erf":
+				return Value{Raw: math.Erf(x)}, true
+			case "Erfc":
+				return Value{Raw: math.Erfc(x)}, true
+			}
+		}
+		return Value{Raw: float64(0)}, true
 	}
 	return Value{}, false
 }

@@ -1238,6 +1238,79 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 			}
 		}
 
+	case "min": // Go 1.21+ variadic min builtin (#69)
+		if len(args) == 0 {
+			return Value{}
+		}
+		result := args[0]
+		for _, a := range args[1:] {
+			switch v := result.Raw.(type) {
+			case int64:
+				if n, ok := a.Raw.(int64); ok && n < v {
+					result = a
+				}
+			case float64:
+				if n, ok := a.Raw.(float64); ok && n < v {
+					result = a
+				}
+			case string:
+				if s, ok := a.Raw.(string); ok && s < v {
+					result = a
+				}
+			default:
+				return Value{} // opaque arg — conservative
+			}
+		}
+		return result
+
+	case "max": // Go 1.21+ variadic max builtin (#69)
+		if len(args) == 0 {
+			return Value{}
+		}
+		result := args[0]
+		for _, a := range args[1:] {
+			switch v := result.Raw.(type) {
+			case int64:
+				if n, ok := a.Raw.(int64); ok && n > v {
+					result = a
+				}
+			case float64:
+				if n, ok := a.Raw.(float64); ok && n > v {
+					result = a
+				}
+			case string:
+				if s, ok := a.Raw.(string); ok && s > v {
+					result = a
+				}
+			default:
+				return Value{} // opaque arg — conservative
+			}
+		}
+		return result
+
+	case "clear": // Go 1.21+ clear builtin — map/slice reset (#69)
+		if len(args) >= 1 {
+			m := args[0]
+			if m.Raw == nil {
+				interp.recordViolation(gid, &shadow.NilMapWriteError{Site: site, GID: gid})
+				break
+			}
+			// Race check: clearing is a write operation.
+			if m.Provenance != nil {
+				if werr := interp.handleStore(gid, m, Value{}, 8, site); werr != nil {
+					interp.recordViolation(gid, werr)
+				}
+			}
+			// Clear interpreter map.
+			if mapVal, ok := m.Raw.(map[interface{}]Value); ok {
+				for k := range mapVal {
+					delete(mapVal, k)
+				}
+			}
+			// Slice clear: element values are not individually tracked in our model, so no-op here.
+			_ = m.Raw
+		}
+
 	case "close":
 		// Channel close (#31): mark channel as closed; future sends will panic.
 		if len(args) > 0 {
