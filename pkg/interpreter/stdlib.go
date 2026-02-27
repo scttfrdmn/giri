@@ -14,13 +14,14 @@ package interpreter
 
 import (
 	"fmt"
+	"math/rand"
 	"strconv"
 	"strings"
 )
 
 // execStdlibCall intercepts standard library function calls in packages
-// "strings", "strconv", "fmt", and "time". Returns (result, true) when
-// intercepted, (Value{}, false) otherwise.
+// "strings", "strconv", "fmt", "time", "os", and "math/rand".
+// Returns (result, true) when intercepted, (Value{}, false) otherwise.
 func (interp *Interpreter) execStdlibCall(pkgPath, name string, args []Value) (Value, bool) {
 	switch pkgPath {
 	case "strings":
@@ -31,6 +32,10 @@ func (interp *Interpreter) execStdlibCall(pkgPath, name string, args []Value) (V
 		return interp.handleFmtCall(name, args)
 	case "time":
 		return interp.handleTimeCall(name, args)
+	case "os":
+		return interp.handleOSCall(name, args)
+	case "math/rand":
+		return interp.handleMathRandCall(name, args)
 	}
 	return Value{}, false
 }
@@ -472,6 +477,104 @@ func (interp *Interpreter) handleTimeCall(name string, args []Value) (Value, boo
 	case "Sleep", "NewTimer", "NewTicker", "Since", "Now", "Unix":
 		// Noop — no side effects the interpreter needs to model.
 		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleOSCall models os.* functions (#62).
+// os.Exit is handled separately in execCall (it needs to stop all goroutines).
+// This intercept covers environment and filesystem queries.
+func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Getenv":
+		// Return empty string for any env var — conservative but safe.
+		return Value{Raw: ""}, true
+	case "LookupEnv":
+		// Return ("", false): key not found.
+		return Value{Raw: []Value{{Raw: ""}, {Raw: false}}}, true
+	case "Setenv", "Unsetenv":
+		// Return nil error.
+		return Value{}, true
+	case "Getwd":
+		// Return ("/tmp", nil) — a valid directory path.
+		return Value{Raw: []Value{{Raw: "/tmp"}, {}}}, true
+	case "MkdirAll", "MkdirTemp", "Remove", "RemoveAll", "Rename":
+		// File-system mutations: noop with nil error.
+		return Value{}, true
+	case "Open", "Create", "OpenFile":
+		// File operations: return (nil, nil) — callers checking the error get nil,
+		// avoiding cascading panics; actual File methods are external and return zero.
+		return Value{Raw: []Value{{}, {}}}, true
+	case "ReadFile", "WriteFile":
+		// Bulk I/O: return ([]byte{}, nil).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	}
+	return Value{}, false
+}
+
+// handleMathRandCall models math/rand.* functions (#64).
+// Uses the interpreter's per-run RNG (seeded from config.RandomSeed) for
+// deterministic, reproducible values without interpreting stdlib internals.
+func (interp *Interpreter) handleMathRandCall(name string, args []Value) (Value, bool) {
+	rng := interp.rng
+	if rng == nil {
+		rng = rand.New(rand.NewSource(0))
+	}
+	switch name {
+	case "Intn", "Int31n":
+		if n, ok := stdlibArgInt(args, 0); ok && n > 0 {
+			return Value{Raw: rng.Int63n(n)}, true
+		}
+		return Value{Raw: int64(0)}, true
+	case "Int63n":
+		if n, ok := stdlibArgInt(args, 0); ok && n > 0 {
+			return Value{Raw: rng.Int63n(n)}, true
+		}
+		return Value{Raw: int64(0)}, true
+	case "Int63":
+		return Value{Raw: rng.Int63()}, true
+	case "Int", "Int31":
+		return Value{Raw: int64(rng.Int31())}, true
+	case "Uint32":
+		return Value{Raw: int64(rng.Uint32())}, true
+	case "Uint64":
+		return Value{Raw: int64(rng.Uint64())}, true
+	case "Float64":
+		return Value{Raw: rng.Float64()}, true
+	case "Float32":
+		return Value{Raw: float64(rng.Float32())}, true
+	case "Seed":
+		// Noop: we control the seed via config.RandomSeed.
+		return Value{}, true
+	case "New":
+		// Return opaque Value — method calls on the returned *Rand are handled
+		// via the same math/rand intercept (same package path).
+		return Value{}, true
+	case "NewSource":
+		return Value{}, true
+	case "Perm":
+		if n, ok := stdlibArgInt(args, 0); ok && n >= 0 {
+			vs := make([]Value, n)
+			for i := range vs {
+				vs[i] = Value{Raw: int64(i)}
+			}
+			return Value{Raw: vs}, true
+		}
+		return Value{Raw: []Value{}}, true
+	case "Shuffle":
+		// Noop: element ordering doesn't affect memory safety.
+		return Value{}, true
+	case "Read":
+		// Return (n, nil) where n = length of the slice arg (if known).
+		n := int64(0)
+		if len(args) > 0 {
+			if sv, ok := args[0].Raw.(*SliceValue); ok {
+				n = int64(sv.Len)
+			}
+		}
+		return Value{Raw: []Value{{Raw: n}, {}}}, true
+	case "NormFloat64", "ExpFloat64":
+		return Value{Raw: rng.NormFloat64()}, true
 	}
 	return Value{}, false
 }

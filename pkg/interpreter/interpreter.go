@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"math/rand"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -356,6 +357,14 @@ type Interpreter struct {
 	// Updated at the start of each instruction in execBlock; read by
 	// recordViolation to check against suppressions.
 	currentSite string
+
+	// onceState tracks which sync.Once instances have already fired (#61).
+	// Key is the AllocID of the *sync.Once backing allocation; true = Do has run.
+	onceState map[shadow.AllocID]bool
+
+	// rng is a per-interpreter random number generator used by math/rand
+	// intercepts (#64). Seeded from config.RandomSeed for reproducibility.
+	rng *rand.Rand
 }
 
 // Config controls interpreter behavior.
@@ -439,9 +448,11 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 		channelSenders:   make(map[ChanID]bool),
 		channelReceivers: make(map[ChanID]bool),
 		mutexes:          make(map[shadow.AllocID]*mutexState),
+		onceState:        make(map[shadow.AllocID]bool),
 		valueStore:       make(map[shadow.AllocID]Value),
 		config:           config,
 		sizes:            types.SizesFor("gc", runtime.GOARCH),
+		rng:              rand.New(rand.NewSource(config.RandomSeed)),
 	}
 
 	// Build detector registry from config flags
@@ -500,10 +511,12 @@ func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Inter
 		channelSenders:   make(map[ChanID]bool),
 		channelReceivers: make(map[ChanID]bool),
 		mutexes:          make(map[shadow.AllocID]*mutexState),
+		onceState:        make(map[shadow.AllocID]bool),
 		valueStore:       make(map[shadow.AllocID]Value),
 		config:           config,
 		sizes:            types.SizesFor("gc", runtime.GOARCH),
 		arena:            a,
+		rng:              rand.New(rand.NewSource(config.RandomSeed)),
 	}
 
 	var dets []detector.Detector
@@ -1473,6 +1486,24 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 					GID:     gid,
 					Counter: ms.wgCounter,
 				})
+			}
+		}
+
+	case "Do":
+		// sync.Once.Do(f func()) (#61): call f exactly once per Once instance.
+		// The AllocID of the *sync.Once serves as the instance key.
+		// Subsequent Do calls for the same Once are silently ignored.
+		if !interp.onceState[key] {
+			interp.onceState[key] = true
+			if len(args) >= 2 {
+				switch fn := args[1].Raw.(type) {
+				case *ssa.Function:
+					if fn.Blocks != nil {
+						interp.execFunction(gid, fn, nil)
+					}
+				case *ClosureValue:
+					interp.execFunction(gid, fn.Fn, fn.FreeVars)
+				}
 			}
 		}
 

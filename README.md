@@ -254,7 +254,7 @@ giri/
 - [x] Deferred call handling (`defer arena.Free()`)
 - [x] Goroutine spawning, closures, multi-return
 - [x] Report generation (text, JSON, SARIF)
-- [x] Integration test suite (23 tests)
+- [x] Integration test suite (55 tests)
 
 ### Phase 2: unsafe.Pointer Rules ✓
 - [x] Rule 1: Alignment verification at conversion sites
@@ -269,12 +269,13 @@ giri/
 - [x] Data race detection (write/write and write/read conflicts)
 - [x] Channel happens-before tracking
 - [x] Goroutine spawn happens-before
-- [x] `sync.Mutex` / `sync.WaitGroup` happens-before
+- [x] `sync.Mutex` / `sync.WaitGroup` / `sync.Once` happens-before
 - [x] Send/close on closed channel detection
 - [ ] Systematic interleaving exploration (PCT schedules but doesn't replay)
 
 ### Phase 4: Advanced
-- [ ] Interprocedural analysis (follow calls across packages)
+- [x] Interprocedural analysis (follow calls across packages) — v0.17.0
+- [x] Standard library intercepts (`strings`, `strconv`, `fmt`, `time`, `os`, `math/rand`, `sync`) — v0.11–0.18
 - [ ] `cgo` boundary checking
 - [ ] `reflect` package safety verification
 - [ ] `go:linkname` tracking

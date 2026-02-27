@@ -1060,6 +1060,18 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 
 	callee := call.Call.StaticCallee()
 
+	// Intercept os.Exit(n) (#62): mark all goroutines as finished to halt
+	// interpretation cleanly. Without this, the interpreter tries to execute
+	// syscall-backed stdlib code and continues running past the exit point.
+	if callee != nil && callee.Package() != nil {
+		if pkg := callee.Package().Pkg; pkg != nil && pkg.Path() == "os" && callee.Name() == "Exit" {
+			for _, g := range interp.goroutines {
+				g.Panicked = true
+			}
+			return Value{}
+		}
+	}
+
 	// Intercept sync.Mutex and sync.WaitGroup before trying to execute them (#33).
 	// Their implementations use futexes that can't be interpreted; we model the
 	// clock semantics directly in handleSyncCall.
@@ -1204,7 +1216,27 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 		return Value{Raw: int64(n)}
 
 	case "delete":
-		// Map delete — no-op for safety checking purposes
+		// Map delete (#63): nil-map check, race tracking, and key removal.
+		if len(args) >= 1 {
+			m := args[0]
+			// Nil map: delete from nil map panics at runtime.
+			if m.Raw == nil {
+				interp.recordViolation(gid, &shadow.NilMapWriteError{Site: site, GID: gid})
+				break
+			}
+			// Race check: deletion is a write operation on the map.
+			if m.Provenance != nil {
+				if werr := interp.handleStore(gid, m, Value{}, 8, site); werr != nil {
+					interp.recordViolation(gid, werr)
+				}
+			}
+			// Remove the key from the interpreter map.
+			if len(args) >= 2 {
+				if mapVal, ok := m.Raw.(map[interface{}]Value); ok {
+					delete(mapVal, toMapKey(args[1]))
+				}
+			}
+		}
 
 	case "close":
 		// Channel close (#31): mark channel as closed; future sends will panic.
@@ -1279,9 +1311,10 @@ func (interp *Interpreter) resolveValue(frame *Frame, v ssa.Value) Value {
 		return Value{Raw: g.Name()}
 	}
 
-	// Function value
+	// Function value — return the SSA Function itself so it can be called
+	// (e.g., as an argument to sync.Once.Do or passed as a callback).
 	if f, ok := v.(*ssa.Function); ok {
-		return Value{Raw: f.String()}
+		return Value{Raw: f}
 	}
 
 	return Value{}

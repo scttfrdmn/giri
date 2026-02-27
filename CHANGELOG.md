@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-02-27
+
+### Added
+
+- **`sync.Once` support** (issue #61): `once.Do(f)` calls `f()` exactly once per
+  `Once` instance and is a noop for all subsequent calls. `Interpreter` gains
+  `onceState map[shadow.AllocID]bool`; `handleSyncCall` handles `"Do"`. To enable
+  calling function-value arguments, `resolveValue` for `*ssa.Function` now returns
+  `Value{Raw: f}` (the actual SSA function) instead of the function's string
+  representation.
+
+- **`os` package intercepts** (issue #62): `os.Exit(n)` is intercepted in
+  `execCall` — all goroutines are marked `Panicked` to halt interpretation cleanly,
+  preventing spurious violations from code that runs after an exit. `execStdlibCall`
+  now also intercepts `os.Getenv`, `os.LookupEnv`, `os.Setenv`, `os.Getwd`, and
+  common filesystem operations via a new `handleOSCall` in `stdlib.go`.
+
+- **`delete()` builtin** (issue #63): The `delete(map, key)` builtin is now fully
+  implemented. It performs a nil-map check (records `NilMapWriteError`), calls
+  `handleStore` for race detection (deletion is a write), and removes the key from
+  the interpreter's map representation. Previously it was a no-op.
+
+- **`math/rand` intercepts** (issue #64): `math/rand` functions (`Intn`, `Int63n`,
+  `Int63`, `Int`, `Float64`, `Perm`, `Shuffle`, `Read`, `Seed`, `New`,
+  `NewSource`, etc.) are intercepted in a new `handleMathRandCall` in `stdlib.go`.
+  `Interpreter` gains a `rng *rand.Rand` field seeded from `config.RandomSeed` for
+  deterministic values. Without intercepts, programs using `math/rand` would try to
+  interpret the stdlib global-locked source, which cannot be correctly modelled.
+
+- **Six new integration tests**: `sync_once` (0 violations), `os_exit` (0
+  violations), `os_getenv` (0 violations), `delete_race` (1 violation — data race),
+  `safe_delete` (0 violations), `rand_intn` (0 violations). Total: 55 tests.
+
 ## [0.17.0] - 2026-02-27
 
 ### Added

@@ -286,6 +286,49 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.18.0 regression tests
+	{
+		name:           "sync once",
+		dir:            "sync_once",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "os exit",
+		dir:            "os_exit",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "os getenv",
+		dir:            "os_getenv",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "delete race",
+		dir:            "delete_race",
+		wantViolations: 1,
+		wantCategory:   "data race",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "safe delete",
+		dir:            "safe_delete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "rand intn",
+		dir:            "rand_intn",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.16.0 regression tests
 	{
 		name:           "safe stack alloc",
