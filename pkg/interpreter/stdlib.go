@@ -21,13 +21,14 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/scttfrdmn/giri/pkg/shadow"
 	"golang.org/x/tools/go/ssa"
 )
 
 // execStdlibCall intercepts standard library function calls in packages
 // "strings", "strconv", "fmt", "time", "os", "math/rand", "bytes",
-// "errors", and "sort". Returns (result, true) when intercepted,
-// (Value{}, false) otherwise.
+// "errors", "sort", "sync/atomic", "io", "bufio", and "log".
+// Returns (result, true) when intercepted, (Value{}, false) otherwise.
 //
 // gid and site are required by handlers that invoke user callbacks
 // (e.g. sort.Slice calls the less function via execFunction).
@@ -63,6 +64,14 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleUnicodeCall(name, args)
 	case "context":
 		return interp.handleContextCall(name, args)
+	case "sync/atomic":
+		return interp.handleAtomicCall(name, args)
+	case "io":
+		return interp.handleIOCall(name, args)
+	case "bufio":
+		return interp.handleBufioCall(name, args)
+	case "log":
+		return interp.handleLogCall(gid, name, args)
 	}
 	return Value{}, false
 }
@@ -240,6 +249,39 @@ func (interp *Interpreter) handleStringsCall(name string, args []Value) (Value, 
 	case "NewReplacer":
 		// Returns a *strings.Replacer; method calls on it are not modelable here.
 		return Value{}, false
+
+	// strings.Builder method calls (#79): receiver = args[0], other args follow.
+	case "WriteString":
+		// b.WriteString(s) (int, error)
+		n := 0
+		if s, ok := stdlibArgString(args, 1); ok {
+			n = len(s)
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+	case "WriteByte":
+		// b.WriteByte(c byte) error
+		return Value{}, true
+	case "WriteRune":
+		// b.WriteRune(r rune) (int, error)
+		return Value{Raw: []Value{{Raw: int64(1)}, {}}}, true
+	case "Write":
+		// b.Write(p []byte) (int, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "String":
+		// b.String() string
+		return Value{Raw: ""}, true
+	case "Len":
+		// b.Len() int
+		return Value{Raw: int64(0)}, true
+	case "Cap":
+		// b.Cap() int
+		return Value{Raw: int64(0)}, true
+	case "Reset":
+		// b.Reset()
+		return Value{}, true
+	case "Grow":
+		// b.Grow(n int)
+		return Value{}, true
 	}
 	return Value{}, false
 }
@@ -812,6 +854,72 @@ func (interp *Interpreter) handleBytesCall(name string, args []Value) (Value, bo
 		return Value{Raw: []Value{args[0], {Raw: false}}}, true
 	case "Clone":
 		return Value{Raw: args[0].Raw}, true
+
+	// bytes.Buffer method calls (#79): receiver = args[0], other args follow.
+	case "WriteString":
+		// buf.WriteString(s) (int, error)
+		n := 0
+		if s, ok := stdlibArgString(args, 1); ok {
+			n = len(s)
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+	case "WriteByte":
+		// buf.WriteByte(c byte) error
+		return Value{}, true
+	case "WriteRune":
+		// buf.WriteRune(r rune) (int, error)
+		return Value{Raw: []Value{{Raw: int64(1)}, {}}}, true
+	case "Write":
+		// buf.Write(p []byte) (int, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "String":
+		// buf.String() string
+		return Value{Raw: ""}, true
+	case "Bytes":
+		// buf.Bytes() []byte
+		return Value{Raw: []byte(nil)}, true
+	case "Len":
+		// buf.Len() int
+		return Value{Raw: int64(0)}, true
+	case "Cap":
+		// buf.Cap() int
+		return Value{Raw: int64(0)}, true
+	case "Reset":
+		// buf.Reset()
+		return Value{}, true
+	case "Truncate":
+		// buf.Truncate(n int)
+		return Value{}, true
+	case "Grow":
+		// buf.Grow(n int)
+		return Value{}, true
+	case "ReadFrom":
+		// buf.ReadFrom(r io.Reader) (int64, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "WriteTo":
+		// buf.WriteTo(w io.Writer) (int64, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "ReadByte":
+		// buf.ReadByte() (byte, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "ReadRune":
+		// buf.ReadRune() (rune, int, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(0)}, {}}}, true
+	case "ReadString":
+		// buf.ReadString(delim byte) (string, error)
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "ReadBytes":
+		// buf.ReadBytes(delim byte) ([]byte, error)
+		return Value{Raw: []Value{{Raw: []byte(nil)}, {}}}, true
+	case "Next":
+		// buf.Next(n int) []byte
+		return Value{Raw: []byte(nil)}, true
+	case "UnreadByte":
+		// buf.UnreadByte() error
+		return Value{}, true
+	case "UnreadRune":
+		// buf.UnreadRune() error
+		return Value{}, true
 	}
 	return Value{}, false
 }
@@ -1678,6 +1786,297 @@ func (interp *Interpreter) handleContextCall(name string, args []Value) (Value, 
 	case "Deadline":
 		// ctx.Deadline() returns (zero time, false).
 		return Value{Raw: []Value{{}, {Raw: false}}}, true
+	}
+	return Value{}, false
+}
+
+// handleAtomicCall models sync/atomic.* functions (#77).
+// Atomic operations read and write through interp.valueStore keyed by the
+// pointer argument's AllocID; they do NOT call handleLoad/handleStore to
+// avoid false-positive race reports on atomic accesses.
+func (interp *Interpreter) handleAtomicCall(name string, args []Value) (Value, bool) {
+	var allocID shadow.AllocID
+	if len(args) > 0 && args[0].Provenance != nil {
+		allocID = args[0].Provenance.Alloc
+	}
+
+	switch name {
+	case "LoadInt32", "LoadInt64", "LoadUint32", "LoadUint64", "LoadUintptr", "LoadPointer":
+		if allocID != 0 && interp.valueStore != nil {
+			if v, ok := interp.valueStore[allocID]; ok {
+				return v, true
+			}
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "StoreInt32", "StoreInt64", "StoreUint32", "StoreUint64", "StoreUintptr", "StorePointer":
+		if allocID != 0 && len(args) >= 2 && interp.valueStore != nil {
+			interp.valueStore[allocID] = args[1]
+		}
+		return Value{}, true
+
+	case "AddInt32", "AddInt64", "AddUint32", "AddUint64", "AddUintptr":
+		if allocID != 0 && len(args) >= 2 {
+			cur := int64(0)
+			if v, ok := interp.valueStore[allocID]; ok {
+				cur = toInt64(v)
+			}
+			newVal := Value{Raw: cur + toInt64(args[1])}
+			if interp.valueStore != nil {
+				interp.valueStore[allocID] = newVal
+			}
+			return newVal, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "AndInt32", "AndInt64", "AndUint32", "AndUint64", "AndUintptr",
+		"OrInt32", "OrInt64", "OrUint32", "OrUint64", "OrUintptr":
+		if allocID != 0 && len(args) >= 2 {
+			cur := int64(0)
+			if v, ok := interp.valueStore[allocID]; ok {
+				cur = toInt64(v)
+			}
+			delta := toInt64(args[1])
+			var newRaw int64
+			if name[:2] == "An" {
+				newRaw = cur & delta
+			} else {
+				newRaw = cur | delta
+			}
+			newVal := Value{Raw: newRaw}
+			if interp.valueStore != nil {
+				interp.valueStore[allocID] = newVal
+			}
+			return newVal, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "CompareAndSwapInt32", "CompareAndSwapInt64",
+		"CompareAndSwapUint32", "CompareAndSwapUint64",
+		"CompareAndSwapUintptr", "CompareAndSwapPointer":
+		if allocID != 0 && len(args) >= 3 {
+			cur := int64(0)
+			if v, ok := interp.valueStore[allocID]; ok {
+				cur = toInt64(v)
+			}
+			if cur == toInt64(args[1]) {
+				if interp.valueStore != nil {
+					interp.valueStore[allocID] = args[2]
+				}
+				return Value{Raw: true}, true
+			}
+			return Value{Raw: false}, true
+		}
+		return Value{Raw: true}, true // pessimistic: assume CAS succeeds
+
+	case "SwapInt32", "SwapInt64", "SwapUint32", "SwapUint64", "SwapUintptr", "SwapPointer":
+		if allocID != 0 && len(args) >= 2 {
+			old := Value{Raw: int64(0)}
+			if v, ok := interp.valueStore[allocID]; ok {
+				old = v
+			}
+			if interp.valueStore != nil {
+				interp.valueStore[allocID] = args[1]
+			}
+			return old, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "Value":
+		// atomic.Value is a struct; Load/Store methods on it.
+		// Method calls on atomic.Value have pkg path "sync/atomic".
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleIOCall models io.* functions (#78).
+func (interp *Interpreter) handleIOCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	case "ReadAll":
+		// io.ReadAll(r Reader) ([]byte, error)
+		return Value{Raw: []Value{{Raw: []byte("data")}, {}}}, true
+
+	case "Copy", "CopyBuffer":
+		// io.Copy(dst Writer, src Reader) (int64, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	case "CopyN":
+		// io.CopyN(dst Writer, src Reader, n int64) (int64, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	case "WriteString":
+		// io.WriteString(w Writer, s string) (n int, err error)
+		n := 0
+		if s, ok := stdlibArgString(args, 1); ok {
+			n = len(s)
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+
+	case "Pipe":
+		// io.Pipe() (*PipeReader, *PipeWriter)
+		return Value{Raw: []Value{opaque, opaque}}, true
+
+	case "NopCloser":
+		// io.NopCloser(r Reader) ReadCloser
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return opaque, true
+
+	case "LimitReader":
+		// io.LimitReader(r Reader, n int64) Reader
+		return opaque, true
+
+	case "MultiReader":
+		// io.MultiReader(readers ...Reader) Reader
+		return opaque, true
+
+	case "MultiWriter":
+		// io.MultiWriter(writers ...Writer) Writer
+		return opaque, true
+
+	case "TeeReader":
+		// io.TeeReader(r Reader, w Writer) Reader
+		return opaque, true
+
+	case "NewSectionReader":
+		// io.NewSectionReader(r ReaderAt, off int64, n int64) *SectionReader
+		return opaque, true
+
+	case "ReadAtLeast", "ReadFull":
+		// (int, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	case "Discard":
+		// io.Discard is a variable (iota/Writer); return opaque.
+		return opaque, true
+	}
+	return Value{}, false
+}
+
+// handleBufioCall models bufio.* functions (#78).
+func (interp *Interpreter) handleBufioCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	case "NewReader", "NewReaderSize":
+		return opaque, true
+	case "NewWriter", "NewWriterSize":
+		return opaque, true
+	case "NewScanner":
+		return opaque, true
+	case "NewReadWriter":
+		return opaque, true
+
+	// Scanner methods (receiver = args[0]).
+	case "Scan":
+		// Always return false (scanner exhausted in our model).
+		return Value{Raw: false}, true
+	case "Text":
+		return Value{Raw: ""}, true
+	case "Bytes":
+		return Value{Raw: []byte(nil)}, true
+	case "Err":
+		return Value{}, true
+	case "Split":
+		return Value{}, true
+	case "Buffer":
+		return Value{}, true
+
+	// Reader/Writer flush methods.
+	case "Flush":
+		// (error)
+		return Value{}, true
+	case "Available":
+		return Value{Raw: int64(0)}, true
+	case "Buffered":
+		return Value{Raw: int64(0)}, true
+	case "Reset":
+		return Value{}, true
+	case "Size":
+		return Value{Raw: int64(0)}, true
+	case "Discard":
+		// (int, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	// bufio.Writer methods.
+	case "Write":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "WriteString":
+		n := 0
+		if s, ok := stdlibArgString(args, 1); ok {
+			n = len(s)
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+	case "WriteByte":
+		return Value{}, true
+	case "WriteRune":
+		return Value{Raw: []Value{{Raw: int64(1)}, {}}}, true
+
+	// bufio.Reader methods.
+	case "ReadString":
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "ReadLine":
+		return Value{Raw: []Value{{Raw: []byte(nil)}, {Raw: false}, {}}}, true
+	case "ReadByte":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "ReadRune":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(0)}, {}}}, true
+	case "ReadSlice":
+		return Value{Raw: []Value{{Raw: []byte(nil)}, {}}}, true
+	case "Peek":
+		return Value{Raw: []Value{{Raw: []byte(nil)}, {}}}, true
+	case "UnreadByte":
+		return Value{}, true
+	case "UnreadRune":
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleLogCall models log.* functions (#80).
+// log.Fatal/Fatalln/Fatalf mark all goroutines as Panicked (simulates os.Exit(1)).
+// log.Panic/Panicln/Panicf mark the current goroutine as Panicked.
+// log.Print/Println/Printf are noops (no output in the interpreter).
+func (interp *Interpreter) handleLogCall(gid int64, name string, args []Value) (Value, bool) {
+	switch name {
+	case "Print", "Println", "Printf":
+		return Value{}, true
+
+	case "Fatal", "Fatalln", "Fatalf":
+		// Simulates os.Exit(1): terminate all goroutines.
+		for _, g := range interp.goroutines {
+			g.Panicked = true
+		}
+		return Value{}, true
+
+	case "Panic", "Panicln", "Panicf":
+		// Mark only the current goroutine as panicked.
+		if g := interp.goroutines[gid]; g != nil {
+			g.Panicked = true
+		}
+		return Value{}, true
+
+	case "New":
+		// log.New(out, prefix, flags) *Logger — return opaque logger.
+		return Value{Raw: struct{}{}}, true
+
+	case "SetOutput", "SetFlags", "SetPrefix":
+		return Value{}, true
+
+	case "Flags":
+		return Value{Raw: int64(0)}, true
+
+	case "Prefix":
+		return Value{Raw: ""}, true
+
+	case "Writer":
+		return Value{Raw: struct{}{}}, true
+
+	case "Default":
+		// log.Default() *Logger
+		return Value{Raw: struct{}{}}, true
 	}
 	return Value{}, false
 }

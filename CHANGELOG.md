@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-02-27
+
+### Added
+
+- **`sync/atomic` intercepts** (issue #77): New `handleAtomicCall` in `stdlib.go`
+  models all atomic operations (Load, Store, Add, CompareAndSwap, Swap, And, Or)
+  on all integer widths (int32, int64, uint32, uint64, uintptr) and pointer.
+  Reads and writes use `interp.valueStore` keyed by the pointer's `AllocID`,
+  giving correct sequential semantics without calling `handleLoad`/`handleStore`
+  (avoiding false-positive race reports on atomic accesses).
+  Two integration tests: `atomic_counter`, `atomic_cas`.
+
+- **`io` and `bufio` package intercepts** (issue #78): New `handleIOCall` and
+  `handleBufioCall` in `stdlib.go` model the most common operations:
+  - `io`: `ReadAll`, `Copy`/`CopyBuffer`/`CopyN`, `WriteString`, `Pipe`,
+    `NopCloser`, `LimitReader`, `MultiReader`, `MultiWriter`, `TeeReader`,
+    `NewSectionReader`, `ReadAtLeast`, `ReadFull`, `Discard`
+  - `bufio`: `NewReader`/`NewReaderSize`, `NewWriter`/`NewWriterSize`,
+    `NewScanner`, scanner methods (`Scan`, `Text`, `Bytes`, `Err`, `Split`, `Buffer`),
+    reader methods (`ReadString`, `ReadLine`, `ReadByte`, `ReadRune`, `Peek`,
+    `ReadSlice`, `UnreadByte`, `UnreadRune`), writer methods (`Write`, `WriteString`,
+    `WriteByte`, `WriteRune`, `Flush`, `Available`, `Buffered`, `Size`, `Reset`, `Discard`)
+  Two integration tests: `io_readall`, `bufio_scanner`.
+
+- **`strings.Builder` and `bytes.Buffer` method intercepts** (issue #79):
+  Extended `handleStringsCall` and `handleBytesCall` with method cases that fire
+  when the SSA callee package path is `"strings"` or `"bytes"`:
+  - `strings.Builder`: `WriteString`, `WriteByte`, `WriteRune`, `Write`, `String`,
+    `Len`, `Cap`, `Reset`, `Grow`
+  - `bytes.Buffer`: `Write`, `WriteString`, `WriteByte`, `WriteRune`, `String`,
+    `Bytes`, `Len`, `Cap`, `Reset`, `Truncate`, `Grow`, `ReadFrom`, `WriteTo`,
+    `ReadByte`, `ReadRune`, `ReadString`, `ReadBytes`, `Next`, `UnreadByte`,
+    `UnreadRune`
+  Two integration tests: `strings_builder`, `bytes_buffer`.
+
+- **`log` package intercepts** (issue #80): New `handleLogCall(gid, name, args)`
+  in `stdlib.go` models the standard `log` package:
+  - `Print`/`Println`/`Printf` → noop
+  - `Fatal`/`Fatalln`/`Fatalf` → marks all goroutines `Panicked` (simulates
+    `os.Exit(1)`)
+  - `Panic`/`Panicln`/`Panicf` → marks current goroutine `Panicked`
+  - `New` → returns opaque `*log.Logger`; `SetOutput`, `SetFlags`, `SetPrefix`,
+    `Flags`, `Prefix`, `Writer`, `Default` also intercepted
+  Two integration tests: `log_print`, `log_fatal`.
+
+Closes #77, #78, #79, #80. Integration test count: 73 total.
+
 ## [0.21.0] - 2026-02-27
 
 ### Fixed
