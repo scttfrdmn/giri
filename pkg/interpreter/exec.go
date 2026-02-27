@@ -286,6 +286,10 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		allocID := interp.Memory.Allocate(kind, size, typeName, site)
 		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
 		frame.Locals[inst.Name()] = Value{Raw: ptr, Provenance: ptr}
+		// Track stack allocs for poisoning when the frame exits (#51).
+		if kind == shadow.AllocStack {
+			frame.StackAllocs = append(frame.StackAllocs, allocID)
+		}
 
 	case *ssa.Store:
 		addr := interp.resolveValue(frame, inst.Addr)

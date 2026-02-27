@@ -286,6 +286,21 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.16.0 regression tests
+	{
+		name:           "safe stack alloc",
+		dir:            "safe_stack_alloc",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "bounded value store",
+		dir:            "bounded_value_store",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.15.0 regression tests
 	{
 		name:           "deadlock",

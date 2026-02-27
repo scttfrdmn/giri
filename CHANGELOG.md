@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-02-27
+
+### Added
+
+- **Stack alloc poisoning** (issue #51): `Frame` gains a `StackAllocs []shadow.AllocID`
+  field. When `ssa.Alloc(Heap=false)` is executed, the alloc ID is appended to
+  `frame.StackAllocs`. In `popFrame`, after deferred calls and `recomputeNamedReturns`
+  have run, every stack alloc is poisoned via `Memory.Poison` (sets `Freed=true`).
+  Any subsequent `CheckAccess` on a poisoned alloc returns the existing
+  `UseAfterFreeError`. Go's SSA escape analysis guarantees that `Heap=false` allocs
+  never have surviving external references, so this is always safe and never produces
+  false positives in well-formed programs.
+
+- **Bounded `valueStore`** (issue #60): `popFrame` now calls
+  `delete(interp.valueStore, id)` for each alloc ID in `frame.StackAllocs`
+  immediately after poisoning. This evicts stack alloc entries from `valueStore`
+  precisely when the owning frame exits, keeping the map bounded to live heap and
+  global allocs. For programs with many short-lived function calls (e.g.
+  tight loops with named returns), this substantially reduces peak `valueStore` size.
+  The cleanup is a subset of Option A from the issue: heap alloc entries are retained
+  since their lifetimes may span multiple frames.
+
+- `Memory.Poison(id AllocID, site string)`: new method on `*Memory` that sets an
+  allocation's `Freed=true` unconditionally. Unlike `Free`, it does not check for
+  double-free and does not return an error — stack allocs are always live when their
+  frame exits.
+
+- Two new integration tests: `safe_stack_alloc` (named-return struct with
+  `Heap=false` alloc, 0 violations), `bounded_value_store` (100-iteration loop
+  over named-return struct calls, verifies eviction does not corrupt return values,
+  0 violations). Total: 47 integration tests.
+
+- Closes issues #51, #60.
+
 ## [0.15.0] - 2026-02-27
 
 ### Added

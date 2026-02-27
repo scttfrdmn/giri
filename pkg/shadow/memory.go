@@ -252,6 +252,20 @@ func (m *Memory) Free(id AllocID, site string) error {
 	return nil
 }
 
+// Poison marks a stack allocation as freed. Called by popFrame to invalidate
+// stack-local allocs when their frame exits. Any subsequent access to the alloc
+// will return a UseAfterFreeError from CheckAccess (#51).
+// Unlike Free, Poison is unconditional and does not return an error — stack allocs
+// are always expected to be live when the frame pops.
+func (m *Memory) Poison(id AllocID, site string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if alloc, ok := m.allocations[id]; ok && !alloc.Freed {
+		alloc.Freed = true
+		alloc.FreeSite = site
+	}
+}
+
 // --- Arena Lifecycle ---
 
 // CreateArena registers a new arena and returns its ID.

@@ -133,6 +133,13 @@ type Frame struct {
 	// named return values after executing deferred calls that may have modified
 	// named-return allocs (#49). Nil for functions without named returns.
 	ReturnInst *ssa.Return
+
+	// StackAllocs holds AllocIDs for ssa.Alloc instructions with Heap=false
+	// (stack-local allocations). These are poisoned in popFrame after deferred
+	// calls and named-return recomputation have run (#51). Heap=false allocs
+	// cannot legitimately escape their frame (Go's SSA escape analysis marks
+	// any escaped alloc as Heap=true), so poisoning them is always safe.
+	StackAllocs []shadow.AllocID
 }
 
 // DeferredCall represents a deferred function invocation.
@@ -666,6 +673,21 @@ func (interp *Interpreter) popFrame(gid int64) {
 	// return path was aborted by a panic that wasn't recovered in this frame).
 	if !g.Panicking && !g.Panicked && frame.ReturnInst != nil {
 		interp.recomputeNamedReturns(frame)
+	}
+
+	// Poison stack allocs and evict their valueStore entries (#51, #60).
+	// This runs AFTER defers and recomputeNamedReturns so that:
+	//   • deferred closures can still use the allocs while they run, and
+	//   • named-return values are extracted before the alloc is invalidated.
+	// Go's SSA escape analysis guarantees that Heap=false allocs never have
+	// surviving external references, so poisoning is always safe and never
+	// produces false-positive UseAfterFreeErrors in well-formed programs.
+	poisonSite := frame.Site + " (stack frame exited)"
+	for _, id := range frame.StackAllocs {
+		interp.Memory.Poison(id, poisonSite)
+		if interp.valueStore != nil {
+			delete(interp.valueStore, id)
+		}
 	}
 
 	g.Stack = g.Stack[:len(g.Stack)-1]
