@@ -13,9 +13,13 @@
 package interpreter
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"math/rand"
+	"net"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
@@ -27,7 +31,10 @@ import (
 
 // execStdlibCall intercepts standard library function calls in packages
 // "strings", "strconv", "fmt", "time", "os", "math/rand", "bytes",
-// "errors", "sort", "sync/atomic", "io", "bufio", and "log".
+// "errors", "sort", "sync/atomic", "io", "bufio", "log",
+// "encoding/hex", "encoding/base64", "crypto/rand", "crypto/md5",
+// "crypto/sha1", "crypto/sha256", "path/filepath", "path",
+// "net", "text/template", and "html/template".
 // Returns (result, true) when intercepted, (Value{}, false) otherwise.
 //
 // gid and site are required by handlers that invoke user callbacks
@@ -72,6 +79,22 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleBufioCall(name, args)
 	case "log":
 		return interp.handleLogCall(gid, name, args)
+	case "encoding/hex":
+		return interp.handleHexCall(name, args)
+	case "encoding/base64":
+		return interp.handleBase64Call(name, args)
+	case "crypto/rand":
+		return interp.handleCryptoRandCall(name, args)
+	case "crypto/md5", "crypto/sha1", "crypto/sha256", "crypto/sha512":
+		return interp.handleHashCall(pkgPath, name, args)
+	case "path/filepath":
+		return interp.handleFilepathCall(name, args)
+	case "path":
+		return interp.handlePathCall(name, args)
+	case "net":
+		return interp.handleNetCall(name, args)
+	case "text/template", "html/template":
+		return interp.handleTemplateCall(name, args)
 	}
 	return Value{}, false
 }
@@ -2077,6 +2100,597 @@ func (interp *Interpreter) handleLogCall(gid int64, name string, args []Value) (
 	case "Default":
 		// log.Default() *Logger
 		return Value{Raw: struct{}{}}, true
+	}
+	return Value{}, false
+}
+
+// handleHexCall models encoding/hex.* functions (#81).
+func (interp *Interpreter) handleHexCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "EncodeToString":
+		if len(args) > 0 {
+			switch b := args[0].Raw.(type) {
+			case []byte:
+				return Value{Raw: hex.EncodeToString(b)}, true
+			case []Value:
+				bs := make([]byte, len(b))
+				for i, v := range b {
+					bs[i] = byte(toInt64(v))
+				}
+				return Value{Raw: hex.EncodeToString(bs)}, true
+			}
+		}
+		return Value{Raw: "deadbeef"}, true // sentinel
+
+	case "DecodeString":
+		if s, ok := stdlibArgString(args, 0); ok {
+			b, err := hex.DecodeString(s)
+			if err != nil {
+				return Value{Raw: []Value{{Raw: []byte(nil)}, {Raw: err.Error()}}}, true
+			}
+			return Value{Raw: []Value{{Raw: b}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: []byte{0xde, 0xad}}, {}}}, true
+
+	case "Encode":
+		// hex.Encode(dst, src []byte) int
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				return Value{Raw: int64(hex.EncodedLen(len(b)))}, true
+			}
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "Decode":
+		// hex.Decode(dst, src []byte) (int, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	case "EncodedLen":
+		if n, ok := stdlibArgInt(args, 0); ok {
+			return Value{Raw: int64(hex.EncodedLen(int(n)))}, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "DecodedLen":
+		if n, ok := stdlibArgInt(args, 0); ok {
+			return Value{Raw: int64(hex.DecodedLen(int(n)))}, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "NewEncoder":
+		return Value{Raw: struct{}{}}, true
+
+	case "NewDecoder":
+		return Value{Raw: struct{}{}}, true
+
+	case "Dump":
+		// Returns formatted hex dump string.
+		return Value{Raw: ""}, true
+	}
+	return Value{}, false
+}
+
+// handleBase64Call models encoding/base64.* functions (#81).
+func (interp *Interpreter) handleBase64Call(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}} // opaque *Encoding or io.ReadCloser
+
+	switch name {
+	case "StdEncoding", "URLEncoding", "RawStdEncoding", "RawURLEncoding":
+		// These are package-level variables; return opaque *Encoding.
+		return opaque, true
+
+	case "NewEncoding":
+		return opaque, true
+
+	case "EncodeToString":
+		// Called as method: enc.EncodeToString(src []byte) string
+		// args[0] = receiver (*Encoding), args[1] = src
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				return Value{Raw: base64.StdEncoding.EncodeToString(b)}, true
+			}
+		}
+		return Value{Raw: "aGVsbG8="}, true // base64("hello")
+
+	case "DecodeString":
+		// enc.DecodeString(s string) ([]byte, error)
+		if len(args) >= 2 {
+			if s, ok := stdlibArgString(args, 1); ok {
+				b, err := base64.StdEncoding.DecodeString(s)
+				if err != nil {
+					// Try URL encoding.
+					b, err = base64.URLEncoding.DecodeString(s)
+				}
+				if err == nil {
+					return Value{Raw: []Value{{Raw: b}, {}}}, true
+				}
+				return Value{Raw: []Value{{Raw: []byte(nil)}, {Raw: err.Error()}}}, true
+			}
+		}
+		return Value{Raw: []Value{{Raw: []byte("data")}, {}}}, true
+
+	case "Encode":
+		// enc.Encode(dst, src []byte)
+		return Value{}, true
+
+	case "Decode":
+		// enc.Decode(dst, src []byte) (int, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	case "EncodedLen":
+		if len(args) >= 2 {
+			if n, ok := stdlibArgInt(args, 1); ok {
+				return Value{Raw: int64(base64.StdEncoding.EncodedLen(int(n)))}, true
+			}
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "DecodedLen":
+		if len(args) >= 2 {
+			if n, ok := stdlibArgInt(args, 1); ok {
+				return Value{Raw: int64(base64.StdEncoding.DecodedLen(int(n)))}, true
+			}
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "NewEncoder":
+		// NewEncoder(enc *Encoding, w io.Writer) io.WriteCloser
+		return opaque, true
+
+	case "NewDecoder":
+		// NewDecoder(enc *Encoding, r io.Reader) io.Reader
+		return opaque, true
+	}
+	return Value{}, false
+}
+
+// handleCryptoRandCall models crypto/rand.* functions (#82).
+func (interp *Interpreter) handleCryptoRandCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Read":
+		// rand.Read(b []byte) (int, error) — fills b with random bytes.
+		n := 0
+		if len(args) > 0 {
+			switch b := args[0].Raw.(type) {
+			case []byte:
+				n = len(b)
+			case []Value:
+				n = len(b)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+
+	case "Int":
+		// rand.Int(rand io.Reader, max *big.Int) (*big.Int, error)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
+
+	case "Prime":
+		// rand.Prime(rand io.Reader, bits int) (*big.Int, error)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
+
+	case "Reader":
+		// crypto/rand.Reader is a global; return opaque.
+		return Value{Raw: struct{}{}}, true
+	}
+	return Value{}, false
+}
+
+// handleHashCall models crypto/md5, crypto/sha1, crypto/sha256, crypto/sha512 (#82).
+// All four packages share the same API (hash.Hash interface), differing only in digest size.
+func (interp *Interpreter) handleHashCall(pkgPath, name string, args []Value) (Value, bool) {
+	// Digest lengths by package.
+	digestLen := 16 // md5
+	switch pkgPath {
+	case "crypto/sha1":
+		digestLen = 20
+	case "crypto/sha256":
+		digestLen = 32
+	case "crypto/sha512":
+		digestLen = 64
+	}
+
+	switch name {
+	case "New", "New224", "New384":
+		// Returns a hash.Hash (opaque interface value).
+		return Value{Raw: struct{}{}}, true
+
+	case "Sum":
+		// Package-level sum function: md5.Sum(data []byte) [16]byte
+		// Returns a fixed-size array; model as []byte sentinel.
+		digest := make([]byte, digestLen)
+		return Value{Raw: digest}, true
+
+	case "Write":
+		// h.Write(p []byte) (int, error)
+		n := 0
+		if len(args) > 1 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = len(b)
+			case []Value:
+				n = len(b)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+
+	case "Sum32", "Sum64":
+		// Sum function variants returning uint32/uint64.
+		return Value{Raw: int64(0)}, true
+
+	case "Reset":
+		return Value{}, true
+
+	case "Size":
+		return Value{Raw: int64(digestLen)}, true
+
+	case "BlockSize":
+		// All common hash functions use 64-byte blocks (sha512 uses 128).
+		if pkgPath == "crypto/sha512" {
+			return Value{Raw: int64(128)}, true
+		}
+		return Value{Raw: int64(64)}, true
+	}
+	return Value{}, false
+}
+
+// handleFilepathCall models path/filepath.* functions (#83).
+func (interp *Interpreter) handleFilepathCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Join":
+		var parts []string
+		for _, arg := range args {
+			if s, ok := arg.Raw.(string); ok {
+				parts = append(parts, s)
+			} else {
+				parts = append(parts, "path")
+			}
+		}
+		return Value{Raw: filepath.Join(parts...)}, true
+
+	case "Dir":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: filepath.Dir(s)}, true
+		}
+		return Value{Raw: "/path"}, true
+
+	case "Base":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: filepath.Base(s)}, true
+		}
+		return Value{Raw: "file"}, true
+
+	case "Ext":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: filepath.Ext(s)}, true
+		}
+		return Value{Raw: ".txt"}, true
+
+	case "Abs":
+		if s, ok := stdlibArgString(args, 0); ok {
+			a, err := filepath.Abs(s)
+			if err != nil {
+				return Value{Raw: []Value{{Raw: s}, {Raw: err.Error()}}}, true
+			}
+			return Value{Raw: []Value{{Raw: a}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "/tmp/path"}, {}}}, true
+
+	case "Clean":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: filepath.Clean(s)}, true
+		}
+		return Value{Raw: "."}, true
+
+	case "IsAbs":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: filepath.IsAbs(s)}, true
+		}
+		return Value{Raw: false}, true
+
+	case "Split":
+		if s, ok := stdlibArgString(args, 0); ok {
+			dir, file := filepath.Split(s)
+			return Value{Raw: []Value{{Raw: dir}, {Raw: file}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "/"}, {Raw: "file"}}}, true
+
+	case "Rel":
+		if s0, ok0 := stdlibArgString(args, 0); ok0 {
+			if s1, ok1 := stdlibArgString(args, 1); ok1 {
+				rel, err := filepath.Rel(s0, s1)
+				if err != nil {
+					return Value{Raw: []Value{{Raw: ""}, {Raw: err.Error()}}}, true
+				}
+				return Value{Raw: []Value{{Raw: rel}, {}}}, true
+			}
+		}
+		return Value{Raw: []Value{{Raw: "rel/path"}, {}}}, true
+
+	case "Match":
+		// filepath.Match(pattern, name string) (matched bool, err error)
+		if s0, ok0 := stdlibArgString(args, 0); ok0 {
+			if s1, ok1 := stdlibArgString(args, 1); ok1 {
+				matched, err := filepath.Match(s0, s1)
+				if err != nil {
+					return Value{Raw: []Value{{Raw: false}, {Raw: err.Error()}}}, true
+				}
+				return Value{Raw: []Value{{Raw: matched}, {}}}, true
+			}
+		}
+		return Value{Raw: []Value{{Raw: true}, {}}}, true // pessimistic
+
+	case "Glob":
+		// filepath.Glob(pattern string) (matches []string, err error)
+		return Value{Raw: []Value{{Raw: []Value{{Raw: "file.txt"}}}, {}}}, true
+
+	case "Walk", "WalkDir":
+		// Noop — no filesystem access in the interpreter.
+		return Value{}, true
+
+	case "FromSlash", "ToSlash":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: s}, true
+		}
+		return Value{Raw: "path"}, true
+
+	case "VolumeName":
+		return Value{Raw: ""}, true
+
+	case "EvalSymlinks":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: []Value{{Raw: s}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "/path"}, {}}}, true
+
+	case "SplitList":
+		if s, ok := stdlibArgString(args, 0); ok {
+			parts := filepath.SplitList(s)
+			vals := make([]Value, len(parts))
+			for i, p := range parts {
+				vals[i] = Value{Raw: p}
+			}
+			return Value{Raw: vals}, true
+		}
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, false
+}
+
+// handlePathCall models path.* functions (non-OS, slash-only paths) (#83).
+func (interp *Interpreter) handlePathCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Join":
+		var parts []string
+		for _, arg := range args {
+			if s, ok := arg.Raw.(string); ok {
+				parts = append(parts, s)
+			} else {
+				parts = append(parts, "seg")
+			}
+		}
+		// Use filepath.Join then replace OS separator with slash.
+		result := strings.ReplaceAll(filepath.Join(parts...), string(filepath.Separator), "/")
+		return Value{Raw: result}, true
+
+	case "Dir":
+		if s, ok := stdlibArgString(args, 0); ok {
+			idx := strings.LastIndex(s, "/")
+			if idx < 0 {
+				return Value{Raw: "."}, true
+			}
+			return Value{Raw: s[:idx]}, true
+		}
+		return Value{Raw: "."}, true
+
+	case "Base":
+		if s, ok := stdlibArgString(args, 0); ok {
+			idx := strings.LastIndex(s, "/")
+			if idx < 0 {
+				return Value{Raw: s}, true
+			}
+			return Value{Raw: s[idx+1:]}, true
+		}
+		return Value{Raw: "file"}, true
+
+	case "Ext":
+		if s, ok := stdlibArgString(args, 0); ok {
+			idx := strings.LastIndex(s, ".")
+			if idx < 0 {
+				return Value{Raw: ""}, true
+			}
+			return Value{Raw: s[idx:]}, true
+		}
+		return Value{Raw: ""}, true
+
+	case "Clean":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: strings.TrimRight(s, "/")}, true
+		}
+		return Value{Raw: "."}, true
+
+	case "IsAbs":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: strings.HasPrefix(s, "/")}, true
+		}
+		return Value{Raw: false}, true
+
+	case "Split":
+		if s, ok := stdlibArgString(args, 0); ok {
+			idx := strings.LastIndex(s, "/")
+			if idx < 0 {
+				return Value{Raw: []Value{{Raw: ""}, {Raw: s}}}, true
+			}
+			return Value{Raw: []Value{{Raw: s[:idx+1]}, {Raw: s[idx+1:]}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "/"}, {Raw: "file"}}}, true
+
+	case "Match":
+		return Value{Raw: []Value{{Raw: true}, {}}}, true // pessimistic
+	}
+	return Value{}, false
+}
+
+// handleNetCall models net.* utility functions (#84).
+// Full socket/connection model is not implemented; only pure utility functions.
+func (interp *Interpreter) handleNetCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "SplitHostPort":
+		if s, ok := stdlibArgString(args, 0); ok {
+			host, port, err := net.SplitHostPort(s)
+			if err != nil {
+				return Value{Raw: []Value{{Raw: ""}, {Raw: ""}, {Raw: err.Error()}}}, true
+			}
+			return Value{Raw: []Value{{Raw: host}, {Raw: port}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "localhost"}, {Raw: "8080"}, {}}}, true
+
+	case "JoinHostPort":
+		host, hostOK := stdlibArgString(args, 0)
+		port, portOK := stdlibArgString(args, 1)
+		if hostOK && portOK {
+			return Value{Raw: net.JoinHostPort(host, port)}, true
+		}
+		return Value{Raw: "localhost:8080"}, true
+
+	case "ParseIP":
+		if s, ok := stdlibArgString(args, 0); ok {
+			ip := net.ParseIP(s)
+			if ip == nil {
+				return Value{}, true // nil IP
+			}
+			return Value{Raw: ip.String()}, true
+		}
+		return Value{Raw: "127.0.0.1"}, true // sentinel
+
+	case "ParseCIDR":
+		if s, ok := stdlibArgString(args, 0); ok {
+			ip, ipnet, err := net.ParseCIDR(s)
+			if err != nil {
+				return Value{Raw: []Value{{}, {}, {Raw: err.Error()}}}, true
+			}
+			_ = ipnet
+			return Value{Raw: []Value{{Raw: ip.String()}, {Raw: struct{}{}}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "127.0.0.1"}, {Raw: struct{}{}}, {}}}, true
+
+	case "LookupHost":
+		// Conservative: do not actually resolve; return sentinel.
+		return Value{Raw: []Value{{Raw: []Value{{Raw: "127.0.0.1"}}}, {}}}, true
+
+	case "LookupPort":
+		s, _ := stdlibArgString(args, 1)
+		port := int64(8080)
+		switch s {
+		case "http":
+			port = 80
+		case "https":
+			port = 443
+		case "ftp":
+			port = 21
+		case "ssh":
+			port = 22
+		}
+		return Value{Raw: []Value{{Raw: port}, {}}}, true
+
+	case "LookupIP", "LookupTXT", "LookupMX", "LookupNS", "LookupCNAME":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+
+	case "ResolveTCPAddr", "ResolveUDPAddr", "ResolveIPAddr", "ResolveUnixAddr":
+		// (network, addr string) → (*Addr, error)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
+
+	case "Dial", "DialTimeout":
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
+
+	case "Listen", "ListenPacket":
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
+
+	case "Pipe":
+		opaque := Value{Raw: struct{}{}}
+		return Value{Raw: []Value{opaque, opaque}}, true
+
+	case "IPv4", "IPv4Mask":
+		return Value{Raw: "0.0.0.0"}, true
+
+	case "CIDRMask":
+		return Value{Raw: struct{}{}}, true
+	}
+	return Value{}, false
+}
+
+// handleTemplateCall models text/template and html/template functions (#84).
+// Both packages share the same API; html/template escapes output but the
+// interpreter models both identically.
+func (interp *Interpreter) handleTemplateCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	case "New":
+		// template.New(name string) *Template
+		return opaque, true
+
+	case "Must":
+		// template.Must(t *Template, err error) *Template
+		// If err is nil return t, otherwise return opaque.
+		if len(args) >= 2 && args[1].Raw == nil {
+			return args[0], true
+		}
+		return opaque, true
+
+	case "ParseFiles", "ParseGlob":
+		// template.ParseFiles/ParseGlob(...) (*Template, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "Parse":
+		// t.Parse(text string) (*Template, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "ParseFS":
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "Execute":
+		// t.Execute(wr io.Writer, data interface{}) error — return nil.
+		return Value{}, true
+
+	case "ExecuteTemplate":
+		// t.ExecuteTemplate(wr io.Writer, name string, data interface{}) error
+		return Value{}, true
+
+	case "Funcs":
+		// t.Funcs(funcMap FuncMap) *Template — chainable.
+		return opaque, true
+
+	case "Delims":
+		return opaque, true
+
+	case "Lookup":
+		// t.Lookup(name string) *Template
+		return opaque, true
+
+	case "Name":
+		// t.Name() string
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: s}, true
+		}
+		return Value{Raw: "tmpl"}, true
+
+	case "Clone":
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "Templates":
+		// t.Templates() []*Template
+		return Value{Raw: []Value{opaque}}, true
+
+	case "Option":
+		return opaque, true
+
+	case "HTMLEscape", "HTMLEscapeString", "JSEscape", "JSEscapeString",
+		"URLQueryEscaper":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: s}, true // pass-through for non-dangerous input
+		}
+		return Value{Raw: "escaped"}, true
 	}
 	return Value{}, false
 }

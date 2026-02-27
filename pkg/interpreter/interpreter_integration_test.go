@@ -286,6 +286,63 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.23.0 regression tests
+	{
+		name:           "hex encode",
+		dir:            "hex_encode",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "base64 encode",
+		dir:            "base64_encode",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "crypto rand read",
+		dir:            "crypto_rand_read",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "hash sha256",
+		dir:            "hash_sha256",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "filepath join",
+		dir:            "filepath_join",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "path basic",
+		dir:            "path_basic",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "net parse",
+		dir:            "net_parse",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "template execute",
+		dir:            "template_execute",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.22.0 regression tests
 	{
 		name:           "atomic counter",

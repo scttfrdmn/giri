@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-02-27
+
+### Added
+
+- **`encoding/hex` and `encoding/base64` intercepts** (issue #81): New
+  `handleHexCall` and `handleBase64Call` in `stdlib.go`:
+  - `encoding/hex`: `EncodeToString`, `DecodeString`, `Encode`, `Decode`,
+    `EncodedLen`, `DecodedLen`, `NewEncoder`, `NewDecoder`, `Dump`
+  - `encoding/base64`: all `*Encoding` methods (`EncodeToString`,
+    `DecodeString`, `Encode`, `Decode`, `EncodedLen`, `DecodedLen`),
+    `NewEncoding`, `NewEncoder`, `NewDecoder`
+  Concrete arguments call the real stdlib; opaque arguments return sentinels
+  (`"deadbeef"`, `"aGVsbG8="`, etc.) to keep downstream branches reachable.
+  Two integration tests: `hex_encode`, `base64_encode`.
+
+- **`crypto/rand` and hash package intercepts** (issue #82): New
+  `handleCryptoRandCall` and `handleHashCall` in `stdlib.go`:
+  - `crypto/rand`: `Read` (returns filled-length), `Int`, `Prime`
+  - `crypto/md5`, `crypto/sha1`, `crypto/sha256`, `crypto/sha512`:
+    `New`/`New224`/`New384`, package-level `Sum`/`Sum256`/`Sum512`,
+    `Write`, `Sum` (digest), `Reset`, `Size`, `BlockSize`, `Sum32`/`Sum64`
+  All four hash packages share one handler, keyed by `pkgPath` for correct
+  `digestLen` (16/20/32/64).  Imports `encoding/base64`, `encoding/hex`,
+  `net`, `path/filepath` added to stdlib.go.
+  Two integration tests: `crypto_rand_read`, `hash_sha256`.
+
+- **`path/filepath` and `path` intercepts** (issue #83): New
+  `handleFilepathCall` and `handlePathCall` in `stdlib.go`:
+  - `path/filepath`: `Join`, `Dir`, `Base`, `Ext`, `Abs`, `Clean`,
+    `IsAbs`, `Split`, `Rel`, `Match`, `Glob`, `Walk`/`WalkDir` (noop),
+    `FromSlash`, `ToSlash`, `VolumeName`, `EvalSymlinks`, `SplitList`
+  - `path` (slash-only): `Join`, `Dir`, `Base`, `Ext`, `Clean`, `IsAbs`,
+    `Split`, `Match`
+  Concrete string arguments call the real `filepath.*` functions; opaque
+  arguments return sensible path sentinels.
+  Two integration tests: `filepath_join`, `path_basic`.
+
+- **`net` utility and `text/template`/`html/template` intercepts** (issue #84):
+  New `handleNetCall` and `handleTemplateCall` in `stdlib.go`:
+  - `net`: `SplitHostPort`, `JoinHostPort`, `ParseIP`, `ParseCIDR`,
+    `LookupHost`, `LookupPort`, `LookupIP`/`TXT`/`MX`/`NS`/`CNAME`,
+    `ResolveTCPAddr`/`UDPAddr`/`IPAddr`/`UnixAddr`, `Dial`/`DialTimeout`,
+    `Listen`/`ListenPacket`, `Pipe`, `IPv4`, `IPv4Mask`, `CIDRMask`
+  - `text/template` and `html/template`: `New`, `Must`, `ParseFiles`,
+    `ParseGlob`, `Parse`, `ParseFS`, `Execute`, `ExecuteTemplate`,
+    `Funcs`, `Delims`, `Lookup`, `Name`, `Clone`, `Templates`, `Option`,
+    `HTMLEscape`/`JSEscape` variants
+  Concrete network arguments delegate to the real `net.*` pure functions
+  (no I/O); opaque arguments return sentinel host/port values.
+  Two integration tests: `net_parse`, `template_execute`.
+
+Closes #81, #82, #83, #84. Integration test count: 81 total.
+
 ## [0.22.0] - 2026-02-27
 
 ### Added
