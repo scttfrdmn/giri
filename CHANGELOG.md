@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-02-27
+
+### Added
+
+- **Double-close channel detection** (issue #52): `handleChannelClose` now emits a
+  typed `shadow.DoubleCloseError` when a channel that is already closed is closed
+  again. Previously the check existed but used an untyped `fmt.Errorf`; the typed
+  error enables structured reporting and `classifyError` classification.
+  New integration test: `double_close` (1 violation, "closed channel").
+
+- **Nil map write detection** (issue #54): the `ssa.MapUpdate` handler now checks
+  whether the map value has a nil backing (`m.Raw == nil`) before performing any
+  race check or update. A `shadow.NilMapWriteError` is recorded and execution of
+  the current block stops. Catches `var m map[K]V; m[k] = v` patterns that would
+  panic at runtime with "assignment to entry in nil map".
+  New integration test: `nil_map_write` (1 violation, "nil map").
+
+- **Division by zero detection** (issue #55): the `ssa.BinOp` handler now checks
+  `token.QUO` and `token.REM` operations for a statically-known zero `int64`
+  divisor before delegating to `evalBinOp`. A `shadow.DivisionByZeroError` is
+  recorded. Float division by zero is intentionally excluded (produces ±Inf, not a
+  panic). Catches patterns like `ratio(10, 0)` traceable through SSA.
+  New integration test: `div_zero` (1 violation, "division by zero").
+
+- Three new error types in `pkg/shadow/errors.go`:
+  `DoubleCloseError`, `NilMapWriteError`, `DivisionByZeroError`.
+  Three new `classifyError` cases in `pkg/report/report.go` with structured
+  categories and remediation hints.
+
+- Closes issues #52, #54, #55.
+
 ## [0.13.0] - 2026-02-26
 
 ### Fixed

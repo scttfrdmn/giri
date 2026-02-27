@@ -255,3 +255,45 @@ func (e *GoroutineLeakError) Error() string {
 		e.GID, e.BlockKind, e.BlockSite, e.SpawnSite,
 	)
 }
+
+// DoubleCloseError is reported when a channel is closed more than once.
+// In Go this panics at runtime: "close of closed channel".
+type DoubleCloseError struct {
+	Site string
+	GID  int64
+}
+
+func (e *DoubleCloseError) Error() string {
+	return fmt.Sprintf(
+		"close of closed channel (goroutine %d) at %s",
+		e.GID, e.Site,
+	)
+}
+
+// NilMapWriteError is reported when a write is attempted on a nil map.
+// In Go this panics at runtime: "assignment to entry in nil map".
+type NilMapWriteError struct {
+	Site string
+	GID  int64
+}
+
+func (e *NilMapWriteError) Error() string {
+	return fmt.Sprintf(
+		"nil map write (goroutine %d) at %s",
+		e.GID, e.Site,
+	)
+}
+
+// DivisionByZeroError is reported when integer division or modulo by zero is detected.
+// In Go this panics at runtime: "integer divide by zero".
+type DivisionByZeroError struct {
+	Site string
+	GID  int64
+}
+
+func (e *DivisionByZeroError) Error() string {
+	return fmt.Sprintf(
+		"division by zero (goroutine %d) at %s",
+		e.GID, e.Site,
+	)
+}

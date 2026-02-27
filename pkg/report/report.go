@@ -222,6 +222,33 @@ func classifyError(err error) Finding {
 				"permanent blocking.",
 		}
 
+	case *shadow.DoubleCloseError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "closed-channel",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "Close a channel only once. Use a sync.Once or a done channel pattern to avoid double-close.",
+		}
+
+	case *shadow.NilMapWriteError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "nil-map-write",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "Initialize maps with make() before writing: m := make(map[K]V).",
+		}
+
+	case *shadow.DivisionByZeroError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "division-by-zero",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "Check for zero divisor before dividing. Consider using a guard: if b == 0 { ... }.",
+		}
+
 	default:
 		return Finding{
 			Severity: SeverityWarning,

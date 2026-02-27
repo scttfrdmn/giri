@@ -323,6 +323,12 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 	case *ssa.BinOp:
 		x := interp.resolveValue(frame, inst.X)
 		y := interp.resolveValue(frame, inst.Y)
+		// Division/modulo by zero: statically-known zero divisor (#55).
+		if inst.Op == token.QUO || inst.Op == token.REM {
+			if yi, ok := y.Raw.(int64); ok && yi == 0 {
+				interp.recordViolation(gid, &shadow.DivisionByZeroError{Site: site, GID: gid})
+			}
+		}
 		frame.Locals[inst.Name()] = evalBinOp(inst.Op, x, y)
 
 	case *ssa.FieldAddr:
@@ -438,6 +444,11 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		m := interp.resolveValue(frame, inst.Map)
 		k := interp.resolveValue(frame, inst.Key)
 		v := interp.resolveValue(frame, inst.Value)
+		// Nil map write (#54): map value has no concrete backing.
+		if m.Raw == nil {
+			interp.recordViolation(gid, &shadow.NilMapWriteError{Site: site, GID: gid})
+			break
+		}
 		// Race check on map write (#46): use the map's shadow provenance.
 		if m.Provenance != nil {
 			if werr := interp.handleStore(gid, m, v, 8, site); werr != nil {

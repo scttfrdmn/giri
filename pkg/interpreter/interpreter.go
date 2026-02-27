@@ -1127,7 +1127,7 @@ func (interp *Interpreter) handleChannelClose(gid int64, chanID ChanID, site str
 			if g != nil {
 				g.Panicked = true
 			}
-			interp.recordViolation(gid, fmt.Errorf("close of already-closed channel at %s (goroutine %d)", site, gid))
+			interp.recordViolation(gid, &shadow.DoubleCloseError{Site: site, GID: gid})
 			return
 		}
 		ch.closed = true

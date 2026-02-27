@@ -286,6 +286,28 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.14.0 regression tests
+	{
+		name:           "double close",
+		dir:            "double_close",
+		wantViolations: 1,
+		wantCategory:   "closed channel",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "nil map write",
+		dir:            "nil_map_write",
+		wantViolations: 1,
+		wantCategory:   "nil map",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "div zero",
+		dir:            "div_zero",
+		wantViolations: 1,
+		wantCategory:   "division by zero",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.13.0 regression tests
 	{
 		name:           "defer unlock",
