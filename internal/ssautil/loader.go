@@ -99,9 +99,10 @@ func LoadProgram(patterns ...string) (*interpreter.Program, error) {
 	}
 
 	return &interpreter.Program{
-		SSA:  prog,
-		Main: mainPkg,
-		Fset: fset,
+		SSA:          prog,
+		Main:         mainPkg,
+		Fset:         fset,
+		Suppressions: ParseSuppressions(fset, initial),
 	}, nil
 }
 
@@ -167,6 +168,107 @@ func LoadTest(pattern string) (*interpreter.Program, []string, error) {
 		Main: testPkg,
 		Fset: fset,
 	}, testNames, nil
+}
+
+// ParseSuppressions scans source files for //giri:ignore comments and returns
+// a set of "file:line" positions that should suppress violations (#58).
+//
+// Suppression applies to:
+//   - the line of the //giri:ignore comment itself (for inline use)
+//   - the immediately following line (for preceding-line use)
+//
+// Example — inline:
+//
+//	_ = *(*uint32)(unsafe.Pointer(&b[1])) //giri:ignore rule 1
+//
+// Example — preceding line:
+//
+//	//giri:ignore rule 1
+//	_ = *(*uint32)(unsafe.Pointer(&b[1]))
+func ParseSuppressions(fset *token.FileSet, pkgs []*packages.Package) map[string]bool {
+	seen := make(map[string]bool)
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Syntax {
+			for _, cg := range file.Comments {
+				for _, c := range cg.List {
+					text := strings.TrimSpace(strings.TrimPrefix(c.Text, "//"))
+					if strings.HasPrefix(text, "giri:ignore") {
+						pos := fset.Position(c.Pos())
+						filename := pos.Filename
+						line := pos.Line
+						// Suppress the comment line (inline) and the next line
+						// (preceding-line directive).
+						seen[fmt.Sprintf("%s:%d", filename, line)] = true
+						seen[fmt.Sprintf("%s:%d", filename, line+1)] = true
+					}
+				}
+			}
+		}
+	}
+	return seen
+}
+
+// LoadAllPrograms loads all main packages matching the given patterns and
+// returns one Program per main package found (#53). This supports `giri ./...`
+// and other multi-package invocations.
+func LoadAllPrograms(patterns []string) ([]*interpreter.Program, error) {
+	cfg := &packages.Config{
+		Mode: packages.NeedName |
+			packages.NeedFiles |
+			packages.NeedCompiledGoFiles |
+			packages.NeedImports |
+			packages.NeedDeps |
+			packages.NeedTypes |
+			packages.NeedSyntax |
+			packages.NeedTypesInfo,
+	}
+
+	initial, err := packages.Load(cfg, patterns...)
+	if err != nil {
+		return nil, fmt.Errorf("loading packages: %w", err)
+	}
+
+	var loadErrs []error
+	for _, pkg := range initial {
+		for _, e := range pkg.Errors {
+			loadErrs = append(loadErrs, fmt.Errorf("%s: %s", pkg.PkgPath, e.Msg))
+		}
+	}
+	if len(loadErrs) > 0 {
+		if pkgsHaveArenaError(initial) {
+			fmt.Fprintf(os.Stderr,
+				"warning: some packages import \"arena\" but GOEXPERIMENT=arenas is not set.\n")
+		} else {
+			return nil, fmt.Errorf("package errors: %v", loadErrs)
+		}
+	}
+
+	prog, pkgs := ssautil.AllPackages(initial, ssa.InstantiateGenerics)
+	prog.Build()
+
+	suppressions := ParseSuppressions(initial[0].Fset, initial)
+
+	fset := token.NewFileSet()
+	if len(initial) > 0 {
+		fset = initial[0].Fset
+	}
+
+	var programs []*interpreter.Program
+	for _, pkg := range pkgs {
+		if pkg != nil && pkg.Pkg.Name() == "main" {
+			programs = append(programs, &interpreter.Program{
+				SSA:          prog,
+				Main:         pkg,
+				Fset:         fset,
+				Suppressions: suppressions,
+			})
+		}
+	}
+
+	if len(programs) == 0 {
+		return nil, fmt.Errorf("no main packages found in %v", patterns)
+	}
+	return programs, nil
 }
 
 // pkgsHaveArenaError reports whether any loaded package has an error whose

@@ -301,6 +301,21 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.17.0 regression tests
+	{
+		name:           "suppress ignore",
+		dir:            "suppress_ignore",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "multi pkg",
+		dir:            "multi_pkg",
+		wantViolations: 1,
+		wantCategory:   "rule 1",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.15.0 regression tests
 	{
 		name:           "deadlock",

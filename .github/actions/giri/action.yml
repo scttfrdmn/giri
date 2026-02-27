@@ -1,0 +1,90 @@
+name: 'Giri — Go Undefined Behavior Detector'
+description: >
+  Build and run Giri to detect undefined behavior in Go programs.
+  Outputs a SARIF file that can be uploaded to GitHub Code Scanning.
+
+inputs:
+  packages:
+    description: 'Go package patterns to analyse (e.g. ./... or ./cmd/server)'
+    required: false
+    default: './...'
+  go-version:
+    description: 'Go version to use for building Giri'
+    required: false
+    default: '1.23'
+  format:
+    description: 'Output format: text, json, or sarif'
+    required: false
+    default: 'sarif'
+  output-file:
+    description: 'Path for the output file (used when format is json or sarif)'
+    required: false
+    default: 'giri-results.sarif'
+  upload-sarif:
+    description: 'Upload SARIF results to GitHub Code Scanning (requires security-events: write permission)'
+    required: false
+    default: 'true'
+  fail-on-findings:
+    description: 'Exit with code 1 when violations are found (default: false so the upload step always runs)'
+    required: false
+    default: 'false'
+  extra-flags:
+    description: 'Additional flags to pass to giri (e.g. -max-steps 5000000)'
+    required: false
+    default: ''
+
+outputs:
+  findings-count:
+    description: 'Number of violations found'
+    value: ${{ steps.run-giri.outputs.findings-count }}
+  sarif-file:
+    description: 'Path to the generated SARIF file'
+    value: ${{ inputs.output-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: true
+
+    - name: Install Giri
+      shell: bash
+      run: |
+        go install github.com/scttfrdmn/giri/cmd/giri@latest
+      env:
+        GOEXPERIMENT: arenas
+
+    - name: Run Giri
+      id: run-giri
+      shell: bash
+      env:
+        GOEXPERIMENT: arenas
+      run: |
+        set +e
+        giri -format ${{ inputs.format }} ${{ inputs.extra-flags }} ${{ inputs.packages }} \
+          > "${{ inputs.output-file }}" 2>giri-stderr.txt
+        EXIT=$?
+        cat giri-stderr.txt >&2
+
+        # Count findings from SARIF (jq may not be available; use grep as fallback)
+        if command -v jq &>/dev/null && [ "${{ inputs.format }}" = "sarif" ]; then
+          COUNT=$(jq '[.runs[].results | length] | add // 0' "${{ inputs.output-file }}" 2>/dev/null || echo "0")
+        else
+          COUNT="unknown"
+        fi
+        echo "findings-count=$COUNT" >> "$GITHUB_OUTPUT"
+
+        if [ "${{ inputs.fail-on-findings }}" = "true" ]; then
+          exit $EXIT
+        fi
+        exit 0
+
+    - name: Upload SARIF to GitHub Code Scanning
+      if: ${{ inputs.upload-sarif == 'true' && inputs.format == 'sarif' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.output-file }}
+        category: giri

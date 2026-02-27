@@ -45,6 +45,7 @@ import (
 	"github.com/scttfrdmn/giri/internal/ssautil"
 	"github.com/scttfrdmn/giri/pkg/interpreter"
 	"github.com/scttfrdmn/giri/pkg/report"
+	"github.com/scttfrdmn/giri/pkg/shadow"
 )
 
 var (
@@ -100,32 +101,41 @@ func main() {
 	// Build configuration
 	config := buildConfig()
 
-	// Load program
+	// Load all matching programs (supports ./... and multiple patterns)
 	fmt.Fprintf(os.Stderr, "Loading packages...\n")
-	prog, err := ssautil.LoadProgram(patterns...)
+	progs, err := ssautil.LoadAllPrograms(patterns)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(2)
 	}
+	fmt.Fprintf(os.Stderr, "Found %d main package(s).\n", len(progs))
 
-	// Dump SSA mode
+	// Dump SSA mode (first program only)
 	if *flagDump {
-		ssautil.DumpSSA(prog)
+		ssautil.DumpSSA(progs[0])
 		os.Exit(0)
 	}
 
-	// Run interpretation
-	var result *interpreter.RunResult
-	if *flagRuns > 1 {
-		fmt.Fprintf(os.Stderr, "Interpreting with PCT scheduler (%d runs, seed=%d)...\n", *flagRuns, *flagSeed)
-		result = interpreter.RunN(prog, config, *flagRuns, *flagSeed)
-	} else {
-		fmt.Fprintf(os.Stderr, "Interpreting with %s scheduler (seed=%d)...\n", *flagStrategy, *flagSeed)
-		result = interpreter.Run(prog, config)
+	// Run interpretation across all programs, collecting violations.
+	var allViolations []error
+	var lastMemStats shadow.MemoryStats
+	for _, prog := range progs {
+		var result *interpreter.RunResult
+		if *flagRuns > 1 {
+			fmt.Fprintf(os.Stderr, "Interpreting %s with PCT scheduler (%d runs, seed=%d)...\n",
+				prog.Main.Pkg.Name(), *flagRuns, *flagSeed)
+			result = interpreter.RunN(prog, config, *flagRuns, *flagSeed)
+		} else {
+			fmt.Fprintf(os.Stderr, "Interpreting %s with %s scheduler (seed=%d)...\n",
+				prog.Main.Pkg.Name(), *flagStrategy, *flagSeed)
+			result = interpreter.Run(prog, config)
+		}
+		allViolations = append(allViolations, result.Violations...)
+		lastMemStats = result.MemStats
 	}
 
 	// Build report
-	rpt := report.Build(result.Violations, &result.MemStats)
+	rpt := report.Build(allViolations, &lastMemStats)
 
 	// Output
 	format := report.FormatText

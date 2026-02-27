@@ -347,6 +347,15 @@ type Interpreter struct {
 	// Keyed by AllocID. Used by popFrame to re-evaluate named return values after
 	// deferred closures may have modified named-return allocs (#49).
 	valueStore map[shadow.AllocID]Value
+
+	// suppressions maps "file:line" → true for each //giri:ignore comment in
+	// the source. Violations whose currentSite matches an entry are dropped (#58).
+	suppressions map[string]bool
+
+	// currentSite is the posString of the SSA instruction currently executing.
+	// Updated at the start of each instruction in execBlock; read by
+	// recordViolation to check against suppressions.
+	currentSite string
 }
 
 // Config controls interpreter behavior.
@@ -563,7 +572,15 @@ func (interp *Interpreter) captureStack(gid int64) []StackFrame {
 
 // recordViolation adds a detected violation, wrapping it with the goroutine's
 // current call stack so reporters can display accurate stack traces.
+// If the current instruction's site matches a //giri:ignore suppression, the
+// violation is silently dropped (#58).
 func (interp *Interpreter) recordViolation(gid int64, err error) {
+	// Check suppression before allocating the wrapper.
+	if interp.currentSite != "" && len(interp.suppressions) > 0 {
+		if interp.suppressions[interp.currentSite] {
+			return
+		}
+	}
 	var spawnSite string
 	if g := interp.goroutines[gid]; g != nil {
 		spawnSite = g.SpawnSite

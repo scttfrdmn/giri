@@ -116,7 +116,41 @@ To enable full arena analysis, set `GOEXPERIMENT=arenas` — the same flag neede
 
 Giri exits with code 0 (no violations), 1 (violations found), or 2 (load/internal error), making it suitable as a CI gate.
 
-**GitHub Actions (SARIF upload to code scanning):**
+**One-step GitHub Action (#59):**
+
+```yaml
+# .github/workflows/giri.yml
+name: Giri scan
+on: [push, pull_request]
+jobs:
+  giri:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # required for SARIF upload
+    steps:
+      - uses: actions/checkout@v4
+      - uses: scttfrdmn/giri/.github/actions/giri@v0.17.0
+        with:
+          packages: './...'
+          upload-sarif: 'true'
+```
+
+The action builds and runs Giri, then uploads the SARIF report to GitHub Code Scanning so findings appear as security alerts on your repository.
+
+**Available inputs:**
+
+| Input | Default | Description |
+|---|---|---|
+| `packages` | `./...` | Go package patterns to analyse |
+| `go-version` | `1.23` | Go version used to build Giri |
+| `format` | `sarif` | Output format: `text`, `json`, or `sarif` |
+| `output-file` | `giri-results.sarif` | Path for the output file |
+| `upload-sarif` | `true` | Upload SARIF to GitHub Code Scanning |
+| `fail-on-findings` | `false` | Exit 1 when violations found |
+| `extra-flags` | | Additional flags passed to `giri` |
+
+**Manual steps (without the composite action):**
 
 ```yaml
 - name: Run giri

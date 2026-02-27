@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-02-27
+
+### Added
+
+- **`//giri:ignore` suppression directive** (issue #58): Source lines annotated with
+  `//giri:ignore` (inline or on the preceding line) are silenced. `ParseSuppressions`
+  in `internal/ssautil/loader.go` scans all loaded package syntax trees and builds a
+  `map[string]bool` keyed by `"file:line"`. The interpreter checks
+  `interp.suppressions[interp.currentSite]` inside `recordViolation` before appending
+  a finding. Both inline (`code //giri:ignore rule 1`) and preceding-line
+  (`//giri:ignore rule 1\ncode`) forms are supported.
+
+- **Multi-package support** (issue #53): `LoadAllPrograms(patterns []string)` in
+  `internal/ssautil/loader.go` loads all Go packages matching the given patterns,
+  builds a shared SSA `*ssa.Program`, and returns one `*interpreter.Program` per
+  `main` package found. `cmd/giri/main.go` now uses `LoadAllPrograms` and iterates
+  over all returned programs, aggregating violations into a single report. Because
+  `LoadProgram` has always used `NeedDeps` + `prog.Build()`, cross-package function
+  bodies (e.g. a library called from `main`) are already available to `execFunction`;
+  no interpreter changes were required.
+
+- **GitHub Action** (issue #59): New composite action at
+  `.github/actions/giri/action.yml`. Users can add a one-step Giri scan to any
+  repository workflow. The action installs Giri, runs it against the specified
+  packages, and optionally uploads the SARIF report to GitHub Code Scanning.
+  Inputs: `packages`, `go-version`, `format`, `output-file`, `upload-sarif`,
+  `fail-on-findings`, `extra-flags`. README CI Integration section updated with
+  usage examples and input reference table.
+
+- **Two new integration tests**: `suppress_ignore` (0 violations — misaligned load
+  silenced by `//giri:ignore`), `multi_pkg` (1 violation — Rule 1 from an imported
+  library package).
+
+### Fixed
+
+- `LoadProgram` now populates `Program.Suppressions` so single-package invocations
+  also benefit from `//giri:ignore` directives.
+
 ## [0.16.0] - 2026-02-27
 
 ### Added

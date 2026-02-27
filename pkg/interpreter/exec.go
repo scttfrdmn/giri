@@ -33,6 +33,11 @@ type Program struct {
 	SSA  *ssa.Program
 	Main *ssa.Package
 	Fset *token.FileSet
+
+	// Suppressions maps "file:line" → true for each //giri:ignore comment
+	// found in the source files. Violations whose current-instruction site
+	// matches an entry here are silently dropped by recordViolation (#58).
+	Suppressions map[string]bool
 }
 
 // RunResult holds the results of interpreting a program.
@@ -63,6 +68,7 @@ func Run(prog *Program, config Config) *RunResult {
 	return safearena.Scoped(func(a *safearena.Arena) *RunResult {
 		interp := newWithArena(prog.Fset, config, a)
 		interp.prog = prog.SSA
+		interp.suppressions = prog.Suppressions
 
 		// Initialize global variable state: allocate shadow memory for every
 		// package-level variable so loads/stores via *ssa.Global are tracked.
@@ -268,6 +274,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 	}
 
 	site := interp.posString(instr.Pos())
+	interp.currentSite = site // for //giri:ignore suppression checks (#58)
 	frame := interp.currentFrame(gid)
 
 	switch inst := instr.(type) {
