@@ -1,0 +1,93 @@
+name: Bug Report
+description: Report incorrect behavior, false positives, false negatives, or crashes
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much detail as possible
+        so we can reproduce and fix it quickly.
+
+  - type: dropdown
+    id: violation_type
+    attributes:
+      label: Violation type
+      description: What kind of issue are you seeing?
+      options:
+        - False positive (Giri reports a violation that isn't real)
+        - False negative (Giri misses a real violation)
+        - Crash or panic in Giri itself
+        - Incorrect output format (text/JSON/SARIF)
+        - Performance issue (too slow, OOM)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: giri_version
+    attributes:
+      label: Giri version
+      description: Output of `giri -version` or the git tag you built from
+      placeholder: "v0.32.0"
+    validations:
+      required: true
+
+  - type: input
+    id: go_version
+    attributes:
+      label: Go version
+      description: Output of `go version`
+      placeholder: "go1.23.4 darwin/arm64"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction program
+      description: |
+        The smallest Go program that triggers the issue. Wrap in a fenced code block.
+        If the program is large, link to a repository or a Go Playground snippet.
+      placeholder: |
+        ```go
+        package main
+
+        func main() {
+            // ...
+        }
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Giri command
+      description: The exact command you ran
+      placeholder: "giri -race ./..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should Giri report?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What does Giri actually report? Paste the full output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: |
+        Anything else that might help: .giri.json contents, CI environment,
+        whether the bug is reproducible with a specific seed, etc.

@@ -100,6 +100,40 @@ giri -v ./cmd/server
 giri -dump-ssa ./pkg/mypackage
 ```
 
+### Project Configuration File
+
+Commit your preferred Giri settings to the repository by adding a `.giri.json`
+file in the project root. CLI flags always override file values.
+
+```json
+{
+  "format":   "sarif",
+  "strategy": "pct",
+  "runs":     100,
+  "seed":     42,
+  "race":     true,
+  "unsafe":   true,
+  "arena":    true
+}
+```
+
+Supported fields mirror CLI flags:
+
+| Field | Type | CLI equivalent |
+|-------|------|----------------|
+| `format` | string | `-format` |
+| `strategy` | string | `-strategy` |
+| `seed` | int64 | `-seed` |
+| `runs` | int | `-runs` |
+| `depth` | int | `-depth` |
+| `race` | bool | `-race` |
+| `unsafe` | bool | `-unsafe` |
+| `arena` | bool | `-arena` |
+| `init` | bool | `-init` |
+| `verbose` | bool | `-v` |
+| `max_steps` | uint64 | `-max-steps` |
+| `max_goroutines` | int | `-max-goroutines` |
+
 ### Arena Programs
 
 If a package imports `"arena"` but `GOEXPERIMENT=arenas` is not set, those packages cannot be compiled. Giri prints a warning, skips the arena packages, and continues analyzing everything else. Arena-specific checks will produce no findings for the skipped packages.
@@ -254,14 +288,14 @@ giri/
 - [x] Deferred call handling (`defer arena.Free()`)
 - [x] Goroutine spawning, closures, multi-return
 - [x] Report generation (text, JSON, SARIF)
-- [x] Integration test suite (60 tests)
+- [x] Integration test suite (120+ tests)
 
 ### Phase 2: unsafe.Pointer Rules ✓
 - [x] Rule 1: Alignment verification at conversion sites
 - [x] Rule 2: `uintptr` liveness tracking across GC safepoints
 - [x] Rule 3: Pointer arithmetic bounds checking
-- [ ] Rule 5: `reflect.Value.Pointer` validation
-- [ ] Rule 6: `SliceHeader`/`StringHeader` manipulation
+- [x] Rule 5: `reflect.Value.Pointer` / `UnsafeAddr` validation
+- [x] Rule 6: `SliceHeader` / `StringHeader` manipulation
 
 ### Phase 3: Concurrency Verification ✓ (core)
 - [x] Vector clock infrastructure (Lamport clocks per goroutine)
@@ -275,11 +309,23 @@ giri/
 
 ### Phase 4: Advanced
 - [x] Interprocedural analysis (follow calls across packages) — v0.17.0
-- [x] Standard library intercepts (`strings`, `strconv`, `fmt`, `time`, `os`, `math/rand`, `sync`, `bytes`, `errors`, `sort`) — v0.11–0.19
+- [x] Standard library intercepts (60+ packages: `strings`, `strconv`, `fmt`, `time`, `os`, `math/rand`, `sync`, `bytes`, `errors`, `sort`, `regexp`, `encoding/json`, `net/http`, `database/sql`, `crypto/tls`, and more) — v0.11–0.30
 - [ ] `cgo` boundary checking
 - [ ] `reflect` package safety verification
 - [ ] `go:linkname` tracking
 - [ ] `go test -giri` integration
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for:
+
+- Development setup (`GOEXPERIMENT=arenas go test ./...`)
+- Commit conventions and PR workflow
+- How to add a stdlib intercept
+- How to add an integration test
+
+Please report security issues via the [GitHub private security advisory](https://github.com/scttfrdmn/giri/security/advisories)
+rather than as public issues. See [SECURITY.md](SECURITY.md) for details.
 
 ## Requirements
 

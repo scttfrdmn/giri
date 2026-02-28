@@ -1,0 +1,31 @@
+name: Question
+description: Ask a question about using or extending Giri
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question? Please check the [README](../../README.md) and the
+        [blog posts](../../docs/blog/) first — your answer may already be there.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What would you like to know?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: |
+        What are you trying to accomplish? Share any relevant code, commands,
+        or error output so we can give a precise answer.
+
+  - type: input
+    id: giri_version
+    attributes:
+      label: Giri version (if relevant)
+      placeholder: "v0.32.0"

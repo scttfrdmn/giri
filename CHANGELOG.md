@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-02-28
+
+### Added
+
+- **Project-level `.giri.json` configuration file** (issue #115): Commit team
+  settings to the repository instead of duplicating flags in every CI script,
+  Makefile, and developer README.
+
+  Fields mirror CLI flags (`format`, `strategy`, `seed`, `runs`, `depth`,
+  `race`, `unsafe`, `arena`, `init`, `verbose`, `max_steps`, `max_goroutines`).
+  CLI flags always override file values. The file is loaded from the working
+  directory at startup; a missing file is silently ignored.
+
+  ```json
+  {
+    "format":   "sarif",
+    "strategy": "pct",
+    "runs":     100,
+    "seed":     42,
+    "race":     true,
+    "unsafe":   true
+  }
+  ```
+
+  Four unit tests cover: missing file, valid file, invalid JSON, and field
+  application precedence.
+
+- **`CONTRIBUTING.md`** (issue #116): Development setup, commit conventions,
+  PR workflow, and step-by-step guides for adding stdlib intercepts and
+  integration tests.
+
+- **`SECURITY.md`** (issue #116): Responsible disclosure process via GitHub
+  private security advisory, response timeline, and scope definition.
+
+- **GitHub issue templates** (issue #117): Structured YAML forms for bug
+  reports (`bug_report.yml`), feature requests (`feature_request.yml`), and
+  questions (`question.yml`) in `.github/ISSUE_TEMPLATE/`.
+
+### Changed
+
+- **README**: Added `.giri.json` configuration reference table, Contributing
+  section, corrected Phase 2 unsafe.Pointer Rules 5 & 6 status to checked,
+  updated stdlib intercept package count (60+), updated integration test count
+  (120+).
+
+### Closes
+
+- #115 (`.giri.json` config file), #116 (community health files), #117 (issue templates)
+
 ## [0.31.0] - 2026-02-27
 
 ### Added

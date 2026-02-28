@@ -1,0 +1,68 @@
+name: Feature Request
+description: Propose a new feature, detector, stdlib intercept, or API change
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Before filing, please search existing
+        issues to see if the feature has already been requested.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Giri does this relate to?
+      options:
+        - New detector (e.g. new class of violations)
+        - Stdlib intercept (model a standard library package)
+        - Custom intercept API
+        - Scheduler / concurrency testing
+        - Output / reporting (text, JSON, SARIF)
+        - CLI / configuration
+        - Performance
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: |
+        What problem does this feature solve? Describe the situation where you
+        ran into the limitation.
+      placeholder: "When I run Giri on code that uses package X, I get false positives because..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you'd like. Be as specific as possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Are there workarounds or alternative approaches? Why is the proposed
+        solution preferable?
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example
+      description: |
+        If applicable, show what the feature would look like — a code snippet,
+        a CLI invocation, or example output.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links to related issues, prior art, or references.

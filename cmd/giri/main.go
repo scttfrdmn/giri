@@ -38,6 +38,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -47,6 +48,60 @@ import (
 	"github.com/scttfrdmn/giri/pkg/report"
 	"github.com/scttfrdmn/giri/pkg/shadow"
 )
+
+// projectConfig represents the optional .giri.json project-level configuration file.
+// Fields mirror CLI flags. Absent fields do not override defaults; CLI flags
+// always take precedence over file values.
+//
+// Example .giri.json:
+//
+//	{
+//	  "format":   "sarif",
+//	  "strategy": "pct",
+//	  "runs":     100,
+//	  "seed":     42,
+//	  "race":     true,
+//	  "unsafe":   true
+//	}
+type projectConfig struct {
+	// Detector selection
+	All    *bool `json:"all,omitempty"`
+	Arena  *bool `json:"arena,omitempty"`
+	Unsafe *bool `json:"unsafe,omitempty"`
+	Race   *bool `json:"race,omitempty"`
+	Init   *bool `json:"init,omitempty"`
+
+	// Scheduling
+	Strategy *string `json:"strategy,omitempty"`
+	Seed     *int64  `json:"seed,omitempty"`
+	Depth    *int    `json:"depth,omitempty"`
+	Runs     *int    `json:"runs,omitempty"`
+
+	// Output
+	Format  *string `json:"format,omitempty"`
+	Verbose *bool   `json:"verbose,omitempty"`
+
+	// Execution limits
+	MaxSteps      *uint64 `json:"max_steps,omitempty"`
+	MaxGoroutines *int    `json:"max_goroutines,omitempty"`
+}
+
+// loadProjectConfig reads .giri.json from the working directory.
+// Returns nil without error if the file does not exist.
+func loadProjectConfig() (*projectConfig, error) {
+	data, err := os.ReadFile(".giri.json")
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading .giri.json: %w", err)
+	}
+	var pc projectConfig
+	if err := json.Unmarshal(data, &pc); err != nil {
+		return nil, fmt.Errorf("parsing .giri.json: %w", err)
+	}
+	return &pc, nil
+}
 
 var (
 	// Detector flags
@@ -81,14 +136,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Giri interprets Go programs via SSA and checks every memory\n")
 		fmt.Fprintf(os.Stderr, "operation for safety violations that the compiler and runtime\n")
 		fmt.Fprintf(os.Stderr, "would miss.\n\n")
+		fmt.Fprintf(os.Stderr, "Project config: if .giri.json exists in the working directory,\n")
+		fmt.Fprintf(os.Stderr, "it is loaded as baseline configuration. CLI flags override it.\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  giri ./...                     Check all packages\n")
-		fmt.Fprintf(os.Stderr, "  giri -arena ./pkg/allocator    Arena safety only\n")
+		fmt.Fprintf(os.Stderr, "  giri ./...                          Check all packages\n")
+		fmt.Fprintf(os.Stderr, "  giri -arena ./pkg/allocator         Arena safety only\n")
 		fmt.Fprintf(os.Stderr, "  giri -format json ./... > r.json    CI integration\n")
 		fmt.Fprintf(os.Stderr, "  giri -format sarif ./... > r.sarif  GitHub code scanning\n")
-		fmt.Fprintf(os.Stderr, "  giri -seed 42 -strategy pct ./...  Reproducible concurrency testing\n")
+		fmt.Fprintf(os.Stderr, "  giri -seed 42 -strategy pct ./...   Reproducible concurrency testing\n")
 	}
 
 	flag.Parse()
@@ -98,8 +155,14 @@ func main() {
 		patterns = []string{"./..."}
 	}
 
-	// Build configuration
-	config := buildConfig()
+	// Load optional project-level config file.
+	pc, err := loadProjectConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+	}
+
+	// Build configuration (file values < defaults; CLI flags override both)
+	config := buildConfig(pc)
 
 	// Load all matching programs (supports ./... and multiple patterns)
 	fmt.Fprintf(os.Stderr, "Loading packages...\n")
@@ -154,9 +217,15 @@ func main() {
 	os.Exit(rpt.ExitCode())
 }
 
-func buildConfig() interpreter.Config {
+func buildConfig(pc *projectConfig) interpreter.Config {
 	config := interpreter.DefaultConfig()
 
+	// Apply project-level config first (lowest precedence).
+	if pc != nil {
+		applyProjectConfig(&config, pc)
+	}
+
+	// Apply CLI flags (highest precedence — override file values).
 	config.MaxSteps = *flagMaxSteps
 	config.MaxGoroutines = *flagMaxGoroutines
 	config.Verbose = *flagVerbose
@@ -185,4 +254,52 @@ func buildConfig() interpreter.Config {
 	config.BugDepth = *flagDepth
 
 	return config
+}
+
+// applyProjectConfig applies non-nil fields from pc to config.
+// CLI flags applied afterwards will override these values.
+func applyProjectConfig(config *interpreter.Config, pc *projectConfig) {
+	if pc.All != nil && !*pc.All {
+		config.TrackArenas = false
+		config.TrackUnsafe = false
+		config.TrackRaces = false
+		config.TrackInit = false
+	}
+	if pc.Arena != nil {
+		config.TrackArenas = *pc.Arena
+	}
+	if pc.Unsafe != nil {
+		config.TrackUnsafe = *pc.Unsafe
+	}
+	if pc.Race != nil {
+		config.TrackRaces = *pc.Race
+	}
+	if pc.Init != nil {
+		config.TrackInit = *pc.Init
+	}
+	if pc.Strategy != nil {
+		switch *pc.Strategy {
+		case "roundrobin":
+			config.ScheduleStrategy = interpreter.ScheduleRoundRobin
+		case "random":
+			config.ScheduleStrategy = interpreter.ScheduleRandom
+		case "pct":
+			config.ScheduleStrategy = interpreter.SchedulePCT
+		}
+	}
+	if pc.Seed != nil {
+		config.RandomSeed = *pc.Seed
+	}
+	if pc.Depth != nil {
+		config.BugDepth = *pc.Depth
+	}
+	if pc.MaxSteps != nil {
+		config.MaxSteps = *pc.MaxSteps
+	}
+	if pc.MaxGoroutines != nil {
+		config.MaxGoroutines = *pc.MaxGoroutines
+	}
+	if pc.Verbose != nil {
+		config.Verbose = *pc.Verbose
+	}
 }
