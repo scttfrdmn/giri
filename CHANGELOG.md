@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-02-27
+
+### Added
+
+- **`crypto/tls` intercepts** (issue #101): New `handleTLSCall` covers
+  `Dial`/`DialWithDialer` → (`*Conn`, nil); `Client`/`Server` → opaque;
+  `Listen`/`NewListener` → (`*Listener`, nil); `LoadX509KeyPair`/`X509KeyPair` →
+  (opaque, nil); `*Conn` methods: `Read`/`Write` → (n, nil), `Close`/`Handshake`/
+  `VerifyHostname` → nil, `ConnectionState` → opaque, `RemoteAddr`/`LocalAddr` →
+  opaque, `SetDeadline`/`SetReadDeadline`/`SetWriteDeadline` → nil.
+  Integration test: `tls_dial`.
+
+- **`database/sql` intercepts** (issue #102): New `handleSQLCall` covers
+  `Open` → (`*DB`, nil); `Named` → opaque; `*DB`: `Query`/`QueryContext` →
+  (`*Rows`, nil), `QueryRow`/`QueryRowContext` → `*Row`, `Exec`/`ExecContext` →
+  (Result, nil), `Prepare`/`PrepareContext` → (`*Stmt`, nil), `Begin`/`BeginTx` →
+  (`*Tx`, nil), `Ping`/`Close` → nil; `*Rows`: `Next` → false, `Scan` → nil,
+  `Err` → nil, `Close` → nil, `Columns` → []; `*Row`: `Scan` → nil;
+  `*Tx`: `Commit`/`Rollback`/`Exec`/`Query` → appropriate zero values;
+  `Result.LastInsertId`/`RowsAffected` → (0, nil). Integration test: `sql_query`.
+
+- **`strings.NewReader` + `*strings.Reader` method intercepts** (issue #103):
+  `NewReader` → opaque; `Read`/`ReadAt` → (n, nil), `ReadByte` → (0, nil),
+  `ReadRune` → (0, 1, nil), `UnreadByte`/`UnreadRune` → nil, `Seek` → (0, nil),
+  `Size`/`Len` → 0, `WriteTo` → (0, nil). Added to existing `handleStringsCall`.
+
+- **`bytes.NewReader`, `bytes.NewBuffer`, `bytes.NewBufferString` + method intercepts**
+  (issue #103): New constructors return opaque; `*bytes.Reader` methods:
+  `Read`/`ReadAt` → (n, nil), `Seek` → (0, nil), `Size` → 0. Added to existing
+  `handleBytesCall`. Integration test: `strings_reader` (covers both packages).
+
+- **`testing.T` method intercepts** (issue #104): New `handleTestingCall` covers
+  `Fatal`/`Fatalf`/`FailNow` → marks goroutine Panicked; `Run` → probes callback
+  fn with sentinel `*testing.T` (uses real gid); `Log`/`Logf`/`Error`/`Errorf`/
+  `Skip`/`Skipf`/`SkipNow` → noop; `Helper`/`Parallel`/`Cleanup` → noop;
+  `Failed`/`Skipped` → false; `Name` → ""; `TempDir` → "/tmp".
+  Integration test: `testing_helper`.
+
 ## [0.27.0] - 2026-02-27
 
 ### Added

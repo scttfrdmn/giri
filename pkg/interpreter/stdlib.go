@@ -42,7 +42,9 @@ import (
 // "reflect", "flag", "runtime", "os/exec", "compress/gzip", "compress/zlib",
 // "net/http", "os/signal", "encoding/binary", "hash/crc32", "hash/fnv",
 // "hash/adler32", "container/list", "container/heap", "container/ring",
-// and "math/big".
+// "math/big", "crypto/tls", "database/sql", and "testing".
+// strings.NewReader and bytes.NewReader/NewBuffer/NewBufferString are handled
+// within the existing "strings" and "bytes" cases.
 // Returns (result, true) when intercepted, (Value{}, false) otherwise.
 //
 // gid and site are required by handlers that invoke user callbacks
@@ -133,6 +135,12 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleContainerCall(gid, pkgPath, name, args)
 	case "math/big":
 		return interp.handleMathBigCall(name, args)
+	case "crypto/tls":
+		return interp.handleTLSCall(name, args)
+	case "database/sql":
+		return interp.handleSQLCall(name, args)
+	case "testing":
+		return interp.handleTestingCall(gid, name, args)
 	}
 	return Value{}, false
 }
@@ -343,6 +351,41 @@ func (interp *Interpreter) handleStringsCall(name string, args []Value) (Value, 
 	case "Grow":
 		// b.Grow(n int)
 		return Value{}, true
+
+	// *strings.Reader constructors and methods (#103):
+	case "NewReader":
+		// strings.NewReader(s string) *strings.Reader — opaque non-nil.
+		return Value{Raw: struct{}{}}, true
+
+	// *strings.Reader methods (receiver = args[0]):
+	case "Read", "ReadAt":
+		// (int, error) — return (len(p), nil) pessimistically.
+		n := int64(0)
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = int64(len(b))
+			case []Value:
+				n = int64(len(b))
+			}
+		}
+		return Value{Raw: []Value{{Raw: n}, {}}}, true
+	case "ReadByte":
+		// (byte, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "ReadRune":
+		// (rune, int, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(1)}, {}}}, true
+	case "UnreadByte", "UnreadRune":
+		return Value{}, true
+	case "Seek":
+		// (int64, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Size":
+		return Value{Raw: int64(0)}, true
+	case "WriteTo":
+		// (int64, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
 	}
 	return Value{}, false
 }
@@ -1139,6 +1182,45 @@ func (interp *Interpreter) handleBytesCall(name string, args []Value) (Value, bo
 	case "UnreadRune":
 		// buf.UnreadRune() error
 		return Value{}, true
+
+	// bytes.NewBuffer / bytes.NewBufferString / bytes.NewReader constructors (#103):
+	case "NewBuffer", "NewBufferString":
+		// bytes.NewBuffer(buf []byte) *bytes.Buffer — opaque non-nil.
+		return Value{Raw: struct{}{}}, true
+	case "NewReader":
+		// bytes.NewReader(b []byte) *bytes.Reader — opaque non-nil.
+		return Value{Raw: struct{}{}}, true
+
+	// *bytes.Reader methods (receiver = args[0]):
+	case "Seek":
+		// (int64, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Size":
+		return Value{Raw: int64(0)}, true
+	case "Read":
+		// (int, error) — returns (len(p), nil)
+		n := int64(0)
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = int64(len(b))
+			case []Value:
+				n = int64(len(b))
+			}
+		}
+		return Value{Raw: []Value{{Raw: n}, {}}}, true
+	case "ReadAt":
+		// (int, error)
+		n := int64(0)
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = int64(len(b))
+			case []Value:
+				n = int64(len(b))
+			}
+		}
+		return Value{Raw: []Value{{Raw: n}, {}}}, true
 	}
 	return Value{}, false
 }
@@ -4184,6 +4266,253 @@ func (interp *Interpreter) handleMathBigCall(name string, args []Value) (Value, 
 		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
 	case "IsInt":
 		return Value{Raw: false}, true
+	}
+	return Value{}, false
+}
+
+// handleTLSCall models crypto/tls.* functions (#101).
+// All constructors return opaque values; *Conn methods model the net.Conn interface.
+func (interp *Interpreter) handleTLSCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	// Constructors returning (*Conn, error):
+	case "Dial", "DialWithDialer":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Client", "Server":
+		// tls.Client/Server(conn net.Conn, config *Config) *tls.Conn
+		return opaque, true
+
+	// Listener constructors:
+	case "Listen", "NewListener":
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	// Certificate loading:
+	case "LoadX509KeyPair", "X509KeyPair":
+		// (tls.Certificate, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	// *tls.Conn methods (receiver = args[0]):
+	case "Handshake", "HandshakeContext":
+		return Value{}, true // error=nil
+	case "ConnectionState":
+		return opaque, true
+	case "VerifyHostname":
+		return Value{}, true
+	case "OCSPResponse":
+		return Value{Raw: []Value{}}, true
+	case "NetConn":
+		return opaque, true
+	case "RemoteAddr", "LocalAddr":
+		return opaque, true
+	case "SetDeadline", "SetReadDeadline", "SetWriteDeadline":
+		return Value{}, true
+	case "Read":
+		n := int64(0)
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = int64(len(b))
+			case []Value:
+				n = int64(len(b))
+			}
+		}
+		return Value{Raw: []Value{{Raw: n}, {}}}, true
+	case "Write":
+		n := int64(0)
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = int64(len(b))
+			case []Value:
+				n = int64(len(b))
+			}
+		}
+		return Value{Raw: []Value{{Raw: n}, {}}}, true
+	case "Close":
+		return Value{}, true
+
+	// *tls.Config helpers:
+	case "Clone":
+		return opaque, true
+
+	// net.Listener methods on *tls.listener:
+	case "Accept":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Addr":
+		return opaque, true
+	}
+	return Value{}, false
+}
+
+// handleSQLCall models database/sql.* functions (#102).
+// Rows.Next always returns false (no rows in the interpreter's model) so
+// the scan loop body is never entered — this is conservative but prevents
+// false violations from unterminated loops.
+func (interp *Interpreter) handleSQLCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	// Constructors:
+	case "Open":
+		// sql.Open(driver, dsn) (*DB, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "OpenDB":
+		// sql.OpenDB(connector) *DB
+		return opaque, true
+
+	// *sql.DB methods:
+	case "Query", "QueryContext":
+		// (*Rows, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "QueryRow", "QueryRowContext":
+		// *Row
+		return opaque, true
+	case "Exec", "ExecContext":
+		// (Result, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Prepare", "PrepareContext":
+		// (*Stmt, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Begin", "BeginTx":
+		// (*Tx, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Close", "Ping", "PingContext":
+		return Value{}, true
+	case "SetMaxOpenConns", "SetMaxIdleConns",
+		"SetConnMaxLifetime", "SetConnMaxIdleTime":
+		return Value{}, true
+	case "Stats":
+		return opaque, true
+	case "Conn", "ConnContext":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Driver":
+		return opaque, true
+
+	// *sql.Rows methods:
+	case "Next", "NextResultSet":
+		// Return false — no rows in interpreter's model.
+		return Value{Raw: false}, true
+	case "Scan":
+		// nil error — values remain at zero.
+		return Value{}, true
+	case "Columns":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ColumnTypes":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Err":
+		return Value{}, true
+
+	// *sql.Row method:
+	// "Scan" is already handled above (same name).
+
+	// *sql.Tx methods:
+	case "Commit", "Rollback":
+		return Value{}, true
+
+	// *sql.Stmt methods:
+	// Exec/Query/QueryRow/Close/ExecContext/QueryContext/QueryRowContext
+	// share names with DB methods — handled above.
+
+	// *sql.Result methods:
+	case "LastInsertId", "RowsAffected":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	// *sql.ColumnType methods:
+	case "Name":
+		return Value{Raw: ""}, true
+	case "DatabaseTypeName":
+		return Value{Raw: ""}, true
+	case "Length":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
+	case "Nullable":
+		return Value{Raw: []Value{{Raw: false}, {Raw: false}}}, true
+	case "DecimalSize":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(0)}, {Raw: false}}}, true
+	case "ScanType":
+		return opaque, true
+
+	// sql.Named helper:
+	case "Named":
+		return opaque, true
+
+	// Register helpers (noops):
+	case "Register":
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleTestingCall models testing.T/B/F method intercepts (#104).
+// Fatal/Fatalf mark the goroutine panicked (like runtime.Goexit).
+// Run probes the subtest function with a sentinel *testing.T.
+func (interp *Interpreter) handleTestingCall(gid int64, name string, args []Value) (Value, bool) {
+	switch name {
+	// Logging — noop:
+	case "Log", "Logf":
+		return Value{}, true
+	case "Error", "Errorf":
+		return Value{}, true
+
+	// Fatal — stop the current goroutine (like runtime.Goexit):
+	case "Fatal", "Fatalf", "FailNow":
+		if g, ok := interp.goroutines[gid]; ok {
+			g.Panicked = true
+		}
+		return Value{}, true
+
+	// Skip — noop (don't stop execution in analysis mode):
+	case "Skip", "Skipf", "SkipNow":
+		return Value{}, true
+
+	// State queries:
+	case "Failed", "Skipped":
+		return Value{Raw: false}, true
+	case "Name":
+		return Value{Raw: ""}, true
+
+	// Helpers — noop:
+	case "Helper", "Parallel", "Cleanup":
+		return Value{}, true
+
+	// TempDir:
+	case "TempDir":
+		return Value{Raw: "/tmp"}, true
+
+	// Setenv (testing.T.Setenv):
+	case "Setenv":
+		return Value{}, true
+
+	// Run(name, f) — probe the subtest function:
+	case "Run":
+		if len(args) >= 3 {
+			sentinel := Value{Raw: struct{}{}}
+			switch fn := args[2].Raw.(type) {
+			case *ssa.Function:
+				if fn.Blocks != nil {
+					interp.execFunction(gid, fn, []Value{sentinel})
+				}
+			case *ClosureValue:
+				callArgs := append([]Value{sentinel}, fn.FreeVars...)
+				interp.execFunction(gid, fn.Fn, callArgs)
+			}
+		}
+		return Value{Raw: true}, true
+
+	// *testing.B specific:
+	case "ResetTimer", "StartTimer", "StopTimer", "ReportAllocs",
+		"SetBytes", "ReportMetric", "SetParallelism":
+		return Value{}, true
+	case "N":
+		return Value{Raw: int64(1)}, true
+
+	// *testing.F (fuzz):
+	case "Add", "Fuzz":
+		return Value{}, true
+
+	// Package-level helpers:
+	case "Short", "Verbose", "CoverMode":
+		return Value{Raw: false}, true
+	case "Init":
+		return Value{}, true
 	}
 	return Value{}, false
 }

@@ -286,6 +286,35 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.28.0 regression tests
+	{
+		name:           "tls dial",
+		dir:            "tls_dial",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "sql query",
+		dir:            "sql_query",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "strings reader",
+		dir:            "strings_reader",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "testing helper",
+		dir:            "testing_helper",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.27.0 regression tests
 	{
 		name:           "binary readwrite",
