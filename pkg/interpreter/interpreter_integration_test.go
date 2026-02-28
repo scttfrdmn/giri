@@ -286,6 +286,35 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.36.0 regression tests
+	{
+		name:           "string index oob",
+		dir:            "string_index_oob",
+		wantViolations: 1,
+		wantCategory:   "out-of-bounds",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "string index valid",
+		dir:            "string_index_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "negative shift",
+		dir:            "negative_shift",
+		wantViolations: 1,
+		wantCategory:   "negative-shift",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "valid shift",
+		dir:            "valid_shift",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.35.0 regression tests
 	{
 		name:           "nil channel close",

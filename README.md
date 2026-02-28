@@ -327,6 +327,8 @@ giri/
 - [x] HTML report format: `-format html` produces self-contained HTML with color-coded findings — v0.34.0
 - [x] Nil channel operation detection: `close(nil)`, send on nil, receive from nil — reported as `nil-channel` — v0.35.0
 - [x] `make()` negative argument detection: negative len/cap → reported as `make-invalid` — v0.35.0
+- [x] String index out-of-bounds detection: `s[i]` where `i >= len(s)` — reported as `out-of-bounds` — v0.36.0
+- [x] Negative shift count detection: `x << n` where `n < 0` — reported as `negative-shift` — v0.36.0
 
 ## Contributing
 

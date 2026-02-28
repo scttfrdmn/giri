@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-02-28
+
+### Added
+
+- **String index out-of-bounds detection** (issue #124): `s[i]` where `i < 0` or
+  `i >= len(s)` now reports an `out-of-bounds` violation (severity: ERROR).
+
+  Unlike slice indexing (which passes through the shadow memory allocator's
+  `CheckAccess`), strings are stored as raw Go strings in Giri with no backing
+  allocation, so bounds must be checked explicitly. In Go this panics:
+  `"runtime error: index out of range [N] with length M"`.
+
+  Two new integration tests: `string_index_oob` (1 violation), `string_index_valid`
+  (0 violations).
+
+- **Negative shift count detection** (issue #125): `x << n` or `x >> n` where
+  `n < 0` now reports a `negative-shift` violation (severity: ERROR).
+
+  New error type in `pkg/shadow`: `NegativeShiftError{Count, Site, GID}`.
+
+  In Go 1.13+, shifting by a negative runtime-determined value panics:
+  `"runtime error: negative shift count"`. Previously Giri silently converted
+  `n` to `uint`, producing an enormous shift. The goroutine is now marked
+  Panicked to halt execution, matching real Go behavior.
+
+  Two new integration tests: `negative_shift` (1 violation), `valid_shift`
+  (0 violations). 133 total integration tests.
+
 ## [0.35.0] - 2026-02-28
 
 ### Added

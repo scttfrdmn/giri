@@ -294,6 +294,15 @@ func classifyError(err error) Finding {
 			Hint:     "Always call the cancel function returned by context.WithCancel/WithTimeout/WithDeadline, typically with: defer cancel()",
 		}
 
+	case *shadow.NegativeShiftError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "negative-shift",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "Shift count must be non-negative. Guard with: if n >= 0 { x << n }. Consider using unsigned types for shift counts.",
+		}
+
 	case *shadow.NilChannelError:
 		return Finding{
 			Severity: SeverityError,

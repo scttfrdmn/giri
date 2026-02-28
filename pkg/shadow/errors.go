@@ -345,6 +345,22 @@ func (e *ContextCancelLeakError) Error() string {
 	)
 }
 
+// NegativeShiftError is reported when a shift operation (<<, >>) uses a
+// negative shift count. In Go 1.13+, this panics at runtime:
+// "runtime error: negative shift count".
+type NegativeShiftError struct {
+	Count int64  // the negative shift count
+	Site  string
+	GID   int64
+}
+
+func (e *NegativeShiftError) Error() string {
+	return fmt.Sprintf(
+		"negative-shift: shift count is %d (goroutine %d) at %s",
+		e.Count, e.GID, e.Site,
+	)
+}
+
 // NilChannelError is reported when close(), send, or receive is performed on
 // a nil channel. In Go, close(nil) panics with "close of nil channel";
 // send/receive on nil block forever (deadlock).

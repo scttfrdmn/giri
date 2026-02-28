@@ -505,6 +505,16 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 				interp.recordViolation(gid, &shadow.DivisionByZeroError{Site: site, GID: gid})
 			}
 		}
+		// Negative shift count: x << n or x >> n where n < 0 panics at runtime
+		// "runtime error: negative shift count" (Go 1.13+, #125).
+		if inst.Op == token.SHL || inst.Op == token.SHR {
+			if yi, ok := y.Raw.(int64); ok && yi < 0 {
+				interp.recordViolation(gid, &shadow.NegativeShiftError{Count: yi, Site: site, GID: gid})
+				if g := interp.goroutines[gid]; g != nil {
+					g.Panicked = true
+				}
+			}
+		}
 		frame.Locals[inst.Name()] = evalBinOp(inst.Op, x, y)
 
 	case *ssa.FieldAddr:
@@ -570,10 +580,21 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			}
 		case string:
 			// s[i] returns the byte at byte position i (#73), not a rune.
-			if idxInt >= 0 && idxInt < len(sv) {
-				frame.Locals[inst.Name()] = Value{Raw: int64(sv[idxInt])}
-			} else {
+			// Out-of-bounds access panics at runtime (#124).
+			if idxInt < 0 || idxInt >= len(sv) {
+				interp.recordViolation(gid, &shadow.OutOfBoundsError{
+					AllocSize:  len(sv),
+					Offset:     idxInt,
+					AccessSize: 1,
+					Site:       site,
+					TypeName:   "string",
+				})
+				if g := interp.goroutines[gid]; g != nil {
+					g.Panicked = true
+				}
 				frame.Locals[inst.Name()] = Value{}
+			} else {
+				frame.Locals[inst.Name()] = Value{Raw: int64(sv[idxInt])}
 			}
 		case map[interface{}]Value:
 			// Arrays stored as maps (rare but possible)
