@@ -16,6 +16,6 @@ func sender(ch chan<- int) {
 
 func main() {
 	ch := make(chan int, 1)
-	ch <- 1   // fills the buffer (non-blocking)
+	ch <- 1 // fills the buffer (non-blocking)
 	go sender(ch)
 }

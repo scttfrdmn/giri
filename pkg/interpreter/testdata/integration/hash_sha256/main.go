@@ -26,7 +26,7 @@ func main() {
 	_ = digest2
 
 	// Hash size constants.
-	_ = sha256.Size   // 32
+	_ = sha256.Size    // 32
 	_ = sha256.Size224 // 28
-	_ = md5.Size      // 16
+	_ = md5.Size       // 16
 }

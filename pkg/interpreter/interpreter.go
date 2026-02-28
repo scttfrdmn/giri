@@ -78,8 +78,8 @@ type StackFrame struct {
 type ViolationWithStack struct {
 	Err       error
 	GID       int64
-	SpawnSite string        // where this goroutine was created
-	Frames    []StackFrame  // call stack, innermost first
+	SpawnSite string       // where this goroutine was created
+	Frames    []StackFrame // call stack, innermost first
 }
 
 // Error implements the error interface. The message is the underlying error's.
@@ -259,8 +259,8 @@ type chanEntry struct {
 	closed          bool  // set by close(ch) (#31)
 	hasPending      bool  // a value has been sent but not yet received
 	pendingVal      Value // the pending value (for select readiness checks)
-	capacity     int  // buffered channel capacity (0 = unbuffered)
-	pendingCount int  // number of buffered values currently held (#44)
+	capacity        int   // buffered channel capacity (0 = unbuffered)
+	pendingCount    int   // number of buffered values currently held (#44)
 }
 
 // mutexState tracks synchronization state for sync.Mutex and sync.WaitGroup (#33).
@@ -1570,8 +1570,8 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 			ms.lastUnlockClock[k] = v
 		}
 
-	// Note: Cond.Wait shares the "Wait" case above with WaitGroup.Wait —
-	// both merge the last clock snapshot, which is the correct HB semantics.
+		// Note: Cond.Wait shares the "Wait" case above with WaitGroup.Wait —
+		// both merge the last clock snapshot, which is the correct HB semantics.
 	}
 
 	return Value{}

@@ -51,10 +51,12 @@ type RoundRobin struct {
 	stats   ScheduleStats
 }
 
+// NewRoundRobin creates a new RoundRobin scheduler.
 func NewRoundRobin() *RoundRobin {
 	return &RoundRobin{}
 }
 
+// Next implements Scheduler. Runs goroutines in sorted order, cycling through each.
 func (s *RoundRobin) Next(runnable []int64) int64 {
 	if len(runnable) == 0 {
 		return -1
@@ -65,9 +67,14 @@ func (s *RoundRobin) Next(runnable []int64) int64 {
 	return runnable[s.lastIdx]
 }
 
-func (s *RoundRobin) OnSyncPoint(gid int64) { s.stats.SyncPoints++ }
-func (s *RoundRobin) OnSpawn(_, _ int64)    { s.stats.GoroutinesSpawned++ }
-func (s *RoundRobin) Stats() ScheduleStats  { return s.stats }
+// OnSyncPoint implements Scheduler.
+func (s *RoundRobin) OnSyncPoint(_ int64) { s.stats.SyncPoints++ }
+
+// OnSpawn implements Scheduler.
+func (s *RoundRobin) OnSpawn(_, _ int64) { s.stats.GoroutinesSpawned++ }
+
+// Stats implements Scheduler.
+func (s *RoundRobin) Stats() ScheduleStats { return s.stats }
 
 // --- Random ---
 
@@ -78,12 +85,14 @@ type Random struct {
 	stats ScheduleStats
 }
 
+// NewRandom creates a new Random scheduler with the given seed.
 func NewRandom(seed int64) *Random {
 	return &Random{
 		rng: rand.New(rand.NewSource(seed)),
 	}
 }
 
+// Next implements Scheduler. Picks a uniformly random runnable goroutine.
 func (s *Random) Next(runnable []int64) int64 {
 	if len(runnable) == 0 {
 		return -1
@@ -92,9 +101,14 @@ func (s *Random) Next(runnable []int64) int64 {
 	return runnable[s.rng.Intn(len(runnable))]
 }
 
-func (s *Random) OnSyncPoint(gid int64) { s.stats.SyncPoints++ }
-func (s *Random) OnSpawn(_, _ int64)    { s.stats.GoroutinesSpawned++ }
-func (s *Random) Stats() ScheduleStats  { return s.stats }
+// OnSyncPoint implements Scheduler.
+func (s *Random) OnSyncPoint(_ int64) { s.stats.SyncPoints++ }
+
+// OnSpawn implements Scheduler.
+func (s *Random) OnSpawn(_, _ int64) { s.stats.GoroutinesSpawned++ }
+
+// Stats implements Scheduler.
+func (s *Random) Stats() ScheduleStats { return s.stats }
 
 // --- PCT (Probabilistic Concurrency Testing) ---
 
@@ -117,6 +131,7 @@ type PCT struct {
 	stats        ScheduleStats
 }
 
+// NewPCT creates a new PCT scheduler with the given seed and target bug depth.
 func NewPCT(seed int64, bugDepth int) *PCT {
 	rng := rand.New(rand.NewSource(seed))
 
@@ -135,6 +150,7 @@ func NewPCT(seed int64, bugDepth int) *PCT {
 	}
 }
 
+// Next implements Scheduler. Returns the highest-priority runnable goroutine.
 func (s *PCT) Next(runnable []int64) int64 {
 	if len(runnable) == 0 {
 		return -1
@@ -173,9 +189,14 @@ func (s *PCT) Next(runnable []int64) int64 {
 	return best
 }
 
-func (s *PCT) OnSyncPoint(gid int64) { s.stats.SyncPoints++ }
+// OnSyncPoint implements Scheduler.
+func (s *PCT) OnSyncPoint(_ int64) { s.stats.SyncPoints++ }
+
+// OnSpawn implements Scheduler. Assigns a random initial priority to the new goroutine.
 func (s *PCT) OnSpawn(_, child int64) {
 	s.stats.GoroutinesSpawned++
 	s.priorities[child] = s.rng.Int()
 }
+
+// Stats implements Scheduler.
 func (s *PCT) Stats() ScheduleStats { return s.stats }

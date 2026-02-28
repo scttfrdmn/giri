@@ -118,8 +118,10 @@ func Build(violations []error, memStats *shadow.MemoryStats) *Report {
 }
 
 // classifyError converts a raw error into a structured Finding.
+// The err received here is already unwrapped (via stackTracer.Unwrap) so a
+// direct type switch is correct; no wrapping indirection exists at this point.
 func classifyError(err error) Finding {
-	switch e := err.(type) {
+	switch e := err.(type) { //nolint:errorlint
 	case *shadow.UseAfterFreeError:
 		hint := "Use Clone() to copy values to heap before arena.Free(), or restructure to ensure pointer doesn't outlive its allocation."
 		if e.ArenaID != 0 {
@@ -292,46 +294,69 @@ func (r *Report) Write(w io.Writer, format Format) error {
 	}
 }
 
+// textWriter wraps an io.Writer and captures the first write error so that
+// individual fmt.Fprintf calls do not need to check errors one by one.
+type textWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (tw *textWriter) printf(format string, args ...any) {
+	if tw.err != nil {
+		return
+	}
+	_, tw.err = fmt.Fprintf(tw.w, format, args...)
+}
+
+func (tw *textWriter) println() {
+	if tw.err != nil {
+		return
+	}
+	_, tw.err = fmt.Fprintln(tw.w)
+}
+
 func (r *Report) writeText(w io.Writer) error {
+	tw := &textWriter{w: w}
+
 	// Header
-	fmt.Fprintf(w, "╔══════════════════════════════════════════════╗\n")
-	fmt.Fprintf(w, "║  Giri - Go IR Interpreter                    ║\n")
-	fmt.Fprintf(w, "║  Undefined Behavior Detection Report          ║\n")
-	fmt.Fprintf(w, "╚══════════════════════════════════════════════╝\n\n")
+	tw.printf("╔══════════════════════════════════════════════╗\n")
+	tw.printf("║  Giri - Go IR Interpreter                    ║\n")
+	tw.printf("║  Undefined Behavior Detection Report          ║\n")
+	tw.printf("╚══════════════════════════════════════════════╝\n\n")
 
 	if len(r.Findings) == 0 {
-		fmt.Fprintf(w, "No violations detected.\n\n")
+		tw.printf("No violations detected.\n\n")
 	} else {
-		fmt.Fprintf(w, "Found %d violation(s):\n\n", len(r.Findings))
+		tw.printf("Found %d violation(s):\n\n", len(r.Findings))
 
 		for i, f := range r.Findings {
-			fmt.Fprintf(w, "── [%d] %s: %s ──\n", i+1, f.Severity, f.Category)
-			fmt.Fprintf(w, "%s\n", f.Message)
+			tw.printf("── [%d] %s: %s ──\n", i+1, f.Severity, f.Category)
+			tw.printf("%s\n", f.Message)
 			if f.StackTrace != "" {
-				fmt.Fprintf(w, "\n  stack trace:\n")
+				tw.printf("\n  stack trace:\n")
 				for _, line := range strings.Split(strings.TrimRight(f.StackTrace, "\n"), "\n") {
-					fmt.Fprintf(w, "    %s\n", line)
+					tw.printf("    %s\n", line)
 				}
 			}
 			if f.Hint != "" {
-				fmt.Fprintf(w, "\n  hint: %s\n", f.Hint)
+				tw.printf("\n  hint: %s\n", f.Hint)
 			}
-			fmt.Fprintln(w)
+			tw.println()
 		}
 	}
 
 	// Summary
-	fmt.Fprintf(w, "── Summary ──\n")
+	tw.printf("── Summary ──\n")
 	for sev, count := range r.Summary.BySeverity {
-		fmt.Fprintf(w, "  %s: %d\n", sev, count)
+		tw.printf("  %s: %d\n", sev, count)
 	}
 
 	if r.Stats != nil {
-		fmt.Fprintf(w, "\n── Memory ──\n")
-		fmt.Fprintf(w, "  %s\n", r.Stats)
+		tw.printf("\n── Memory ──\n")
+		tw.printf("  %s\n", r.Stats)
 	}
 
-	return nil
+	return tw.err
 }
 
 func (r *Report) writeJSON(w io.Writer) error {

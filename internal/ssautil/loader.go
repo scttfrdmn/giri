@@ -295,7 +295,7 @@ func DumpSSA(prog *interpreter.Program) {
 	for _, mem := range prog.Main.Members {
 		if fn, ok := mem.(*ssa.Function); ok {
 			fmt.Printf("=== %s ===\n", fn.Name())
-			fn.WriteTo(nil) // Writes to stdout
+			_, _ = fn.WriteTo(nil) // Writes to stdout; errors are non-actionable here
 			fmt.Println()
 		}
 	}

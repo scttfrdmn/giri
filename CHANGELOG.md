@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-02-27
+
+### Added
+
+- **golangci-lint v2 configuration** (issue #105): `.golangci.yml` enables
+  `govet`, `staticcheck`, `ineffassign`, `misspell`, `revive`, `gocyclo`,
+  `unconvert`, `errorlint`, `nilerr`, `unused`; `gofmt` formatter; exclusion
+  rules for test files, testdata/, and large SSA dispatch functions.
+  Updated `.github/workflows/ci.yml` with a dedicated `lint` job using
+  `golangci/golangci-lint-action@v6`.
+
+- **Fuzz tests** (issue #106): 5 new fuzz targets covering core hot paths:
+  - `pkg/shadow`: `FuzzAllocateCheckAccess`, `FuzzMarkInitializedCheckAccess`,
+    `FuzzDerivePointer` — fuzz allocation/free/bounds sequences.
+  - `pkg/interpreter`: `FuzzExecStdlibCall` (stdlib dispatch with random
+    pkg/name pairs), `FuzzToInt64` (value conversion).
+  - Seed-corpus-only run added to CI.
+  - **Bug found by fuzzer**: `bytes.Join` panicked on nil args (index OOB).
+    Fixed guard in `handleBytesCall`.
+
+- **Benchmark tests** (issue #107): 11 new benchmarks covering hot paths:
+  - `pkg/shadow`: `BenchmarkAllocate`, `BenchmarkCheckAccessValid`,
+    `BenchmarkCheckAccessOOB`, `BenchmarkMarkInitialized`,
+    `BenchmarkAllocateFree`, `BenchmarkCheckAccessContended`.
+  - `pkg/detector`: `BenchmarkRaceDetectorNoRace`,
+    `BenchmarkRegistryCheckAccess`.
+  - `pkg/interpreter`: `BenchmarkStdlibDispatchHit`,
+    `BenchmarkStdlibDispatchMiss`, `BenchmarkToInt64`.
+
+- **Expanded unit tests** (issue #108): new coverage for previously-untested
+  paths:
+  - `pkg/shadow`: `Poison`, `TrackPointer`/`GetProvenance`, `GetArena`,
+    `LiveArenas`, `LiveAllocations`, `Stats.String` (coverage: 67% → 84%).
+  - `pkg/report`: all 12 `classifyError` branches, `unsupported Format`,
+    text/no-violations path, summary counts, JSON schema fields, stack-trace
+    rendering (coverage: 63% → 76%).
+  - `pkg/detector`: `BoundsDetector.CheckFinalize`, `RaceDetector.CheckFinalize`,
+    `UnsafeDetector.RecordReflectConversion`/`ClearAllUintptrConversions`,
+    `DefaultRegistry.List`/`CheckAccess`/`Finalize` (coverage: 59% → 80%).
+  - `internal/ssautil`: 3 new tests for `ParseSuppressions` (coverage: 0% → 12%).
+
+### Fixed
+
+- **Lint issues resolved** (issue #105):
+  - `pkg/interpreter/stdlib.go`: `strings.Title` → `strings.ToTitle` (SA1019),
+    `runtime.GOROOT()` → `os.Getenv("GOROOT")` (SA1019), 4 misspellings fixed.
+  - `pkg/interpreter/interpreter.go`: `gofmt` alignment fix.
+  - `pkg/detector/detector.go`: doc comments added to all exported methods;
+    `BoundsDetector.CheckFinalize` / `RaceDetector.CheckFinalize` unused params
+    now use blank identifier `_`.
+  - `pkg/scheduler/scheduler.go`: doc comments added to all exported functions
+    and interface-implementation methods; unused `gid` params use `_`.
+  - `pkg/report/report.go`: `fmt.Fprintf`/`Fprintln` errors now propagated via
+    `textWriter` helper; `classifyError` type switch annotated with
+    `//nolint:errorlint` (errors are pre-unwrapped at call site).
+  - `internal/ssautil/loader.go`: `fn.WriteTo` return now explicitly discarded.
+  - 4 `gofmt`-only test-data files reformatted.
+
 ## [0.28.0] - 2026-02-27
 
 ### Added

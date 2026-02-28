@@ -12,11 +12,11 @@ func main() {
 
 	// URL methods — field accesses go through SSA FieldAddr on an opaque value,
 	// so we use method calls only.
-	_ = u.Hostname()    // "example.com"
-	_ = u.Port()        // "" (no port in URL above)
-	_ = u.RequestURI()  // "/path?key=value"
-	_ = u.IsAbs()       // true
-	_ = u.String()      // reconstructed URL
+	_ = u.Hostname()   // "example.com"
+	_ = u.Port()       // "" (no port in URL above)
+	_ = u.RequestURI() // "/path?key=value"
+	_ = u.IsAbs()      // true
+	_ = u.String()     // reconstructed URL
 
 	// QueryEscape / QueryUnescape.
 	escaped := url.QueryEscape("hello world")

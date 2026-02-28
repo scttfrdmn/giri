@@ -40,11 +40,15 @@ type Detector interface {
 // This is Giri's generalization of safearena's runtime checks.
 type ArenaDetector struct{}
 
+// Name implements Detector.
 func (d *ArenaDetector) Name() string { return "arena-safety" }
+
+// Description implements Detector.
 func (d *ArenaDetector) Description() string {
 	return "Detects use-after-free, double-free, and leaks for arena-allocated memory"
 }
 
+// CheckAccess implements Detector. It reports use-after-free on arena allocations.
 func (d *ArenaDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) error {
 	alloc, ok := mem.GetAllocation(ptr.Alloc)
 	if !ok {
@@ -69,6 +73,7 @@ func (d *ArenaDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, siz
 	return nil
 }
 
+// CheckFinalize implements Detector. It reports arena leaks at program end.
 func (d *ArenaDetector) CheckFinalize(mem *shadow.Memory) []error {
 	var errs []error
 	for _, arena := range mem.LiveArenas() {
@@ -86,11 +91,15 @@ func (d *ArenaDetector) CheckFinalize(mem *shadow.Memory) []error {
 // BoundsDetector checks for out-of-bounds memory access.
 type BoundsDetector struct{}
 
+// Name implements Detector.
 func (d *BoundsDetector) Name() string { return "bounds-check" }
+
+// Description implements Detector.
 func (d *BoundsDetector) Description() string {
 	return "Detects out-of-bounds memory access via pointers"
 }
 
+// CheckAccess implements Detector. It reports out-of-bounds accesses.
 func (d *BoundsDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) error {
 	alloc, ok := mem.GetAllocation(ptr.Alloc)
 	if !ok {
@@ -111,7 +120,8 @@ func (d *BoundsDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, si
 	return nil
 }
 
-func (d *BoundsDetector) CheckFinalize(mem *shadow.Memory) []error { return nil }
+// CheckFinalize implements Detector. BoundsDetector has no finalization checks.
+func (d *BoundsDetector) CheckFinalize(_ *shadow.Memory) []error { return nil }
 
 // --- Unsafe Pointer Detector ---
 
@@ -128,18 +138,23 @@ type pendingConversion struct {
 	rule       shadow.UnsafeRule // RuleUintptr or RuleReflect
 }
 
+// NewUnsafeDetector creates a new UnsafeDetector with an empty pending-conversion set.
 func NewUnsafeDetector() *UnsafeDetector {
 	return &UnsafeDetector{
 		pendingUintptrs: make(map[string]pendingConversion),
 	}
 }
 
+// Name implements Detector.
 func (d *UnsafeDetector) Name() string { return "unsafe-pointer" }
+
+// Description implements Detector.
 func (d *UnsafeDetector) Description() string {
 	return "Checks all six unsafe.Pointer rules from the Go spec"
 }
 
-func (d *UnsafeDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) error {
+// CheckAccess implements Detector. It checks bounds on unsafe-derived pointers.
+func (d *UnsafeDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, _ shadow.AccessKind, site string, _ int64, _ map[int64]uint64) error {
 	// Bounds checking for unsafe-derived pointers
 	if ptr.DerivedFrom != nil {
 		alloc, ok := mem.GetAllocation(ptr.Alloc)
@@ -208,7 +223,8 @@ func (d *UnsafeDetector) CheckGCPoint(site string) []error {
 	return errs
 }
 
-func (d *UnsafeDetector) CheckFinalize(mem *shadow.Memory) []error {
+// CheckFinalize implements Detector. It reports any uintptr values still pending at program end.
+func (d *UnsafeDetector) CheckFinalize(_ *shadow.Memory) []error {
 	return d.CheckGCPoint("<program end>")
 }
 
@@ -233,17 +249,22 @@ type accessEntry struct {
 	clock     map[int64]uint64 // Snapshot of the goroutine's vector clock
 }
 
+// NewRaceDetector creates a new RaceDetector with an empty access history.
 func NewRaceDetector() *RaceDetector {
 	return &RaceDetector{
 		lastAccess: make(map[accessKey]*accessEntry),
 	}
 }
 
+// Name implements Detector.
 func (d *RaceDetector) Name() string { return "data-race" }
+
+// Description implements Detector.
 func (d *RaceDetector) Description() string {
 	return "Detects data races using vector clocks (beyond -race detector)"
 }
 
+// CheckAccess implements Detector. It checks for concurrent conflicting accesses.
 func (d *RaceDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) error {
 	// For each byte accessed, check against last access
 	for i := 0; i < size; i++ {
@@ -304,7 +325,8 @@ func happensBefore(a, b map[int64]uint64) bool {
 	return true
 }
 
-func (d *RaceDetector) CheckFinalize(mem *shadow.Memory) []error { return nil }
+// CheckFinalize implements Detector. RaceDetector has no finalization checks.
+func (d *RaceDetector) CheckFinalize(_ *shadow.Memory) []error { return nil }
 
 // --- Detector Registry ---
 

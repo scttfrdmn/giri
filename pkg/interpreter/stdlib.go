@@ -21,6 +21,7 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -597,7 +598,7 @@ func stdlibArgString(args []Value, i int) (string, bool) {
 }
 
 // stdlibArgInt extracts a concrete integer Value at index i.
-// Recognises the int family that toInt64 handles.
+// Recognizes the int family that toInt64 handles.
 func stdlibArgInt(args []Value, i int) (int64, bool) {
 	if i >= len(args) {
 		return 0, false
@@ -1022,7 +1023,7 @@ func (interp *Interpreter) handleBytesCall(name string, args []Value) (Value, bo
 		return Value{Raw: args[0].Raw}, true
 	case "Title":
 		if s0ok {
-			return Value{Raw: []byte(strings.Title(s0))}, true //nolint:staticcheck
+			return Value{Raw: []byte(strings.ToTitle(s0))}, true
 		}
 		return Value{Raw: args[0].Raw}, true
 	case "TrimSpace":
@@ -1095,7 +1096,10 @@ func (interp *Interpreter) handleBytesCall(name string, args []Value) (Value, bo
 		}
 		return Value{Raw: []Value{args[0]}}, true
 	case "Join":
-		return Value{Raw: args[0].Raw}, true
+		if len(args) >= 1 {
+			return Value{Raw: args[0].Raw}, true
+		}
+		return Value{Raw: []byte{}}, true
 	case "Cut":
 		if s0ok && s1ok {
 			before, after, found := strings.Cut(s0, s1)
@@ -1251,7 +1255,7 @@ func (interp *Interpreter) handleErrorsCall(name string, args []Value) (Value, b
 		return Value{Raw: false}, true
 
 	case "As":
-		// Conservative: always return false (no unwrapping chain modelled).
+		// Conservative: always return false (no unwrapping chain modeled).
 		return Value{Raw: false}, true
 
 	case "Unwrap":
@@ -2077,11 +2081,11 @@ func (interp *Interpreter) handleContextCall(name string, args []Value) (Value, 
 		return Value{}, true
 
 	case "Err":
-		// ctx.Err() returns nil (no cancellation modelled).
+		// ctx.Err() returns nil (no cancellation modeled).
 		return Value{}, true
 
 	case "Value":
-		// ctx.Value(key) returns nil (no value propagation modelled).
+		// ctx.Value(key) returns nil (no value propagation modeled).
 		return Value{}, true
 
 	case "Deadline":
@@ -3314,7 +3318,7 @@ func (interp *Interpreter) handleReflectCall(name string, args []Value) (Value, 
 
 // handleFlagCall models flag.* functions (#88).
 // Flag-defined values return opaque non-nil pointers so nil-checks on them pass.
-// Parse is a noop; command-line arguments cannot be modelled at analysis time.
+// Parse is a noop; command-line arguments cannot be modeled at analysis time.
 func (interp *Interpreter) handleFlagCall(name string, args []Value) (Value, bool) {
 	opaque := Value{Raw: struct{}{}}
 	switch name {
@@ -3502,7 +3506,9 @@ func (interp *Interpreter) handleRuntimeCall(name string, args []Value) (Value, 
 		return Value{Raw: runtime.GOOS}, true
 
 	case "GOROOT":
-		return Value{Raw: runtime.GOROOT()}, true
+		// runtime.GOROOT is deprecated since Go 1.24; use environment variable instead.
+		goroot := os.Getenv("GOROOT")
+		return Value{Raw: goroot}, true
 	}
 	return Value{}, false
 }

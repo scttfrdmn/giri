@@ -1,0 +1,95 @@
+# golangci-lint v2 configuration for Giri.
+# Run: GOEXPERIMENT=arenas golangci-lint run ./...
+version: "2"
+
+linters:
+  enable:
+    - govet        # go vet checks
+    - staticcheck  # SA* checks; SA1019 = deprecated API usage
+    - ineffassign  # detect ineffectual assignments
+    - misspell     # detect common spelling mistakes
+    - revive       # drop-in golint replacement; checks exported doc comments
+    - gocyclo      # flag functions with cyclomatic complexity > threshold
+    - unconvert    # remove unnecessary type conversions
+    - errorlint    # check for common error-wrapping mistakes
+    - nilerr       # catch returning nil after err != nil check
+    - unused       # report unused exported identifiers
+
+  settings:
+    gocyclo:
+      # The SSA instruction dispatch functions (execBuiltin, execCall, handleXxxCall)
+      # are intentionally large switch statements. Threshold set high enough to catch
+      # genuinely complex logic, not exhaustive dispatch tables.
+      min-complexity: 60
+
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - "checkPrivateReceivers"
+          disabled: false
+        - name: unexported-return
+          disabled: true
+
+    misspell:
+      locale: US
+
+    staticcheck:
+      checks:
+        - "all"
+        - "-SA1019" # deprecation warnings are handled case-by-case
+        - "-ST1003" # allow underscore in internal helpers (regexp_quoteMeta)
+
+  exclusions:
+    # Use the common-false-positives preset (handles many test-file patterns).
+    presets:
+      - common-false-positives
+
+    rules:
+      # Test files: relax errcheck, errorlint, revive, and gocyclo.
+      - path: '.*_test\.go$'
+        linters:
+          - errcheck
+          - errorlint
+          - revive
+          - gocyclo
+
+      # testdata programs are minimal examples, not production code.
+      - path: 'testdata'
+        linters:
+          - revive
+          - gocyclo
+          - errcheck
+          - errorlint
+
+      # SSA dispatch files contain purposely large switch tables; gocyclo
+      # does not apply to these architectural dispatch functions.
+      - path: 'pkg/interpreter/exec\.go$'
+        linters:
+          - gocyclo
+      - path: 'pkg/interpreter/interpreter\.go$'
+        linters:
+          - gocyclo
+      - path: 'pkg/interpreter/stdlib\.go$'
+        linters:
+          - gocyclo
+
+      # Const blocks with inline comments per-value: revive requires a comment
+      # on the const block, not individual values. Suppress iota-block complaints.
+      - source: '= iota'
+        linters:
+          - revive
+
+      # Const comment format: "RuleXxx ..." not descriptive inline comments.
+      - source: '// Rule'
+        linters:
+          - revive
+
+      # DetectorInfo stutter: renaming would be a breaking API change.
+      - text: 'stutters'
+        linters:
+          - revive
+
+formatters:
+  enable:
+    - gofmt  # enforce standard Go formatting

@@ -7,6 +7,26 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    env:
+      GOEXPERIMENT: arenas
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.10.1
+          args: --timeout=5m
+
   test:
     name: Build and Test
     runs-on: ubuntu-latest
@@ -34,3 +54,11 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+      - name: Fuzz (seed corpus only)
+        run: |
+          go test -run=FuzzAllocateCheckAccess ./pkg/shadow/
+          go test -run=FuzzMarkInitializedCheckAccess ./pkg/shadow/
+          go test -run=FuzzDerivePointer ./pkg/shadow/
+          go test -run=FuzzExecStdlibCall ./pkg/interpreter/
+          go test -run=FuzzToInt64 ./pkg/interpreter/
