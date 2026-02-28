@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-02-27
+
+### Added
+
+- **`net/url` intercepts** (issue #89): New `handleNetURLCall` in `stdlib.go` covers
+  `url.Parse`, `ParseQuery`, `ParseRequestURI`, `QueryEscape/Unescape`,
+  `PathEscape/Unescape`, `User/UserPassword`, `JoinPath`; and URL/Values method
+  dispatches (`Hostname`, `Port`, `RequestURI`, `IsAbs`, `String`, `Query`,
+  `Get/Set/Add/Del/Has/Encode`, etc.). Direct struct field accesses on `*url.URL`
+  are opaque; tests use method calls only. Two integration tests: `url_parse`,
+  `url_values`.
+
+- **`os/exec` intercepts** (issue #90): New `handleExecCall` covers
+  `exec.Command/CommandContext`, `LookPath`, and `*Cmd` method calls
+  (`Run`, `Output`, `CombinedOutput`, `Start`, `Wait`, `StdoutPipe`,
+  `StderrPipe`, `StdinPipe`, `String`, `Environ`). Integration test:
+  `exec_command`, `exec_lookpath`.
+
+- **`compress/gzip` and `compress/zlib` intercepts** (issue #91): New
+  `handleGzipCall` and `handleZlibCall` cover `NewReader`, `NewWriter`,
+  `NewWriterLevel` and all `*Reader/*Writer` method calls (`Read`, `Write`,
+  `Flush`, `Close`, `Reset`, `Multistream`). Note: `gzip.NewWriter` returns a
+  single `*Writer`; `zlib.NewWriter` returns a single `*Writer` (no error).
+  Integration tests: `gzip_readwrite`, `zlib_compress`.
+
+- **`sync.Pool`, `sync.Cond`, `sync.RWMutex.TryLock/TryRLock`, `sync.Map.Range`
+  intercepts** (issue #92):
+  - `sync.Pool.Get` returns `Value{}` (nil, triggering the allocation fallback
+    branch); `Put` is a noop.
+  - `sync.Cond.Signal/Broadcast` ticks the vector clock and snapshots it;
+    `Cond.Wait` merges the last snapshot (same HB model as Mutex Lock/Unlock).
+    `sync.NewCond` returns an opaque value.
+  - `sync.RWMutex.TryLock/TryRLock` return `true` (optimistic); lock state is
+    recorded so the corresponding `Unlock/RUnlock` finds the expected state.
+  - `sync.Map.Range` probes the callback function with sentinel args, executing
+    its body for analysis. Integration tests: `sync_pool`, `sync_cond`.
+
 ## [0.24.0] - 2026-02-27
 
 ### Fixed

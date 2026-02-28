@@ -20,6 +20,7 @@ import (
 	"math"
 	"math/rand"
 	"net"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -37,8 +38,9 @@ import (
 // "errors", "sort", "sync/atomic", "io", "bufio", "log",
 // "encoding/hex", "encoding/base64", "encoding/xml", "encoding/csv",
 // "crypto/rand", "crypto/md5", "crypto/sha1", "crypto/sha256",
-// "path/filepath", "path", "net", "text/template", "html/template",
-// "reflect", "flag", and "runtime".
+// "path/filepath", "path", "net", "net/url", "text/template", "html/template",
+// "reflect", "flag", "runtime", "os/exec", "compress/gzip", and
+// "compress/zlib".
 // Returns (result, true) when intercepted, (Value{}, false) otherwise.
 //
 // gid and site are required by handlers that invoke user callbacks
@@ -109,6 +111,14 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleFlagCall(name, args)
 	case "runtime":
 		return interp.handleRuntimeCall(name, args)
+	case "net/url":
+		return interp.handleNetURLCall(name, args)
+	case "os/exec":
+		return interp.handleExecCall(name, args)
+	case "compress/gzip":
+		return interp.handleGzipCall(name, args)
+	case "compress/zlib":
+		return interp.handleZlibCall(name, args)
 	}
 	return Value{}, false
 }
@@ -3240,6 +3250,401 @@ func (interp *Interpreter) handleRuntimeCall(name string, args []Value) (Value, 
 	case "GOROOT":
 		return Value{Raw: runtime.GOROOT()}, true
 	}
+	return Value{}, false
+}
+
+// handleNetURLCall models net/url.* functions (#89).
+func (interp *Interpreter) handleNetURLCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+
+	switch name {
+	case "Parse", "ParseRequestURI":
+		// url.Parse(rawurl string) (*URL, error)
+		if s, ok := stdlibArgString(args, 0); ok {
+			u, err := url.Parse(s)
+			if err != nil {
+				return Value{Raw: []Value{{}, {Raw: err.Error()}}}, true
+			}
+			// Return the URL as an opaque value; downstream field accesses
+			// (Scheme, Host, Path, etc.) are intercepted as method calls.
+			return Value{Raw: []Value{{Raw: u}, {}}}, true
+		}
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "ParseQuery":
+		// url.ParseQuery(query string) (Values, error)
+		if s, ok := stdlibArgString(args, 0); ok {
+			vals, err := url.ParseQuery(s)
+			if err != nil {
+				return Value{Raw: []Value{{}, {Raw: err.Error()}}}, true
+			}
+			// Model Values as opaque; downstream Get/Set calls are intercepted.
+			return Value{Raw: []Value{{Raw: vals}, {}}}, true
+		}
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "QueryEscape":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: url.QueryEscape(s)}, true
+		}
+		return Value{Raw: "escaped"}, true
+
+	case "QueryUnescape":
+		if s, ok := stdlibArgString(args, 0); ok {
+			u, err := url.QueryUnescape(s)
+			if err != nil {
+				return Value{Raw: []Value{{Raw: ""}, {Raw: err.Error()}}}, true
+			}
+			return Value{Raw: []Value{{Raw: u}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "unescaped"}, {}}}, true
+
+	case "PathEscape":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: url.PathEscape(s)}, true
+		}
+		return Value{Raw: "escaped"}, true
+
+	case "PathUnescape":
+		if s, ok := stdlibArgString(args, 0); ok {
+			u, err := url.PathUnescape(s)
+			if err != nil {
+				return Value{Raw: []Value{{Raw: ""}, {Raw: err.Error()}}}, true
+			}
+			return Value{Raw: []Value{{Raw: u}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "unescaped"}, {}}}, true
+
+	case "User":
+		// url.User(username string) *Userinfo
+		return opaque, true
+
+	case "UserPassword":
+		// url.UserPassword(username, password string) *Userinfo
+		return opaque, true
+
+	case "JoinPath":
+		// url.JoinPath(base string, elem ...string) (string, error)
+		if s, ok := stdlibArgString(args, 0); ok {
+			parts := []string{s}
+			for _, a := range args[1:] {
+				if p, ok2 := a.Raw.(string); ok2 {
+					parts = append(parts, p)
+				}
+			}
+			return Value{Raw: []Value{{Raw: strings.Join(parts, "/")}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "http://example.com/path"}, {}}}, true
+
+	// *url.URL method calls (receiver = args[0]):
+	case "String":
+		if len(args) > 0 {
+			if u, ok := args[0].Raw.(*url.URL); ok {
+				return Value{Raw: u.String()}, true
+			}
+		}
+		return Value{Raw: "http://example.com"}, true
+
+	case "Scheme":
+		if len(args) > 0 {
+			if u, ok := args[0].Raw.(*url.URL); ok {
+				return Value{Raw: u.Scheme}, true
+			}
+		}
+		return Value{Raw: "https"}, true
+
+	case "Host":
+		if len(args) > 0 {
+			if u, ok := args[0].Raw.(*url.URL); ok {
+				return Value{Raw: u.Host}, true
+			}
+		}
+		return Value{Raw: "example.com"}, true
+
+	case "Path":
+		if len(args) > 0 {
+			if u, ok := args[0].Raw.(*url.URL); ok {
+				return Value{Raw: u.Path}, true
+			}
+		}
+		return Value{Raw: "/path"}, true
+
+	case "RawQuery":
+		if len(args) > 0 {
+			if u, ok := args[0].Raw.(*url.URL); ok {
+				return Value{Raw: u.RawQuery}, true
+			}
+		}
+		return Value{Raw: "key=value"}, true
+
+	case "Fragment":
+		if len(args) > 0 {
+			if u, ok := args[0].Raw.(*url.URL); ok {
+				return Value{Raw: u.Fragment}, true
+			}
+		}
+		return Value{Raw: ""}, true
+
+	case "Query":
+		// u.Query() url.Values
+		if len(args) > 0 {
+			if u, ok := args[0].Raw.(*url.URL); ok {
+				return Value{Raw: u.Query()}, true
+			}
+		}
+		return opaque, true
+
+	case "Hostname":
+		if len(args) > 0 {
+			if u, ok := args[0].Raw.(*url.URL); ok {
+				return Value{Raw: u.Hostname()}, true
+			}
+		}
+		return Value{Raw: "example.com"}, true
+
+	case "Port":
+		if len(args) > 0 {
+			if u, ok := args[0].Raw.(*url.URL); ok {
+				return Value{Raw: u.Port()}, true
+			}
+		}
+		return Value{Raw: ""}, true
+
+	case "RequestURI":
+		if len(args) > 0 {
+			if u, ok := args[0].Raw.(*url.URL); ok {
+				return Value{Raw: u.RequestURI()}, true
+			}
+		}
+		return Value{Raw: "/path?key=value"}, true
+
+	case "ResolveReference":
+		return opaque, true
+
+	case "IsAbs":
+		if len(args) > 0 {
+			if u, ok := args[0].Raw.(*url.URL); ok {
+				return Value{Raw: u.IsAbs()}, true
+			}
+		}
+		return Value{Raw: true}, true
+
+	case "MarshalBinary":
+		return Value{Raw: []Value{{Raw: []byte("url")}, {}}}, true
+
+	case "UnmarshalBinary":
+		return Value{}, true
+
+	case "EscapedPath":
+		return Value{Raw: "/path"}, true
+
+	case "EscapedFragment":
+		return Value{Raw: ""}, true
+
+	// url.Values method calls (receiver = args[0]):
+	case "Get":
+		if len(args) >= 2 {
+			if vals, ok := args[0].Raw.(url.Values); ok {
+				if k, ok2 := stdlibArgString(args, 1); ok2 {
+					return Value{Raw: vals.Get(k)}, true
+				}
+			}
+		}
+		return Value{Raw: "value"}, true
+
+	case "Set":
+		if len(args) >= 3 {
+			if vals, ok := args[0].Raw.(url.Values); ok {
+				k, _ := stdlibArgString(args, 1)
+				v, _ := stdlibArgString(args, 2)
+				vals.Set(k, v)
+			}
+		}
+		return Value{}, true
+
+	case "Add":
+		return Value{}, true
+
+	case "Del":
+		return Value{}, true
+
+	case "Has":
+		return Value{Raw: true}, true // pessimistic
+
+	case "Encode":
+		if len(args) > 0 {
+			if vals, ok := args[0].Raw.(url.Values); ok {
+				return Value{Raw: vals.Encode()}, true
+			}
+		}
+		return Value{Raw: "key=value"}, true
+	}
+	return Value{}, false
+}
+
+// handleExecCall models os/exec.* functions (#90).
+func (interp *Interpreter) handleExecCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	case "Command", "CommandContext":
+		// exec.Command(name string, arg ...string) *Cmd
+		return opaque, true
+
+	case "LookPath":
+		// exec.LookPath(file string) (string, error)
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: []Value{{Raw: "/usr/bin/" + s}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "/usr/bin/cmd"}, {}}}, true
+
+	// *exec.Cmd method calls (receiver = args[0]):
+	case "Run":
+		// cmd.Run() error — return nil (assume success)
+		return Value{}, true
+
+	case "Output":
+		// cmd.Output() ([]byte, error)
+		return Value{Raw: []Value{{Raw: []byte("output")}, {}}}, true
+
+	case "CombinedOutput":
+		// cmd.CombinedOutput() ([]byte, error)
+		return Value{Raw: []Value{{Raw: []byte("output")}, {}}}, true
+
+	case "Start":
+		// cmd.Start() error
+		return Value{}, true
+
+	case "Wait":
+		// cmd.Wait() error
+		return Value{}, true
+
+	case "StdoutPipe":
+		// cmd.StdoutPipe() (io.ReadCloser, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "StderrPipe":
+		// cmd.StderrPipe() (io.ReadCloser, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "StdinPipe":
+		// cmd.StdinPipe() (io.WriteCloser, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "String":
+		// cmd.String() string
+		return Value{Raw: "cmd"}, true
+
+	case "Environ":
+		// cmd.Environ() []string
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, false
+}
+
+// handleGzipCall models compress/gzip.* functions (#91).
+func (interp *Interpreter) handleGzipCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	case "NewReader":
+		// gzip.NewReader(r io.Reader) (*Reader, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "NewWriter":
+		// gzip.NewWriter(w io.Writer) *Writer — single return value.
+		return opaque, true
+
+	case "NewWriterLevel":
+		// gzip.NewWriterLevel(w io.Writer, level int) (*Writer, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "BestCompression", "BestSpeed", "DefaultCompression", "HuffmanOnly",
+		"NoCompression":
+		// gzip level constants — should not be called but handle gracefully.
+		return Value{Raw: int64(-1)}, true
+
+	// *gzip.Reader method calls:
+	case "Read":
+		// r.Read(p []byte) (int, error) — return EOF immediately.
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: "EOF"}}}, true
+
+	case "Close":
+		return Value{}, true
+
+	case "Reset":
+		return Value{}, true
+
+	case "Multistream":
+		return Value{}, true
+
+	// *gzip.Writer method calls:
+	case "Write":
+		n := 0
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = len(b)
+			case []Value:
+				n = len(b)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+
+	case "Flush":
+		return Value{}, true
+	}
+	_ = opaque
+	return Value{}, false
+}
+
+// handleZlibCall models compress/zlib.* functions (#91).
+func (interp *Interpreter) handleZlibCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	case "NewReader":
+		// zlib.NewReader(r io.Reader) (io.ReadCloser, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "NewReaderDict":
+		// zlib.NewReaderDict(r io.Reader, dict []byte) (io.ReadCloser, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "NewWriter":
+		// zlib.NewWriter(w io.Writer) *Writer — single return value.
+		return opaque, true
+
+	case "NewWriterLevel":
+		// zlib.NewWriterLevel(w io.Writer, level int) (*Writer, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "NewWriterLevelDict":
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	// Shared io.ReadCloser / *Writer methods:
+	case "Read":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: "EOF"}}}, true
+
+	case "Close":
+		return Value{}, true
+
+	case "Reset":
+		return Value{}, true
+
+	case "Write":
+		n := 0
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = len(b)
+			case []Value:
+				n = len(b)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+
+	case "Flush":
+		return Value{}, true
+	}
+	_ = opaque
 	return Value{}, false
 }
 

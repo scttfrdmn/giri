@@ -1466,7 +1466,8 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 		}
 
 	case "Wait":
-		// WaitGroup.Wait(): merge the Done-time clock (mirrors Lock semantics).
+		// WaitGroup.Wait() and sync.Cond.Wait(): merge the last
+		// Done/Signal/Broadcast clock (mirrors Lock semantics).
 		if ms.lastUnlockClock != nil {
 			for id, t := range ms.lastUnlockClock {
 				if t > g.VClock.Clocks[id] {
@@ -1516,7 +1517,61 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 		return Value{Raw: []Value{{}, {Raw: false}}}
 
 	case "Range":
-		// sync.Map.Range (#46): noop (can't iterate without concrete values).
+		// sync.Map.Range (#46, #92): probe the callback once with sentinel
+		// (opaque, opaque) args to surface violations inside the callback body.
+		if len(args) >= 2 {
+			sentinel := Value{Raw: struct{}{}}
+			switch fn := args[1].Raw.(type) {
+			case *ssa.Function:
+				if fn.Blocks != nil {
+					interp.execFunction(gid, fn, []Value{sentinel, sentinel})
+				}
+			case *ClosureValue:
+				callArgs := append([]Value{sentinel, sentinel}, fn.FreeVars...)
+				interp.execFunction(gid, fn.Fn, callArgs)
+			}
+		}
+
+	// sync.Pool methods (#92): Get returns nil (pool empty) so callers take
+	// the "allocate new" branch; Put is a noop.
+	case "Get":
+		return Value{} // nil interface → callers fall through to allocation
+
+	case "Put":
+		// noop
+
+	// sync.RWMutex extras (#92)
+	case "TryLock":
+		// Pessimistic: assume lock is acquired.
+		ms.locked = true
+		ms.lockGoroutine = gid
+		return Value{Raw: true}
+
+	case "TryRLock":
+		return Value{Raw: true}
+
+	// sync.Cond methods (#92): model signal/wait using the mutex clock.
+	case "NewCond":
+		return Value{Raw: struct{}{}}
+
+	case "Signal":
+		// Cond.Signal: tick clock and snapshot (mirrors Mutex.Unlock).
+		g.VClock.Tick(gid)
+		ms.lastUnlockClock = make(map[int64]uint64, len(g.VClock.Clocks))
+		for k, v := range g.VClock.Clocks {
+			ms.lastUnlockClock[k] = v
+		}
+
+	case "Broadcast":
+		// Cond.Broadcast: same as Signal in our single-goroutine model.
+		g.VClock.Tick(gid)
+		ms.lastUnlockClock = make(map[int64]uint64, len(g.VClock.Clocks))
+		for k, v := range g.VClock.Clocks {
+			ms.lastUnlockClock[k] = v
+		}
+
+	// Note: Cond.Wait shares the "Wait" case above with WaitGroup.Wait —
+	// both merge the last clock snapshot, which is the correct HB semantics.
 	}
 
 	return Value{}
