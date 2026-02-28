@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-02-27
+
+### Added
+
+- **`encoding/binary` intercepts** (issue #97): New `handleBinaryCall` covers
+  `Read`/`Write` (noop, nil error), `Size` (returns 8), `PutUvarint`/`PutVarint`
+  (returns bytes written), `Uvarint`/`Varint` (returns (0, 1)),
+  `AppendUvarint`/`AppendVarint` (returns input slice); ByteOrder method calls
+  `Uint16`/`Uint32`/`Uint64`/`PutUint16`/`PutUint32`/`PutUint64`/`String`.
+  Integration test: `binary_readwrite`.
+
+- **`hash/crc32`, `hash/fnv`, `hash/adler32` intercepts** (issue #98): New
+  `handleHashExtCall` (shared across all three packages) covers constructors
+  (`NewIEEE`, `New`, `NewCastagnoli`, `New32`, `New32a`, `New64`, `New64a`,
+  `New128`, `New128a`, `MakeTable`), package-level helpers (`Checksum`,
+  `ChecksumIEEE`), and all `hash.Hash`/`hash.Hash32`/`hash.Hash64` methods
+  (`Write` → (n, nil), `Sum` → input slice, `Sum32`/`Sum64` → 0, `Reset`,
+  `Size` → 4, `BlockSize` → 64). Integration test: `hash_crc32`.
+
+- **`container/list`, `container/heap`, `container/ring` intercepts** (issue #99):
+  New `handleContainerCall` dispatches by package path:
+  - `container/list`: `New` → opaque; `PushFront`/`PushBack`/`InsertBefore`/
+    `InsertAfter` → opaque element; `Init`/`Remove`/`MoveToFront`/`MoveToBack`/
+    `MoveBefore`/`MoveAfter`/`PushFrontList`/`PushBackList` → noop;
+    `Front`/`Back` → opaque; `Len` → 0; `(*Element).Next`/`Prev` → opaque
+  - `container/heap`: `Init`/`Fix`/`Push` → noop; `Pop`/`Remove` → opaque
+  - `container/ring`: `New` → opaque; `Next`/`Prev`/`Move`/`Link`/`Unlink` →
+    opaque; `Len` → 0; `Do` → probes callback with sentinel (uses real `gid`)
+  Integration test: `container_list`.
+
+- **`math/big` intercepts** (issue #100): New `handleMathBigCall` covers:
+  - Constructors: `NewInt`/`NewFloat`/`NewRat` → opaque
+  - Arithmetic/set methods shared by `*Int`, `*Float`, `*Rat`: `Add`/`Sub`/
+    `Mul`/`Div`/`Mod`/`Rem`/`Abs`/`Neg`/`Inv`/bitwise ops/`Exp`/`GCD`/`Sqrt`/
+    `Set*` methods → return receiver (args[0])
+  - Extractors: `Int64`/`Uint64` → 0; `BitLen`/`Bit` → 0; `Bytes` → [];
+    `Text`/`String` → "0"; `Float64`/`Float32` → (0.0, 0)
+  - Comparisons: `Cmp`/`CmpAbs` → 0; `Sign` → 1; `ProbablyPrime` → true
+  - `*big.Float`: `Prec`/`Mode`/`Acc`/`MinPrec`; `IsInf`/`IsNaN` → false
+  - `*big.Rat`: `Num`/`Denom` → opaque; `FloatString` → "0";
+    `RatString` → "0/1"; `IsInt` → false
+  Integration test: `math_big`.
+
 ## [0.26.0] - 2026-02-27
 
 ### Added

@@ -40,7 +40,9 @@ import (
 // "crypto/rand", "crypto/md5", "crypto/sha1", "crypto/sha256",
 // "path/filepath", "path", "net", "net/url", "text/template", "html/template",
 // "reflect", "flag", "runtime", "os/exec", "compress/gzip", "compress/zlib",
-// "net/http", and "os/signal".
+// "net/http", "os/signal", "encoding/binary", "hash/crc32", "hash/fnv",
+// "hash/adler32", "container/list", "container/heap", "container/ring",
+// and "math/big".
 // Returns (result, true) when intercepted, (Value{}, false) otherwise.
 //
 // gid and site are required by handlers that invoke user callbacks
@@ -123,6 +125,14 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleHTTPCall(name, args)
 	case "os/signal":
 		return interp.handleSignalCall(gid, name, args)
+	case "encoding/binary":
+		return interp.handleBinaryCall(name, args)
+	case "hash/crc32", "hash/fnv", "hash/adler32":
+		return interp.handleHashExtCall(pkgPath, name, args)
+	case "container/list", "container/heap", "container/ring":
+		return interp.handleContainerCall(gid, pkgPath, name, args)
+	case "math/big":
+		return interp.handleMathBigCall(name, args)
 	}
 	return Value{}, false
 }
@@ -3907,6 +3917,274 @@ func (interp *Interpreter) handleZlibCall(name string, args []Value) (Value, boo
 		return Value{}, true
 	}
 	_ = opaque
+	return Value{}, false
+}
+
+// handleBinaryCall models encoding/binary.* functions (#97).
+// Read/Write are treated as noops; varint helpers operate on concrete buffers
+// when available. ByteOrder method calls (LittleEndian.Uint32 etc.) return
+// zero values — they're called on opaque ByteOrder interface values.
+func (interp *Interpreter) handleBinaryCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Read":
+		// binary.Read(r, order, data interface{}) error — noop, return nil.
+		return Value{}, true
+	case "Write":
+		// binary.Write(w, order, data interface{}) error — noop, return nil.
+		return Value{}, true
+	case "Size":
+		// binary.Size(v interface{}) int — return 8 (a plausible size).
+		return Value{Raw: int64(8)}, true
+
+	// Varint encode/decode:
+	case "Uvarint":
+		// binary.Uvarint(buf []byte) (uint64, int)
+		return Value{Raw: []Value{{Raw: uint64(0)}, {Raw: int64(1)}}}, true
+	case "Varint":
+		// binary.Varint(buf []byte) (int64, int)
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(1)}}}, true
+	case "PutUvarint":
+		// binary.PutUvarint(buf []byte, x uint64) int
+		return Value{Raw: int64(1)}, true
+	case "PutVarint":
+		// binary.PutVarint(buf []byte, x int64) int
+		return Value{Raw: int64(1)}, true
+	case "AppendUvarint", "AppendVarint":
+		// Returns appended []byte.
+		if len(args) >= 1 {
+			return args[0], true
+		}
+		return Value{Raw: []Value{}}, true
+
+	// ByteOrder methods (LittleEndian/BigEndian struct method calls):
+	case "Uint16":
+		return Value{Raw: uint64(0)}, true
+	case "Uint32":
+		return Value{Raw: uint64(0)}, true
+	case "Uint64":
+		return Value{Raw: uint64(0)}, true
+	case "PutUint16", "PutUint32", "PutUint64":
+		return Value{}, true
+	case "String":
+		return Value{Raw: ""}, true
+	}
+	return Value{}, false
+}
+
+// handleHashExtCall models hash/crc32, hash/fnv, and hash/adler32 (#98).
+// All three packages expose the same hash.Hash32/Hash64 interface so method
+// calls are handled uniformly regardless of pkgPath.
+func (interp *Interpreter) handleHashExtCall(pkgPath, name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	// Constructors:
+	case "New", "NewIEEE", "NewCastagnoli", "NewKoopman",
+		"New32", "New32a", "New64", "New64a", "New128", "New128a":
+		return opaque, true
+
+	case "MakeTable":
+		return opaque, true
+
+	// Package-level checksum helpers:
+	case "Checksum", "ChecksumIEEE":
+		return Value{Raw: uint64(0)}, true
+
+	// hash.Hash / hash.Hash32 / hash.Hash64 methods (receiver = args[0]):
+	case "Write":
+		// (n int, err error)
+		n := int64(0)
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = int64(len(b))
+			case []Value:
+				n = int64(len(b))
+			}
+		}
+		return Value{Raw: []Value{{Raw: n}, {}}}, true
+	case "Sum":
+		// Sum(b []byte) []byte — return the input slice unmodified (pessimistic).
+		if len(args) >= 2 {
+			return args[1], true
+		}
+		return Value{Raw: []Value{}}, true
+	case "Sum32":
+		return Value{Raw: uint64(0)}, true
+	case "Sum64":
+		return Value{Raw: uint64(0)}, true
+	case "Reset":
+		return Value{}, true
+	case "Size":
+		return Value{Raw: int64(4)}, true
+	case "BlockSize":
+		return Value{Raw: int64(64)}, true
+	}
+	_ = pkgPath
+	return Value{}, false
+}
+
+// handleContainerCall models container/list, container/heap, and container/ring (#99).
+func (interp *Interpreter) handleContainerCall(gid int64, pkgPath, name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch pkgPath {
+	case "container/list":
+		switch name {
+		case "New":
+			return opaque, true
+		// *List methods returning *Element:
+		case "PushFront", "PushBack", "InsertBefore", "InsertAfter":
+			return opaque, true
+		// *List methods returning nothing meaningful:
+		case "Init", "Remove", "MoveToFront", "MoveToBack",
+			"MoveBefore", "MoveAfter", "PushFrontList", "PushBackList":
+			return Value{}, true
+		// *List accessors:
+		case "Front", "Back":
+			return opaque, true
+		case "Len":
+			return Value{Raw: int64(0)}, true
+		// *Element methods:
+		case "Next", "Prev":
+			return opaque, true
+		}
+
+	case "container/heap":
+		switch name {
+		case "Init", "Fix":
+			return Value{}, true
+		case "Push":
+			return Value{}, true
+		case "Pop", "Remove":
+			return opaque, true
+		}
+
+	case "container/ring":
+		switch name {
+		case "New":
+			return opaque, true
+		case "Next", "Prev":
+			return opaque, true
+		case "Move":
+			return opaque, true
+		case "Link", "Unlink":
+			return opaque, true
+		case "Len":
+			return Value{Raw: int64(0)}, true
+		case "Do":
+			// Do(f func(*Ring)) — probe the callback if possible.
+			if len(args) >= 2 {
+				sentinel := Value{Raw: struct{}{}}
+				switch fn := args[1].Raw.(type) {
+				case *ssa.Function:
+					if fn.Blocks != nil {
+						interp.execFunction(gid, fn, []Value{sentinel})
+					}
+				case *ClosureValue:
+					callArgs := append([]Value{sentinel}, fn.FreeVars...)
+					interp.execFunction(gid, fn.Fn, callArgs)
+				}
+			}
+			return Value{}, true
+		}
+	}
+	_ = opaque
+	return Value{}, false
+}
+
+// handleMathBigCall models math/big.* functions (#100).
+// All constructors return opaque values; arithmetic methods return the receiver
+// (big.Int methods like Add update and return the receiver); comparison methods
+// return pessimistic values.
+func (interp *Interpreter) handleMathBigCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	// Constructors:
+	case "NewInt":
+		return opaque, true
+	case "NewFloat":
+		return opaque, true
+	case "NewRat":
+		return opaque, true
+
+	// Arithmetic / set methods — return receiver (all three types share this pattern):
+	case "Add", "Sub", "Mul", "Div", "Mod", "Rem",
+		"Quo", "QuoRem",
+		"Abs", "Neg", "Inv",
+		"And", "Or", "Xor", "AndNot",
+		"Lsh", "Rsh", "Not",
+		"Exp", "GCD", "Sqrt",
+		"Set", "SetInt64", "SetUint64", "SetBytes", "SetBit", "SetBits",
+		"SetString", "SetFrac", "SetFrac64",
+		"SetFloat64", "SetInt", "SetPrec", "SetMode", "SetMantExp", "SetInf":
+		// Return receiver (args[0]) so downstream uses see a non-nil *big.Int/*.Float/*.Rat.
+		if len(args) >= 1 {
+			return args[0], true
+		}
+		return opaque, true
+
+	// Value extractors:
+	case "Int64":
+		return Value{Raw: int64(0)}, true
+	case "Uint64":
+		return Value{Raw: uint64(0)}, true
+	case "IsInt64", "IsUint64":
+		return Value{Raw: true}, true
+	case "BitLen":
+		return Value{Raw: int64(0)}, true
+	case "Bit":
+		return Value{Raw: uint64(0)}, true
+	case "Bytes":
+		return Value{Raw: []Value{}}, true
+	case "Text", "String":
+		return Value{Raw: "0"}, true
+	case "Append":
+		if len(args) >= 2 {
+			return args[1], true
+		}
+		return Value{Raw: []Value{}}, true
+	case "MarshalText", "MarshalJSON":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "UnmarshalText", "UnmarshalJSON":
+		return Value{}, true
+
+	// Comparisons:
+	case "Cmp", "CmpAbs":
+		return Value{Raw: int64(0)}, true
+	case "Sign":
+		return Value{Raw: int64(1)}, true // pessimistic: positive
+	case "ProbablyPrime":
+		return Value{Raw: true}, true
+
+	// *big.Float-specific:
+	case "Float64":
+		return Value{Raw: []Value{{Raw: float64(0)}, {Raw: int64(0)}}}, true
+	case "Float32":
+		return Value{Raw: []Value{{Raw: float64(0)}, {Raw: int64(0)}}}, true
+	case "Int":
+		return Value{Raw: []Value{opaque, {Raw: int64(0)}}}, true
+	case "Prec":
+		return Value{Raw: uint64(0)}, true
+	case "Mode":
+		return Value{Raw: int64(0)}, true
+	case "Acc":
+		return Value{Raw: int64(0)}, true
+	case "IsInf", "IsNaN":
+		return Value{Raw: false}, true
+	case "MinPrec":
+		return Value{Raw: uint64(0)}, true
+
+	// *big.Rat-specific:
+	case "Num", "Denom":
+		return opaque, true
+	case "FloatString":
+		return Value{Raw: "0"}, true
+	case "RatString":
+		return Value{Raw: "0/1"}, true
+	case "FloatPrec":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
+	case "IsInt":
+		return Value{Raw: false}, true
+	}
 	return Value{}, false
 }
 
