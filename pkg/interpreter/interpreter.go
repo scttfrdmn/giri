@@ -367,6 +367,37 @@ type Interpreter struct {
 	rng *rand.Rand
 }
 
+// InterceptFunc is a callback that models the behavior of an external or
+// private function. It receives the call arguments and returns (result, true)
+// when the call is handled, or (Value{}, false) to fall through to the
+// interpreter's built-in handling.
+//
+// Encoding return values:
+//
+//	Single return:          Value{Raw: int64(42)}
+//	Tuple (val, error):     Value{Raw: []Value{{Raw: val}, {}}}  // {} = nil error
+//	Opaque (non-nil):       Value{Raw: struct{}{}}
+//	No meaningful return:   Value{}
+type InterceptFunc func(args []Value) (Value, bool)
+
+// CustomIntercepts maps package import paths to per-function intercept
+// callbacks. Use this to model external, private, or generated-code package
+// functions that the interpreter cannot otherwise execute.
+//
+// Example:
+//
+//	interpreter.CustomIntercepts{
+//	    "github.com/myco/mylib": {
+//	        "Compute": func(args []interpreter.Value) (interpreter.Value, bool) {
+//	            return interpreter.Value{Raw: int64(0)}, true
+//	        },
+//	        "MustAlloc": func(args []interpreter.Value) (interpreter.Value, bool) {
+//	            return interpreter.Value{Raw: struct{}{}}, true // opaque non-nil
+//	        },
+//	    },
+//	}
+type CustomIntercepts map[string]map[string]InterceptFunc
+
 // Config controls interpreter behavior.
 type Config struct {
 	// MaxSteps limits total SSA instructions executed (0 = unlimited).
@@ -400,6 +431,11 @@ type Config struct {
 
 	// Verbose enables detailed execution tracing.
 	Verbose bool
+
+	// Intercepts registers custom intercept callbacks for packages not covered
+	// by the built-in stdlib intercepts. Custom intercepts are checked first,
+	// so they can also override stdlib behavior.
+	Intercepts CustomIntercepts
 }
 
 // ScheduleStrategy controls how the interpreter chooses which goroutine to run next.

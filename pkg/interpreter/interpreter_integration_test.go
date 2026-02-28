@@ -286,6 +286,30 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.31.0 regression tests
+	{
+		name: "custom intercept",
+		dir:  "custom_intercept",
+		// locallib.Compute and locallib.MustAlloc are intercepted via
+		// Config.Intercepts; the interpreter never executes their bodies.
+		wantViolations: 0,
+		wantCategory:   "",
+		config: func() interpreter.Config {
+			cfg := interpreter.DefaultConfig()
+			const localpkg = "github.com/scttfrdmn/giri/pkg/interpreter/testdata/integration/custom_intercept/locallib"
+			cfg.Intercepts = interpreter.CustomIntercepts{
+				localpkg: {
+					"Compute": func(args []interpreter.Value) (interpreter.Value, bool) {
+						return interpreter.Value{Raw: int64(0)}, true
+					},
+					"MustAlloc": func(args []interpreter.Value) (interpreter.Value, bool) {
+						return interpreter.Value{Raw: []byte{}}, true
+					},
+				},
+			}
+			return cfg
+		}(),
+	},
 	// v0.30.0 regression tests
 	{
 		name:           "fs embed",

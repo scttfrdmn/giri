@@ -53,6 +53,13 @@ import (
 // gid and site are required by handlers that invoke user callbacks
 // (e.g. sort.Slice calls the less function via execFunction).
 func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string, args []Value) (Value, bool) {
+	// User-registered intercepts (#113) take priority over built-in handlers,
+	// allowing overrides of both external libraries and stdlib functions.
+	if fns, ok := interp.config.Intercepts[pkgPath]; ok {
+		if fn, ok := fns[name]; ok {
+			return fn(args)
+		}
+	}
 	switch pkgPath {
 	case "strings":
 		return interp.handleStringsCall(name, args)

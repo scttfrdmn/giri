@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-02-27
+
+### Added
+
+- **Custom intercept API** (issue #113): Users can now model external,
+  private, or generated-code package functions without modifying Giri's core.
+
+  New public types in `pkg/interpreter`:
+
+  ```go
+  // InterceptFunc is called instead of executing the function body.
+  type InterceptFunc func(args []Value) (Value, bool)
+
+  // CustomIntercepts maps "pkgPath" → {"funcName" → InterceptFunc}.
+  type CustomIntercepts map[string]map[string]InterceptFunc
+  ```
+
+  New field in `Config`:
+
+  ```go
+  // Intercepts are checked before built-in stdlib handlers, so they
+  // can also override stdlib behavior.
+  Intercepts CustomIntercepts
+  ```
+
+  Usage:
+
+  ```go
+  cfg := interpreter.DefaultConfig()
+  cfg.Intercepts = interpreter.CustomIntercepts{
+      "github.com/myco/mylib": {
+          "Compute": func(args []interpreter.Value) (interpreter.Value, bool) {
+              return interpreter.Value{Raw: int64(0)}, true
+          },
+      },
+  }
+  result := interpreter.Run(prog, cfg)
+  ```
+
+- **Integration test for custom intercepts** (issue #114):
+  `testdata/integration/custom_intercept/` contains a `locallib` sub-package
+  whose `Compute` and `MustAlloc` functions are intercepted via
+  `Config.Intercepts` in the test, demonstrating the end-to-end flow. 120
+  total integration tests.
+
 ## [0.30.0] - 2026-02-27
 
 ### Added
@@ -1390,7 +1435,8 @@ Closes #77, #78, #79, #80. Integration test count: 73 total.
   the missing import for `github.com/scttfrdmn/giri/pkg/report`.
 - Generated `go.sum` via `go mod tidy`.
 
-[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/scttfrdmn/giri/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/scttfrdmn/giri/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/scttfrdmn/giri/compare/v0.9.0...v0.29.0
 [0.9.0]: https://github.com/scttfrdmn/giri/compare/v0.8.0...v0.9.0
