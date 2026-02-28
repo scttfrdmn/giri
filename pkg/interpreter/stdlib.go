@@ -15,11 +15,14 @@ package interpreter
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/xml"
 	"fmt"
 	"math"
 	"math/rand"
 	"net"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"unicode"
@@ -32,9 +35,10 @@ import (
 // execStdlibCall intercepts standard library function calls in packages
 // "strings", "strconv", "fmt", "time", "os", "math/rand", "bytes",
 // "errors", "sort", "sync/atomic", "io", "bufio", "log",
-// "encoding/hex", "encoding/base64", "crypto/rand", "crypto/md5",
-// "crypto/sha1", "crypto/sha256", "path/filepath", "path",
-// "net", "text/template", and "html/template".
+// "encoding/hex", "encoding/base64", "encoding/xml", "encoding/csv",
+// "crypto/rand", "crypto/md5", "crypto/sha1", "crypto/sha256",
+// "path/filepath", "path", "net", "text/template", "html/template",
+// "reflect", "flag", and "runtime".
 // Returns (result, true) when intercepted, (Value{}, false) otherwise.
 //
 // gid and site are required by handlers that invoke user callbacks
@@ -95,6 +99,16 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleNetCall(name, args)
 	case "text/template", "html/template":
 		return interp.handleTemplateCall(name, args)
+	case "encoding/xml":
+		return interp.handleXMLCall(name, args)
+	case "encoding/csv":
+		return interp.handleCSVCall(name, args)
+	case "reflect":
+		return interp.handleReflectCall(name, args)
+	case "flag":
+		return interp.handleFlagCall(name, args)
+	case "runtime":
+		return interp.handleRuntimeCall(name, args)
 	}
 	return Value{}, false
 }
@@ -2691,6 +2705,540 @@ func (interp *Interpreter) handleTemplateCall(name string, args []Value) (Value,
 			return Value{Raw: s}, true // pass-through for non-dangerous input
 		}
 		return Value{Raw: "escaped"}, true
+	}
+	return Value{}, false
+}
+
+// handleXMLCall models encoding/xml.* functions (#87).
+func (interp *Interpreter) handleXMLCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	case "Marshal":
+		// xml.Marshal(v interface{}) ([]byte, error)
+		if len(args) > 0 && args[0].Raw != nil {
+			b, err := xml.Marshal(args[0].Raw)
+			if err == nil {
+				return Value{Raw: []Value{{Raw: b}, {}}}, true
+			}
+		}
+		return Value{Raw: []Value{{Raw: []byte("<sentinel/>")}, {}}}, true
+
+	case "MarshalIndent":
+		return Value{Raw: []Value{{Raw: []byte("<sentinel/>")}, {}}}, true
+
+	case "Unmarshal":
+		// xml.Unmarshal(data []byte, v interface{}) error — return nil error.
+		return Value{}, true
+
+	case "NewDecoder":
+		return opaque, true
+
+	case "NewEncoder":
+		return opaque, true
+
+	case "NewTokenDecoder":
+		return opaque, true
+
+	case "Decode":
+		// d.Decode(v interface{}) error
+		return Value{}, true
+
+	case "DecodeElement":
+		return Value{}, true
+
+	case "Token":
+		// d.Token() (Token, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "Encode":
+		// e.Encode(v interface{}) error
+		return Value{}, true
+
+	case "EncodeElement":
+		return Value{}, true
+
+	case "EncodeToken":
+		return Value{}, true
+
+	case "Flush":
+		return Value{}, true
+
+	case "EscapeText":
+		return Value{}, true
+
+	case "Escape":
+		return Value{}, true
+
+	case "CopyToken":
+		return opaque, true
+
+	case "Name", "Attr", "CharData", "Comment", "ProcInst", "Directive",
+		"StartElement", "EndElement":
+		// XML token types — return opaque.
+		return opaque, true
+	}
+	return Value{}, false
+}
+
+// handleCSVCall models encoding/csv.* functions (#87).
+func (interp *Interpreter) handleCSVCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	case "NewReader":
+		return opaque, true
+
+	case "NewWriter":
+		return opaque, true
+
+	case "Read":
+		// r.Read() (record []string, err error)
+		return Value{Raw: []Value{{Raw: []Value{{Raw: "field1"}, {Raw: "field2"}}}, {}}}, true
+
+	case "ReadAll":
+		// r.ReadAll() (records [][]string, err error)
+		row := []Value{{Raw: "f1"}, {Raw: "f2"}}
+		records := []Value{{Raw: row}}
+		return Value{Raw: []Value{{Raw: records}, {}}}, true
+
+	case "Write":
+		// w.Write(record []string) error
+		return Value{}, true
+
+	case "WriteAll":
+		// w.WriteAll(records [][]string) error
+		return Value{}, true
+
+	case "Flush":
+		return Value{}, true
+
+	case "Error":
+		// w.Error() error — return nil
+		return Value{}, true
+	}
+	_ = opaque
+	return Value{}, false
+}
+
+// handleReflectCall models reflect.* functions (#86).
+// Only non-unsafe reflect functions are handled here; Pointer and UnsafeAddr
+// are intercepted earlier in exec.go for Rule 5 checking.
+func (interp *Interpreter) handleReflectCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}} // sentinel for reflect.Type / reflect.Value
+	switch name {
+	case "TypeOf":
+		// reflect.TypeOf(v interface{}) reflect.Type — return opaque non-nil Type.
+		return opaque, true
+
+	case "ValueOf":
+		// reflect.ValueOf(v interface{}) reflect.Value — return the value as-is.
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return opaque, true
+
+	case "DeepEqual":
+		// reflect.DeepEqual(x, y interface{}) bool
+		if len(args) >= 2 && args[0].Raw != nil && args[1].Raw != nil {
+			return Value{Raw: reflect.DeepEqual(args[0].Raw, args[1].Raw)}, true
+		}
+		return Value{Raw: true}, true // pessimistic: assume equal
+
+	case "New":
+		// reflect.New(t reflect.Type) reflect.Value — return opaque pointer.
+		return opaque, true
+
+	case "Zero":
+		// reflect.Zero(t reflect.Type) reflect.Value
+		return opaque, true
+
+	case "MakeSlice":
+		// reflect.MakeSlice(t, len, cap int) reflect.Value
+		return opaque, true
+
+	case "MakeMap", "MakeMapWithSize":
+		return opaque, true
+
+	case "MakeChan":
+		return opaque, true
+
+	case "MakeFunc":
+		return opaque, true
+
+	case "Append", "AppendSlice":
+		return opaque, true
+
+	case "Copy":
+		// reflect.Copy(dst, src Value) int
+		return Value{Raw: int64(0)}, true
+
+	case "Indirect":
+		// reflect.Indirect(v Value) Value
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return opaque, true
+
+	case "PtrTo", "PointerTo":
+		return opaque, true
+
+	case "SliceOf":
+		return opaque, true
+
+	case "ArrayOf":
+		return opaque, true
+
+	case "MapOf":
+		return opaque, true
+
+	case "ChanOf":
+		return opaque, true
+
+	case "FuncOf":
+		return opaque, true
+
+	case "StructOf":
+		return opaque, true
+
+	// reflect.Value method calls (receiver = args[0]):
+	case "Kind":
+		// v.Kind() reflect.Kind — return sentinel (Struct=25)
+		return Value{Raw: int64(25)}, true
+
+	case "Type":
+		return opaque, true
+
+	case "Interface":
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return opaque, true
+
+	case "Elem":
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return opaque, true
+
+	case "Field":
+		return opaque, true
+
+	case "Index":
+		return opaque, true
+
+	case "MapIndex":
+		return opaque, true
+
+	case "MapKeys":
+		return Value{Raw: []Value{}}, true
+
+	case "NumField":
+		return Value{Raw: int64(0)}, true
+
+	case "NumMethod":
+		return Value{Raw: int64(0)}, true
+
+	case "Method", "MethodByName":
+		return opaque, true
+
+	case "Len", "Cap":
+		return Value{Raw: int64(0)}, true
+
+	case "IsNil":
+		return Value{Raw: false}, true // pessimistic: assume not nil
+
+	case "IsValid":
+		return Value{Raw: true}, true // pessimistic: assume valid
+
+	case "IsZero":
+		return Value{Raw: false}, true
+
+	case "CanAddr", "CanSet", "CanInterface":
+		return Value{Raw: true}, true
+
+	case "Set", "SetInt", "SetUint", "SetFloat", "SetBool", "SetString",
+		"SetBytes", "SetCap", "SetLen", "SetPointer", "SetIterKey", "SetIterValue":
+		return Value{}, true
+
+	case "Int":
+		return Value{Raw: int64(0)}, true
+
+	case "Uint":
+		return Value{Raw: int64(0)}, true
+
+	case "Float":
+		return Value{Raw: float64(0)}, true
+
+	case "Bool":
+		return Value{Raw: false}, true
+
+	case "String":
+		return Value{Raw: ""}, true
+
+	case "Bytes":
+		return Value{Raw: []byte(nil)}, true
+
+	case "Addr":
+		return opaque, true
+
+	case "Call", "CallSlice":
+		// v.Call(in []Value) []Value — return empty slice (no actual dispatch).
+		return Value{Raw: []Value{}}, true
+
+	case "Convert":
+		return opaque, true
+
+	case "Recv":
+		return Value{Raw: []Value{opaque, {Raw: false}}}, true
+
+	case "Send":
+		return Value{}, true
+
+	case "Close":
+		return Value{}, true
+
+	case "TrySend", "TryRecv":
+		return Value{Raw: []Value{opaque, {Raw: false}}}, true
+
+	// reflect.Type method calls:
+	case "Name":
+		return Value{Raw: "T"}, true
+
+	case "PkgPath":
+		return Value{Raw: ""}, true
+
+	case "Size":
+		return Value{Raw: int64(8)}, true
+
+	case "Implements":
+		return Value{Raw: true}, true // pessimistic
+
+	case "AssignableTo", "ConvertibleTo", "Comparable":
+		return Value{Raw: true}, true
+
+	case "In":
+		return opaque, true
+
+	case "Out":
+		return opaque, true
+
+	case "NumIn", "NumOut":
+		return Value{Raw: int64(0)}, true
+
+	case "Key":
+		return opaque, true
+
+	case "ChanDir":
+		return Value{Raw: int64(0)}, true
+
+	case "IsVariadic":
+		return Value{Raw: false}, true
+
+	case "Bits":
+		return Value{Raw: int64(64)}, true
+
+	case "FieldByName", "FieldByIndex", "FieldByNameFunc":
+		return Value{Raw: []Value{opaque, {Raw: false}}}, true
+
+	case "MethodByName2":
+		return Value{Raw: []Value{opaque, {Raw: false}}}, true
+
+	case "Align", "FieldAlign":
+		return Value{Raw: int64(8)}, true
+	}
+	return Value{}, false
+}
+
+// handleFlagCall models flag.* functions (#88).
+// Flag-defined values return opaque non-nil pointers so nil-checks on them pass.
+// Parse is a noop; command-line arguments cannot be modelled at analysis time.
+func (interp *Interpreter) handleFlagCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	// Flag definition functions — return a non-nil pointer to the flag value.
+	case "String", "StringVar":
+		if name == "StringVar" {
+			return Value{}, true // sets *string in place, no return
+		}
+		return Value{Raw: new(string)}, true
+	case "Int", "IntVar":
+		if name == "IntVar" {
+			return Value{}, true
+		}
+		return Value{Raw: new(int)}, true
+	case "Int64", "Int64Var":
+		if name == "Int64Var" {
+			return Value{}, true
+		}
+		return Value{Raw: new(int64)}, true
+	case "Uint", "UintVar":
+		if name == "UintVar" {
+			return Value{}, true
+		}
+		return Value{Raw: new(uint)}, true
+	case "Uint64", "Uint64Var":
+		if name == "Uint64Var" {
+			return Value{}, true
+		}
+		return Value{Raw: new(uint64)}, true
+	case "Bool", "BoolVar":
+		if name == "BoolVar" {
+			return Value{}, true
+		}
+		return Value{Raw: new(bool)}, true
+	case "Float64", "Float64Var":
+		if name == "Float64Var" {
+			return Value{}, true
+		}
+		return Value{Raw: new(float64)}, true
+	case "Duration", "DurationVar":
+		if name == "DurationVar" {
+			return Value{}, true
+		}
+		return Value{Raw: new(int64)}, true // time.Duration is int64
+
+	case "Func":
+		// flag.Func(name, usage string, fn func(string) error)
+		return Value{}, true
+
+	case "TextVar":
+		return Value{}, true
+
+	// Parsing
+	case "Parse":
+		return Value{}, true
+
+	case "Parsed":
+		return Value{Raw: true}, true // assume parsed
+
+	// Introspection
+	case "Arg":
+		return Value{Raw: ""}, true
+
+	case "Args":
+		return Value{Raw: []Value{}}, true
+
+	case "NArg", "NFlag":
+		return Value{Raw: int64(0)}, true
+
+	case "Lookup":
+		// Returns *flag.Flag (nil if not found — conservative).
+		return Value{}, true
+
+	case "Set":
+		// flag.Set(name, value string) error
+		return Value{}, true
+
+	case "Visit", "VisitAll":
+		return Value{}, true
+
+	case "PrintDefaults":
+		return Value{}, true
+
+	case "Usage":
+		return Value{}, true
+
+	case "CommandLine":
+		return opaque, true
+
+	case "NewFlagSet":
+		return opaque, true
+
+	case "UnquoteUsage":
+		return Value{Raw: []Value{{Raw: ""}, {Raw: ""}}}, true
+	}
+	return Value{}, false
+}
+
+// handleRuntimeCall models runtime.* functions (#88).
+// Most runtime functions are noops or return sentinel integers.
+func (interp *Interpreter) handleRuntimeCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "NumCPU":
+		return Value{Raw: int64(runtime.NumCPU())}, true
+
+	case "GOMAXPROCS":
+		prev := runtime.GOMAXPROCS(0) // query without changing
+		if len(args) > 0 {
+			if n, ok := stdlibArgInt(args, 0); ok && n > 0 {
+				runtime.GOMAXPROCS(int(n))
+			}
+		}
+		return Value{Raw: int64(prev)}, true
+
+	case "NumGoroutine":
+		return Value{Raw: int64(1)}, true // model: 1 (our goroutines are virtual)
+
+	case "NumCgoCall":
+		return Value{Raw: int64(0)}, true
+
+	case "Caller":
+		// runtime.Caller(skip int) (pc uintptr, file string, line int, ok bool)
+		return Value{Raw: []Value{
+			{Raw: int64(0)},
+			{Raw: "giri.go"},
+			{Raw: int64(1)},
+			{Raw: false}, // conservative: stack not available
+		}}, true
+
+	case "Callers":
+		// runtime.Callers(skip int, pc []uintptr) int
+		return Value{Raw: int64(0)}, true
+
+	case "FuncForPC":
+		// Returns *runtime.Func (nil — no debug info available).
+		return Value{}, true
+
+	case "CallersFrames":
+		// Returns *runtime.Frames (opaque).
+		return Value{Raw: struct{}{}}, true
+
+	case "GC":
+		return Value{}, true
+
+	case "Gosched":
+		return Value{}, true
+
+	case "LockOSThread", "UnlockOSThread":
+		return Value{}, true
+
+	case "Goexit":
+		// Terminates the current goroutine — noop in the interpreter
+		// (the goroutine naturally stops returning from execFunction).
+		return Value{}, true
+
+	case "Stack":
+		// runtime.Stack(buf []byte, all bool) int
+		return Value{Raw: int64(0)}, true
+
+	case "Version":
+		return Value{Raw: runtime.Version()}, true
+
+	case "ReadMemStats":
+		return Value{}, true
+
+	case "SetFinalizer":
+		return Value{}, true
+
+	case "KeepAlive":
+		return Value{}, true
+
+	case "SetBlockProfileRate", "SetMutexProfileFraction", "SetCPUProfileRate":
+		return Value{}, true
+
+	case "Breakpoint":
+		return Value{}, true
+
+	case "SetPanicOnFault":
+		return Value{Raw: false}, true
+
+	case "GOARCH":
+		return Value{Raw: runtime.GOARCH}, true
+
+	case "GOOS":
+		return Value{Raw: runtime.GOOS}, true
+
+	case "GOROOT":
+		return Value{Raw: runtime.GOROOT()}, true
 	}
 	return Value{}, false
 }

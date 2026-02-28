@@ -532,6 +532,11 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		if inst.High != nil {
 			highVal = int(toInt64(interp.resolveValue(frame, inst.High)))
 		}
+		// 3-index slice s[low:high:max] — inst.Max controls the new capacity (#85).
+		maxVal := -1
+		if inst.Max != nil {
+			maxVal = int(toInt64(interp.resolveValue(frame, inst.Max)))
+		}
 
 		// Determine the SliceValue to operate on.
 		// inst.X may be:
@@ -560,11 +565,15 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			if highVal < 0 {
 				highVal = sv.Len
 			}
-			// Bounds check: 0 <= low <= high <= cap(s) (#32)
-			if lowVal < 0 || highVal < lowVal || highVal > sv.Cap {
+			// For 3-index slices, max bounds the capacity; default to cap(s).
+			if maxVal < 0 {
+				maxVal = sv.Cap
+			}
+			// Bounds check: 0 <= low <= high <= max <= cap(s) (#85)
+			if lowVal < 0 || highVal < lowVal || maxVal < highVal || maxVal > sv.Cap {
 				interp.recordViolation(gid, &shadow.OutOfBoundsError{
 					AllocSize:  sv.Cap,
-					Offset:     highVal,
+					Offset:     maxVal,
 					AccessSize: highVal - lowVal,
 					Site:       site,
 					TypeName:   inst.X.Type().String(),
@@ -579,7 +588,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 				newSv := arenaNew(interp.arena, SliceValue{
 					Backing: newPtr,
 					Len:     highVal - lowVal,
-					Cap:     sv.Cap - lowVal,
+					Cap:     maxVal - lowVal, // 3-index: cap = max - low (#85)
 				})
 				frame.Locals[inst.Name()] = Value{Raw: newSv, Provenance: newPtr}
 			}

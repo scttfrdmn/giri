@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-02-27
+
+### Fixed
+
+- **3-index slice expressions** (issue #85): `s[low:high:max]` was previously
+  silently discarding `inst.Max`, causing the resulting slice to inherit the
+  source capacity instead of `max - low`. The `*ssa.Slice` handler in `exec.go`
+  now reads `inst.Max` and sets `Cap = maxVal - lowVal`. The bounds check is
+  also extended to validate `0 ≤ low ≤ high ≤ max ≤ cap(s)`; a violation outside
+  this range fires `OutOfBoundsError`. Integration test: `slice_3index`.
+
+### Added
+
+- **`reflect` package intercepts** (issue #86): New `handleReflectCall` in
+  `stdlib.go` covers the full `reflect` API surface:
+  - `TypeOf` (opaque non-nil Type), `ValueOf` (identity), `DeepEqual` (concrete
+    args call real `reflect.DeepEqual`; opaque → `true` pessimistic)
+  - Constructor functions: `New`, `Zero`, `MakeSlice`, `MakeMap`, `MakeChan`,
+    `MakeFunc`, `Append`, `AppendSlice`, `Copy`, `Indirect`, `PtrTo`,
+    `SliceOf`, `ArrayOf`, `MapOf`, `ChanOf`, `FuncOf`, `StructOf`
+  - `reflect.Value` methods: `Kind`, `Type`, `Interface`, `Elem`, `Field`,
+    `Index`, `MapIndex`, `MapKeys`, `NumField`, `NumMethod`, `Method`,
+    `MethodByName`, `Len`, `Cap`, `IsNil`, `IsValid`, `IsZero`, `CanAddr`,
+    `CanSet`, `Set*`, `Int`, `Uint`, `Float`, `Bool`, `String`, `Bytes`,
+    `Addr`, `Call`, `Convert`, `Recv`, `Send`, `Close`, `TrySend`, `TryRecv`
+  - `reflect.Type` methods: `Name`, `PkgPath`, `Size`, `Implements`,
+    `AssignableTo`, `ConvertibleTo`, `Comparable`, `In`, `Out`, `NumIn`,
+    `NumOut`, `Key`, `ChanDir`, `IsVariadic`, `Bits`, `FieldByName`,
+    `FieldByIndex`, `FieldByNameFunc`, `Align`, `FieldAlign`
+  Two integration tests: `reflect_type_of`, `reflect_deep_equal`.
+
+- **`encoding/xml` and `encoding/csv` intercepts** (issue #87): New
+  `handleXMLCall` and `handleCSVCall` in `stdlib.go`:
+  - `encoding/xml`: `Marshal` (calls real `xml.Marshal` for concrete values),
+    `MarshalIndent`, `Unmarshal`, `NewDecoder`, `NewEncoder`, `Decode`,
+    `DecodeElement`, `Token`, `Encode`, `EncodeElement`, `EncodeToken`,
+    `Flush`, `EscapeText`, `Escape`, `CopyToken`
+  - `encoding/csv`: `NewReader`, `NewWriter`, `Read` (sentinel record),
+    `ReadAll` (single-row sentinel), `Write`, `WriteAll`, `Flush`, `Error`
+  Two integration tests: `xml_marshal`, `csv_readall`.
+
+- **`flag` and `runtime` package intercepts** (issue #88): New `handleFlagCall`
+  and `handleRuntimeCall` in `stdlib.go`:
+  - `flag`: `String`/`Int`/`Int64`/`Uint`/`Uint64`/`Bool`/`Float64`/`Duration`
+    return non-nil pointers to zero values; `*Var` variants return nil (set in
+    place); `Parse` noop; `Parsed` → `true`; `Arg`/`Args`/`NArg`/`NFlag`
+    sentinels; `Lookup` → nil; `Set` → nil; `PrintDefaults`/`Visit`/`Usage`
+    noops; `CommandLine`/`NewFlagSet` → opaque
+  - `runtime`: `NumCPU` (real value), `GOMAXPROCS` (real query/set),
+    `NumGoroutine` → 1, `Caller`/`Callers` conservative, `GC`/`Gosched`/
+    `LockOSThread`/`UnlockOSThread` noops, `Version`/`GOARCH`/`GOOS`/`GOROOT`
+    return real values, `Stack` → 0, `SetFinalizer`/`KeepAlive`/`ReadMemStats`
+    noops
+  Two integration tests: `flag_parse`, `runtime_numcpu`.
+
+Closes #85, #86, #87, #88. Integration test count: 88 total.
+
 ## [0.23.0] - 2026-02-27
 
 ### Added
