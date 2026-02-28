@@ -229,3 +229,57 @@ func TestBuild_EmptyInput(t *testing.T) {
 		t.Errorf("empty build: want exit 0, got %d", rpt.ExitCode())
 	}
 }
+
+// --- HTML output ---
+
+func TestWriteHTML_NoViolations(t *testing.T) {
+	rpt := report.Build(nil, nil)
+	var buf bytes.Buffer
+	if err := rpt.Write(&buf, report.FormatHTML); err != nil {
+		t.Fatalf("Write HTML (no violations): %v", err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, "<!DOCTYPE html>") {
+		t.Error("HTML output should contain <!DOCTYPE html>")
+	}
+	if !strings.Contains(html, "No violations") {
+		t.Error("HTML output should contain 'No violations'")
+	}
+}
+
+func TestWriteHTML_WithFindings(t *testing.T) {
+	violations := []error{
+		&shadow.DataRaceError{AllocID: 1, Write2Site: "main.go:10", Write1Site: "main.go:5"},
+		&shadow.ContextCancelLeakError{Site: "main.go:20", GID: 1},
+	}
+	rpt := report.Build(violations, nil)
+	var buf bytes.Buffer
+	if err := rpt.Write(&buf, report.FormatHTML); err != nil {
+		t.Fatalf("Write HTML: %v", err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, "data-race") {
+		t.Error("HTML should contain 'data-race'")
+	}
+	if !strings.Contains(html, "context-cancel-leak") {
+		t.Error("HTML should contain 'context-cancel-leak'")
+	}
+	if !strings.Contains(html, "badge-error") {
+		t.Error("HTML should have error badge for data-race")
+	}
+	if !strings.Contains(html, "badge-warning") {
+		t.Error("HTML should have warning badge for context-cancel-leak")
+	}
+}
+
+func TestClassify_ContextCancelLeak(t *testing.T) {
+	err := &shadow.ContextCancelLeakError{Site: "main.go:15", GID: 1}
+	rpt := report.Build([]error{err}, nil)
+	f := rpt.Findings[0]
+	if f.Category != "context-cancel-leak" {
+		t.Errorf("category: want context-cancel-leak, got %q", f.Category)
+	}
+	if f.Severity != report.SeverityWarning {
+		t.Errorf("severity: want WARNING, got %v", f.Severity)
+	}
+}

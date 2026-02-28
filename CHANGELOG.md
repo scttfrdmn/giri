@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-02-28
+
+### Added
+
+- **Context cancel leak detection** (issue #120): Giri now tracks cancel functions
+  returned by `context.WithCancel`, `context.WithTimeout`, and `context.WithDeadline`.
+  If a cancel function is never called before the program exits, Giri reports a
+  `context-cancel-leak` violation (severity: WARNING). Calling cancel via `defer cancel()`
+  or directly suppresses the report.
+
+  New error type in `pkg/shadow`: `ContextCancelLeakError{Site, GID}`.
+
+  Implementation: `cancelFuncID` (opaque value returned by intercepted context functions),
+  `DeferredCall.DynCallVal` (stores non-closure dynamic defer targets like `defer cancel()`),
+  `Interpreter.newCancelFunc/callCancelFunc` helpers, `Finish()` leak check.
+
+  Two new integration tests: `context_cancel_ok` (0 violations), `context_cancel_leak`
+  (1 violation). 123 total integration tests.
+
+- **HTML report format** (issue #121): `-format html` produces a self-contained HTML
+  report with inline CSS — no external resources required. Features include:
+  - Color-coded severity badges (ERROR=red, WARNING=yellow, INFO=blue)
+  - Collapsible stack traces via `<button>` toggle
+  - Summary bar with per-severity and per-category counts
+  - Replay seed display for PCT violations
+  - Works identically in CI and local review
+
+  New constant: `report.FormatHTML = 3`.
+  New CLI usage: `giri -format html ./... > giri-report.html`
+
+### Fixed
+
+- `executeDeferred` now handles non-closure dynamic defer targets (e.g. `defer cancel()`)
+  via the new `DeferredCall.DynCallVal` field. Previously, dynamic defers that were not
+  closures were silently discarded.
+
 ## [0.33.0] - 2026-02-28
 
 ### Added

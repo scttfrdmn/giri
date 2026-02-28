@@ -117,7 +117,7 @@ var (
 	flagDepth    = flag.Int("depth", 3, "Bug depth for PCT strategy")
 
 	// Output flags
-	flagFormat  = flag.String("format", "text", "Output format: text, json, sarif")
+	flagFormat  = flag.String("format", "text", "Output format: text, json, sarif, html")
 	flagVerbose = flag.Bool("v", false, "Verbose output (show all SSA instructions)")
 
 	// Execution flags
@@ -196,6 +196,8 @@ func main() {
 			format = report.FormatJSON
 		case "sarif":
 			format = report.FormatSARIF
+		case "html":
+			format = report.FormatHTML
 		}
 		if err := rpt.Write(os.Stdout, format); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing report: %v\n", err)
@@ -250,6 +252,8 @@ func main() {
 		format = report.FormatJSON
 	case "sarif":
 		format = report.FormatSARIF
+	case "html":
+		format = report.FormatHTML
 	}
 
 	if err := rpt.Write(os.Stdout, format); err != nil {

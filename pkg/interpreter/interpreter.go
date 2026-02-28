@@ -154,6 +154,19 @@ type Frame struct {
 	StackAllocs []shadow.AllocID
 }
 
+// cancelFuncID is the Raw value stored for a context cancel function returned
+// by context.WithCancel, WithTimeout, or WithDeadline. When execCall or
+// executeDeferred intercepts a call to this value, it marks the corresponding
+// cancelFuncs entry as called and removes it.
+type cancelFuncID uint64
+
+// cancelRecord holds the creation site and goroutine for an outstanding
+// context cancel function, used to generate ContextCancelLeakError.
+type cancelRecord struct {
+	Site string
+	GID  int64
+}
+
 // DeferredCall represents a deferred function invocation.
 type DeferredCall struct {
 	// Callee is the resolved SSA function (nil for unresolved dynamic calls).
@@ -162,6 +175,10 @@ type DeferredCall struct {
 	IsClosure bool
 	// ClosureVal holds the closure when IsClosure is true.
 	ClosureVal *ClosureValue
+	// DynCallVal holds the resolved call target for non-closure dynamic defers
+	// (e.g. defer cancel() where cancel is a cancelFuncID). Set by the ssa.Defer
+	// handler when StaticCallee is nil and the value is not a ClosureValue.
+	DynCallVal Value
 	// PkgPath is the package path of the callee (e.g. "sync") for intercepted calls.
 	PkgPath string
 	// FuncName is the method/function name (e.g. "Unlock") for dispatching.
@@ -376,6 +393,15 @@ type Interpreter struct {
 	// rng is a per-interpreter random number generator used by math/rand
 	// intercepts (#64). Seeded from config.RandomSeed for reproducibility.
 	rng *rand.Rand
+
+	// cancelFuncs tracks outstanding context cancel functions that have not
+	// yet been called. Key is the cancelFuncID value returned by
+	// handleContextCall when WithCancel/WithTimeout/WithDeadline is intercepted.
+	// Entries are removed when the cancel function is called (via execCall or
+	// executeDeferred). Any remaining entries at Finish() time are reported as
+	// ContextCancelLeakError violations (#120).
+	cancelFuncs  map[cancelFuncID]cancelRecord
+	nextCancelID atomic.Uint64
 }
 
 // InterceptFunc is a callback that models the behavior of an external or
@@ -497,6 +523,7 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 		mutexes:          make(map[shadow.AllocID]*mutexState),
 		onceState:        make(map[shadow.AllocID]bool),
 		valueStore:       make(map[shadow.AllocID]Value),
+		cancelFuncs:      make(map[cancelFuncID]cancelRecord),
 		config:           config,
 		sizes:            types.SizesFor("gc", runtime.GOARCH),
 		rng:              rand.New(rand.NewSource(config.RandomSeed)),
@@ -560,6 +587,7 @@ func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Inter
 		mutexes:          make(map[shadow.AllocID]*mutexState),
 		onceState:        make(map[shadow.AllocID]bool),
 		valueStore:       make(map[shadow.AllocID]Value),
+		cancelFuncs:      make(map[cancelFuncID]cancelRecord),
 		config:           config,
 		sizes:            types.SizesFor("gc", runtime.GOARCH),
 		arena:            a,
@@ -812,13 +840,23 @@ func (interp *Interpreter) recomputeNamedReturns(frame *Frame) {
 }
 
 // executeDeferred runs a single deferred call, dispatching to the appropriate
-// handler: closure, sync package call, stdlib call, arena.Free, or general
-// SSA function (#47).
+// handler: closure, dynamic value, sync package call, stdlib call, arena.Free,
+// or general SSA function (#47).
 func (interp *Interpreter) executeDeferred(gid int64, d DeferredCall) {
 	// Closure call: deferred anonymous function with captured free variables.
 	if d.IsClosure && d.ClosureVal != nil {
 		allArgs := append(d.Args, d.ClosureVal.FreeVars...)
 		interp.execFunction(gid, d.ClosureVal.Fn, allArgs)
+		return
+	}
+
+	// Dynamic call value (non-closure, e.g. defer cancel()): intercept known
+	// dynamic function types. Currently handles cancelFuncID (#120).
+	if d.DynCallVal.Raw != nil {
+		if cfID, ok := d.DynCallVal.Raw.(cancelFuncID); ok {
+			interp.callCancelFunc(cfID)
+		}
+		// Other unrecognized dynamic values: silently ignore (cannot interpret).
 		return
 	}
 
@@ -1442,9 +1480,33 @@ func (interp *Interpreter) Finish() []error {
 	// Check for goroutine leaks (goroutines blocked with no sender).
 	errs = append(errs, interp.checkGoroutineLeaks()...)
 
+	// Check for uncalled context cancel functions (#120).
+	// Any cancelFuncID still present was created but never invoked.
+	for _, rec := range interp.cancelFuncs {
+		errs = append(errs, &shadow.ContextCancelLeakError{
+			Site: rec.Site,
+			GID:  rec.GID,
+		})
+	}
+
 	// Collect recorded violations (already wrapped with call stack traces).
 	errs = append(errs, interp.violations...)
 	return errs
+}
+
+// newCancelFunc registers a new context cancel function and returns its ID.
+// Called by handleContextCall when intercepting WithCancel/WithTimeout/WithDeadline.
+func (interp *Interpreter) newCancelFunc(gid int64, site string) cancelFuncID {
+	id := cancelFuncID(interp.nextCancelID.Add(1))
+	interp.cancelFuncs[id] = cancelRecord{Site: site, GID: gid}
+	return id
+}
+
+// callCancelFunc marks a cancel function as called by removing it from the
+// outstanding set. If the ID is not present (already called or unknown), this
+// is a no-op — multiple calls to a cancel function are allowed in Go.
+func (interp *Interpreter) callCancelFunc(id cancelFuncID) {
+	delete(interp.cancelFuncs, id)
 }
 
 // handleSyncCall intercepts sync.Mutex and sync.WaitGroup method calls (#33).

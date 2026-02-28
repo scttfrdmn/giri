@@ -21,6 +21,7 @@ const (
 	FormatText  Format = iota // Human-readable terminal output
 	FormatJSON                // Machine-parseable JSON
 	FormatSARIF               // SARIF format for IDE integration
+	FormatHTML                // Self-contained HTML report
 )
 
 // Finding represents a single detected violation.
@@ -284,6 +285,15 @@ func classifyError(err error) Finding {
 			Hint:     "Check for zero divisor before dividing. Consider using a guard: if b == 0 { ... }.",
 		}
 
+	case *shadow.ContextCancelLeakError:
+		return Finding{
+			Severity: SeverityWarning,
+			Category: "context-cancel-leak",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "Always call the cancel function returned by context.WithCancel/WithTimeout/WithDeadline, typically with: defer cancel()",
+		}
+
 	default:
 		return Finding{
 			Severity: SeverityWarning,
@@ -304,6 +314,8 @@ func (r *Report) Write(w io.Writer, format Format) error {
 		return r.writeJSON(w)
 	case FormatSARIF:
 		return r.writeSARIF(w)
+	case FormatHTML:
+		return r.writeHTML(w)
 	default:
 		return fmt.Errorf("unsupported format: %d", format)
 	}
@@ -596,6 +608,118 @@ func sarifCategoryDesc(cat string) string {
 	default:
 		return "Undefined behavior detected by Giri"
 	}
+}
+
+// writeHTML produces a self-contained HTML report with inline CSS.
+// No external resources are required; the output is a single .html file.
+func (r *Report) writeHTML(w io.Writer) error {
+	tw := &textWriter{w: w}
+
+	tw.printf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Giri Report</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#f8f9fa;color:#212529;padding:1.5rem}
+h1{font-size:1.5rem;margin-bottom:.25rem}
+.subtitle{color:#6c757d;font-size:.9rem;margin-bottom:1.5rem}
+.summary{background:#fff;border:1px solid #dee2e6;border-radius:.5rem;padding:1rem 1.5rem;margin-bottom:1.5rem;display:flex;gap:2rem;flex-wrap:wrap}
+.summary-item{display:flex;flex-direction:column;align-items:center}
+.summary-count{font-size:1.75rem;font-weight:700}
+.summary-label{font-size:.75rem;color:#6c757d;text-transform:uppercase;letter-spacing:.05em}
+.no-violations{background:#d1e7dd;border:1px solid #a3cfbb;border-radius:.5rem;padding:1rem 1.5rem;color:#0a3622;font-weight:500;margin-bottom:1.5rem}
+.finding{background:#fff;border:1px solid #dee2e6;border-radius:.5rem;margin-bottom:1rem;overflow:hidden}
+.finding-header{display:flex;align-items:center;gap:.75rem;padding:.75rem 1rem;border-bottom:1px solid #dee2e6}
+.badge{font-size:.75rem;font-weight:600;padding:.2em .6em;border-radius:.25rem;text-transform:uppercase}
+.badge-error{background:#f8d7da;color:#842029}
+.badge-warning{background:#fff3cd;color:#664d03}
+.badge-info{background:#cff4fc;color:#055160}
+.finding-num{font-size:.8rem;color:#6c757d}
+.finding-category{font-weight:600;font-size:.95rem}
+.finding-body{padding:1rem}
+.finding-message{font-family:'Cascadia Code','JetBrains Mono',monospace;font-size:.85rem;background:#f8f9fa;border:1px solid #e9ecef;border-radius:.25rem;padding:.75rem;white-space:pre-wrap;word-break:break-all;margin-bottom:.75rem}
+.finding-location{font-size:.85rem;color:#495057;margin-bottom:.5rem}
+.finding-location span{font-family:'Cascadia Code','JetBrains Mono',monospace;color:#0d6efd}
+.finding-hint{font-size:.85rem;color:#495057;border-left:3px solid #0d6efd;padding:.5rem .75rem;background:#e8f0fe;margin-bottom:.5rem}
+.stack-toggle{background:none;border:1px solid #dee2e6;border-radius:.25rem;font-size:.8rem;cursor:pointer;padding:.25rem .5rem;color:#6c757d;margin-bottom:.5rem}
+.stack-trace{display:none;font-family:'Cascadia Code','JetBrains Mono',monospace;font-size:.8rem;background:#f8f9fa;border:1px solid #e9ecef;border-radius:.25rem;padding:.75rem;white-space:pre-wrap}
+.replay{font-size:.8rem;font-family:'Cascadia Code','JetBrains Mono',monospace;color:#6f42c1;margin-top:.5rem}
+.stats{color:#6c757d;font-size:.85rem;margin-top:1.5rem}
+</style>
+</head>
+<body>
+<h1>Giri &mdash; Undefined Behavior Report</h1>
+<p class="subtitle">Go IR Interpreter &middot; <a href="https://github.com/scttfrdmn/giri">github.com/scttfrdmn/giri</a></p>
+`)
+
+	// Summary bar
+	tw.printf(`<div class="summary">
+  <div class="summary-item"><span class="summary-count">%d</span><span class="summary-label">Total</span></div>
+`, r.Summary.TotalFindings)
+	for _, sev := range []string{"ERROR", "WARNING", "INFO"} {
+		if n := r.Summary.BySeverity[sev]; n > 0 {
+			tw.printf(`  <div class="summary-item"><span class="summary-count">%d</span><span class="summary-label">%s</span></div>
+`, n, sev)
+		}
+	}
+	tw.printf("</div>\n")
+
+	if len(r.Findings) == 0 {
+		tw.printf(`<div class="no-violations">&#10003; No violations detected.</div>`)
+	}
+
+	for i, f := range r.Findings {
+		badgeClass := "badge-info"
+		switch f.Severity {
+		case SeverityError:
+			badgeClass = "badge-error"
+		case SeverityWarning:
+			badgeClass = "badge-warning"
+		}
+		tw.printf(`<div class="finding">
+  <div class="finding-header">
+    <span class="finding-num">#%d</span>
+    <span class="badge %s">%s</span>
+    <span class="finding-category">%s</span>
+  </div>
+  <div class="finding-body">
+    <div class="finding-message">%s</div>
+`, i+1, badgeClass, htmlEscape(f.Severity.String()), htmlEscape(f.Category), htmlEscape(f.Message))
+
+		if f.Location != "" {
+			tw.printf(`    <div class="finding-location">Location: <span>%s</span></div>`+"\n", htmlEscape(f.Location))
+		}
+		if f.Hint != "" {
+			tw.printf(`    <div class="finding-hint">%s</div>`+"\n", htmlEscape(f.Hint))
+		}
+		if f.ReproSeed != 0 {
+			tw.printf(`    <div class="replay">replay: giri -strategy pct -seed %d ./...</div>`+"\n", f.ReproSeed)
+		}
+		if f.StackTrace != "" {
+			tw.printf(`    <button class="stack-toggle" onclick="var s=this.nextElementSibling;s.style.display=s.style.display==='block'?'none':'block'">&#9654; Stack trace</button>
+    <div class="stack-trace">%s</div>
+`, htmlEscape(f.StackTrace))
+		}
+		tw.printf("  </div>\n</div>\n")
+	}
+
+	if r.Stats != nil {
+		tw.printf(`<div class="stats">%s</div>`+"\n", htmlEscape(r.Stats.String()))
+	}
+
+	tw.printf("</body>\n</html>\n")
+	return tw.err
+}
+
+// htmlEscape replaces &, <, > with HTML entities.
+func htmlEscape(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
 
 // ExitCode returns the appropriate process exit code.

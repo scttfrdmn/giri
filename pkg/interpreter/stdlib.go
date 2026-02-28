@@ -90,7 +90,7 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 	case "unicode":
 		return interp.handleUnicodeCall(name, args)
 	case "context":
-		return interp.handleContextCall(name, args)
+		return interp.handleContextCall(gid, site, name, args)
 	case "sync/atomic":
 		return interp.handleAtomicCall(name, args)
 	case "io":
@@ -2065,11 +2065,13 @@ func (interp *Interpreter) handleUnicodeCall(name string, args []Value) (Value, 
 	return Value{}, false
 }
 
-// handleContextCall models context.* functions (#76).
+// handleContextCall models context.* functions (#76, #120).
 // context.Background/TODO return an opaque non-nil value so downstream
 // nil-checks on the context pass correctly.  WithCancel/WithTimeout/WithDeadline
-// return a (ctx, cancelFunc) tuple where both values are opaque non-nil.
-func (interp *Interpreter) handleContextCall(name string, args []Value) (Value, bool) {
+// return a (ctx, cancelFunc) tuple where the cancel function is a cancelFuncID
+// registered in interp.cancelFuncs. If the cancel function is never called,
+// Finish() reports a ContextCancelLeakError.
+func (interp *Interpreter) handleContextCall(gid int64, site, name string, args []Value) (Value, bool) {
 	opaque := Value{Raw: struct{}{}}
 
 	switch name {
@@ -2077,20 +2079,23 @@ func (interp *Interpreter) handleContextCall(name string, args []Value) (Value, 
 		return opaque, true
 
 	case "WithCancel":
-		// Returns (Context, CancelFunc).
-		return Value{Raw: []Value{opaque, opaque}}, true
+		// Returns (Context, CancelFunc). Register the cancel function for leak tracking.
+		cfID := interp.newCancelFunc(gid, site)
+		return Value{Raw: []Value{opaque, {Raw: cfID}}}, true
 
 	case "WithTimeout", "WithDeadline":
-		// Returns (Context, CancelFunc).
-		return Value{Raw: []Value{opaque, opaque}}, true
+		// Returns (Context, CancelFunc). Register the cancel function for leak tracking.
+		cfID := interp.newCancelFunc(gid, site)
+		return Value{Raw: []Value{opaque, {Raw: cfID}}}, true
 
 	case "WithValue":
 		// Returns Context (ignores key/value pair).
 		return opaque, true
 
 	case "WithCancelCause":
-		// Go 1.20+: returns (Context, CancelCauseFunc).
-		return Value{Raw: []Value{opaque, opaque}}, true
+		// Go 1.20+: returns (Context, CancelCauseFunc). Register the cancel function.
+		cfID := interp.newCancelFunc(gid, site)
+		return Value{Raw: []Value{opaque, {Raw: cfID}}}, true
 
 	case "Cause":
 		// Returns nil error.

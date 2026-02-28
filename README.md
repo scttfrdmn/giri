@@ -96,6 +96,9 @@ giri -format json ./... > giri-report.json
 # SARIF output for GitHub code scanning
 giri -format sarif ./... > giri-results.sarif
 
+# HTML report for human review
+giri -format html ./... > giri-report.html
+
 # Detect uninitialized reads (off by default — slower)
 giri -init ./...
 
@@ -184,7 +187,7 @@ The action builds and runs Giri, then uploads the SARIF report to GitHub Code Sc
 |---|---|---|
 | `packages` | `./...` | Go package patterns to analyse |
 | `go-version` | `1.23` | Go version used to build Giri |
-| `format` | `sarif` | Output format: `text`, `json`, or `sarif` |
+| `format` | `sarif` | Output format: `text`, `json`, `sarif`, or `html` |
 | `output-file` | `giri-results.sarif` | Path for the output file |
 | `upload-sarif` | `true` | Upload SARIF to GitHub Code Scanning |
 | `fail-on-findings` | `false` | Exit 1 when violations found |
@@ -320,6 +323,8 @@ giri/
 - [ ] `reflect` package safety verification
 - [ ] `go:linkname` tracking
 - [x] `giri -test ./...`: discovers and runs `TestXxx(*testing.T)` functions from `_test.go` files — v0.33.0
+- [x] Context cancel leak detection: `context.WithCancel/WithTimeout/WithDeadline` cancel functions tracked; uncalled ones reported as `context-cancel-leak` — v0.34.0
+- [x] HTML report format: `-format html` produces self-contained HTML with color-coded findings — v0.34.0
 
 ## Contributing
 

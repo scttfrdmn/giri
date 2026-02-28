@@ -328,3 +328,19 @@ func (e *DivisionByZeroError) Error() string {
 		e.GID, e.Site,
 	)
 }
+
+// ContextCancelLeakError is reported when a context cancel function (from
+// context.WithCancel, WithTimeout, or WithDeadline) was created but never
+// called. Failing to call the cancel function leaks the associated resources
+// until the parent context is cancelled or the program exits.
+type ContextCancelLeakError struct {
+	Site string // where the cancel function was created (context.WithCancel call site)
+	GID  int64  // goroutine that created the context
+}
+
+func (e *ContextCancelLeakError) Error() string {
+	return fmt.Sprintf(
+		"context-cancel-leak: cancel function created at %s was never called (goroutine %d)",
+		e.Site, e.GID,
+	)
+}

@@ -286,6 +286,21 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.34.0 regression tests
+	{
+		name:           "context cancel ok",
+		dir:            "context_cancel_ok",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "context cancel leak",
+		dir:            "context_cancel_leak",
+		wantViolations: 1,
+		wantCategory:   "context-cancel-leak",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.31.0 regression tests
 	{
 		name: "custom intercept",

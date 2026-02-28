@@ -909,6 +909,11 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			if cv, ok := calleeVal.Raw.(*ClosureValue); ok {
 				d.IsClosure = true
 				d.ClosureVal = cv
+			} else {
+				// Non-closure dynamic defer (e.g. defer cancel()): store the
+				// resolved value so executeDeferred can intercept known types
+				// like cancelFuncID (#120).
+				d.DynCallVal = calleeVal
 			}
 		}
 		if callee != nil && !d.IsClosure {
@@ -1124,13 +1129,18 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 		return interp.execBuiltin(gid, b, args, site)
 	}
 
-	// Handle closure calls: if the call value is a ClosureValue, extract the
-	// function and append free vars after regular args (#19).
+	// Handle closure calls and other dynamic function values.
 	if !call.Call.IsInvoke() {
 		calleeVal := interp.resolveValue(frame, call.Call.Value)
 		if cv, ok := calleeVal.Raw.(*ClosureValue); ok {
 			allArgs := append(args, cv.FreeVars...)
 			return interp.execFunction(gid, cv.Fn, allArgs)
+		}
+		// Intercept context cancel functions (#120): calling cancel() removes
+		// the entry from the outstanding set, suppressing the leak report.
+		if cfID, ok := calleeVal.Raw.(cancelFuncID); ok {
+			interp.callCancelFunc(cfID)
+			return Value{}
 		}
 	}
 
