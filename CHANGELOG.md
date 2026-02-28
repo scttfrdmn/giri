@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-02-27
+
+### Added
+
+- **`io/fs` + `embed` intercepts** (issue #109): `handleFsCall` handles
+  `io/fs` standalone functions (`ReadFile`, `ReadDir`, `Stat`, `WalkDir`,
+  `Glob`, `Sub`, `ValidPath`, `FileInfoToDirEntry`) and `embed.FS` methods
+  (`Open`, `ReadFile`, `ReadDir`), plus `fs.File`/`fs.DirEntry`/`fs.FileInfo`
+  methods (`Name`, `IsDir`, `Type`, `Info`, `Mode`, `ModTime`, `Size`,
+  `Sys`, `Read`, `Close`). `os.DirFS` added to `handleOSCall`. New
+  integration test: `fs_embed`.
+
+- **`archive/zip` + `archive/tar` intercepts** (issue #110):
+  `handleArchiveCall` handles `zip.OpenReader`, `zip.NewReader`,
+  `zip.NewWriter`, `*zip.Writer` create/copy/close methods, `*zip.Reader`
+  open/decompress methods; and `tar.NewReader`, `tar.NewWriter`,
+  `*tar.Reader.Next`/`Read`, `*tar.Writer.WriteHeader`/`Write`/`Flush`/`Close`,
+  `tar.FileInfoHeader`. New integration test: `zip_archive`.
+
+- **`mime` + `mime/multipart` intercepts** (issue #111): `handleMimeCall`
+  handles `mime.TypeByExtension` (with concrete-string lookup for common
+  extensions), `ExtensionsByType`, `AddExtensionType`, `FormatMediaType`,
+  `ParseMediaType`, `WordEncoder.Encode`, `WordDecoder.Decode`/`DecodeHeader`;
+  and `multipart.NewReader`/`NewWriter`, `*Reader.NextPart`/`NextRawPart`/
+  `ReadForm`, `*Writer.CreateFormFile`/`CreateFormField`/`CreatePart`/
+  `WriteField`/`Boundary`/`SetBoundary`/`FormDataContentType`/`Close`,
+  `*Part.Read`/`FileName`/`FormName`. New integration test: `mime_multipart`.
+
+- **`crypto/aes` + `crypto/cipher` + `crypto/hmac` intercepts** (issue #112):
+  `handleSymCryptoCall` handles `aes.NewCipher` → `(cipher.Block, nil)`;
+  `cipher.NewGCM`/`NewGCMWithNonceSize`/`NewGCMWithTagSize` → `(AEAD, nil)`,
+  `cipher.NewCTR`/`NewOFB`/`NewCFBEncrypter`/`NewCFBDecrypter` → `Stream`,
+  `cipher.NewCBCEncrypter`/`NewCBCDecrypter` → `BlockMode`,
+  AEAD `Seal`/`Open`/`NonceSize`/`Overhead`, BlockMode `CryptBlocks`,
+  Stream `XORKeyStream`; and `hmac.New` → `hash.Hash`, `hmac.Equal`,
+  HMAC `Write`/`Sum`/`Reset`/`Size`/`BlockSize`. New integration test:
+  `aes_cipher`.
+
+- 4 new integration tests (119 total).
+
 ## [0.29.0] - 2026-02-27
 
 ### Added
@@ -1350,7 +1390,9 @@ Closes #77, #78, #79, #80. Integration test count: 73 total.
   the missing import for `github.com/scttfrdmn/giri/pkg/report`.
 - Generated `go.sum` via `go mod tidy`.
 
-[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/scttfrdmn/giri/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/scttfrdmn/giri/compare/v0.29.0...v0.30.0
+[0.29.0]: https://github.com/scttfrdmn/giri/compare/v0.9.0...v0.29.0
 [0.9.0]: https://github.com/scttfrdmn/giri/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/scttfrdmn/giri/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/scttfrdmn/giri/compare/v0.7.0...v0.7.1

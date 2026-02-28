@@ -43,7 +43,9 @@ import (
 // "reflect", "flag", "runtime", "os/exec", "compress/gzip", "compress/zlib",
 // "net/http", "os/signal", "encoding/binary", "hash/crc32", "hash/fnv",
 // "hash/adler32", "container/list", "container/heap", "container/ring",
-// "math/big", "crypto/tls", "database/sql", and "testing".
+// "math/big", "crypto/tls", "database/sql", "testing",
+// "io/fs", "embed", "archive/zip", "archive/tar",
+// "mime", "mime/multipart", "crypto/cipher", "crypto/aes", and "crypto/hmac".
 // strings.NewReader and bytes.NewReader/NewBuffer/NewBufferString are handled
 // within the existing "strings" and "bytes" cases.
 // Returns (result, true) when intercepted, (Value{}, false) otherwise.
@@ -142,6 +144,14 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleSQLCall(name, args)
 	case "testing":
 		return interp.handleTestingCall(gid, name, args)
+	case "io/fs", "embed":
+		return interp.handleFsCall(pkgPath, name, args)
+	case "archive/zip", "archive/tar":
+		return interp.handleArchiveCall(pkgPath, name, args)
+	case "mime", "mime/multipart":
+		return interp.handleMimeCall(pkgPath, name, args)
+	case "crypto/cipher", "crypto/aes", "crypto/hmac":
+		return interp.handleSymCryptoCall(pkgPath, name, args)
 	}
 	return Value{}, false
 }
@@ -842,6 +852,9 @@ func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool)
 	case "Readdir":
 		// Return ([]os.FileInfo{}, nil).
 		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "DirFS":
+		// DirFS(dir string) fs.FS — return opaque fs.FS value.
+		return opaque, true
 	}
 	return Value{}, false
 }
@@ -4520,6 +4533,388 @@ func (interp *Interpreter) handleTestingCall(gid int64, name string, args []Valu
 	case "Init":
 		return Value{}, true
 	}
+	return Value{}, false
+}
+
+// handleFsCall models io/fs and embed package functions (#109).
+// io/fs provides the file-system abstraction; embed.FS implements fs.FS.
+func (interp *Interpreter) handleFsCall(pkgPath, name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	case "ReadFile":
+		// ReadFile(fsys FS, name string) ([]byte, error) or embed.FS.ReadFile(name).
+		return Value{Raw: []Value{{Raw: []byte{0}}, {}}}, true
+	case "ReadDir":
+		// ReadDir(fsys FS, name string) ([]DirEntry, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Stat":
+		// Stat(fsys FS, name string) (FileInfo, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Open":
+		// FS.Open(name string) (File, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "WalkDir":
+		// WalkDir(fsys FS, root string, fn WalkDirFunc) error — skip walking.
+		return Value{}, true
+	case "Glob":
+		// Glob(fsys FS, pattern string) ([]string, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Sub":
+		// Sub(fsys FS, dir string) (FS, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ValidPath":
+		// ValidPath(name string) bool.
+		s, ok := stdlibArgString(args, 0)
+		if ok {
+			return Value{Raw: len(s) > 0 && s[0] != '/' && s != ".."}, true
+		}
+		return Value{Raw: true}, true
+	case "FileInfoToDirEntry":
+		return opaque, true
+	// fs.File and fs.DirEntry / fs.FileInfo methods:
+	case "Name":
+		return Value{Raw: "file"}, true
+	case "IsDir":
+		return Value{Raw: false}, true
+	case "Type":
+		// fs.DirEntry.Type() fs.FileMode
+		return Value{Raw: int64(0)}, true
+	case "Info":
+		// fs.DirEntry.Info() (fs.FileInfo, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ModTime":
+		return opaque, true
+	case "Mode":
+		return Value{Raw: int64(0)}, true
+	case "Size":
+		return Value{Raw: int64(0)}, true
+	case "Sys":
+		return Value{Raw: nil}, true
+	case "Read":
+		// fs.File.Read(b []byte) (int, error)
+		n := int64(0)
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = int64(len(b))
+			case []Value:
+				n = int64(len(b))
+			}
+		}
+		return Value{Raw: []Value{{Raw: n}, {}}}, true
+	case "Close":
+		return Value{}, true
+	}
+	_ = pkgPath
+	return Value{}, false
+}
+
+// handleArchiveCall models archive/zip and archive/tar functions (#110).
+func (interp *Interpreter) handleArchiveCall(pkgPath, name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch pkgPath {
+	case "archive/zip":
+		switch name {
+		case "OpenReader":
+			// OpenReader(name string) (*ReadCloser, error)
+			return Value{Raw: []Value{opaque, {}}}, true
+		case "NewReader":
+			// NewReader(r io.ReaderAt, size int64) (*Reader, error)
+			return Value{Raw: []Value{opaque, {}}}, true
+		case "NewWriter":
+			// NewWriter(w io.Writer) *Writer
+			return opaque, true
+		// *zip.Writer methods:
+		case "Create", "CreateHeader", "CreateRaw":
+			// (io.Writer, error)
+			return Value{Raw: []Value{opaque, {}}}, true
+		case "Copy", "Close", "Flush":
+			return Value{}, true
+		case "SetOffset", "SetComment", "RegisterCompressor":
+			return Value{}, true
+		// *zip.Reader / *zip.ReadCloser methods:
+		case "Open":
+			return Value{Raw: []Value{opaque, {}}}, true
+		case "RegisterDecompressor":
+			return Value{}, true
+		// *zip.File methods:
+		case "FileInfo":
+			return opaque, true
+		case "Mode":
+			return Value{Raw: int64(0)}, true
+		case "Modified":
+			return opaque, true
+		case "DataOffset":
+			return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+		}
+
+	case "archive/tar":
+		switch name {
+		case "NewReader":
+			// NewReader(r io.Reader) *Reader
+			return opaque, true
+		case "NewWriter":
+			// NewWriter(w io.Writer) *Writer
+			return opaque, true
+		// *tar.Reader methods:
+		case "Next":
+			// (*Header, error)
+			return Value{Raw: []Value{opaque, {}}}, true
+		case "Read":
+			n := int64(0)
+			if len(args) >= 2 {
+				switch b := args[1].Raw.(type) {
+				case []byte:
+					n = int64(len(b))
+				case []Value:
+					n = int64(len(b))
+				}
+			}
+			return Value{Raw: []Value{{Raw: n}, {}}}, true
+		case "WriteTo":
+			return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+		// *tar.Writer methods:
+		case "WriteHeader":
+			return Value{}, true
+		case "Write":
+			n := int64(0)
+			if len(args) >= 2 {
+				switch b := args[1].Raw.(type) {
+				case []byte:
+					n = int64(len(b))
+				case []Value:
+					n = int64(len(b))
+				}
+			}
+			return Value{Raw: []Value{{Raw: n}, {}}}, true
+		case "Flush", "Close":
+			return Value{}, true
+		// Helpers:
+		case "FileInfoHeader":
+			// FileInfoHeader(fi fs.FileInfo, link string) (*Header, error)
+			return Value{Raw: []Value{opaque, {}}}, true
+		}
+	}
+	_ = opaque
+	return Value{}, false
+}
+
+// handleMimeCall models mime and mime/multipart functions (#111).
+func (interp *Interpreter) handleMimeCall(pkgPath, name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch pkgPath {
+	case "mime":
+		switch name {
+		case "TypeByExtension":
+			// TypeByExtension(ext string) string
+			ext, ok := stdlibArgString(args, 0)
+			if ok {
+				switch ext {
+				case ".html", ".htm":
+					return Value{Raw: "text/html; charset=utf-8"}, true
+				case ".json":
+					return Value{Raw: "application/json"}, true
+				case ".txt":
+					return Value{Raw: "text/plain; charset=utf-8"}, true
+				case ".png":
+					return Value{Raw: "image/png"}, true
+				case ".jpg", ".jpeg":
+					return Value{Raw: "image/jpeg"}, true
+				}
+			}
+			return Value{Raw: "application/octet-stream"}, true
+		case "ExtensionsByType":
+			// ExtensionsByType(typ string) ([]string, error)
+			return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+		case "AddExtensionType":
+			// AddExtensionType(ext, typ string) error
+			return Value{}, true
+		case "FormatMediaType":
+			// FormatMediaType(t string, param map) string
+			s, ok := stdlibArgString(args, 0)
+			if ok {
+				return Value{Raw: s}, true
+			}
+			return Value{Raw: "text/plain"}, true
+		case "ParseMediaType":
+			// ParseMediaType(v string) (mediatype string, params map, err error)
+			s, ok := stdlibArgString(args, 0)
+			if ok {
+				return Value{Raw: []Value{{Raw: s}, {Raw: map[string]interface{}{}}, {}}}, true
+			}
+			return Value{Raw: []Value{{Raw: "text/plain"}, {Raw: map[string]interface{}{}}, {}}}, true
+		case "Encode":
+			// WordEncoder.Encode(charset, s string) string
+			s, ok := stdlibArgString(args, 1)
+			if ok {
+				return Value{Raw: s}, true
+			}
+			return Value{Raw: "=?UTF-8?q?text?="}, true
+		case "Decode":
+			// WordDecoder.Decode(word string) (string, error)
+			s, ok := stdlibArgString(args, 0)
+			if ok {
+				return Value{Raw: []Value{{Raw: s}, {}}}, true
+			}
+			return Value{Raw: []Value{{Raw: "text"}, {}}}, true
+		case "DecodeHeader":
+			// WordDecoder.DecodeHeader(header string) (string, error)
+			s, ok := stdlibArgString(args, 0)
+			if ok {
+				return Value{Raw: []Value{{Raw: s}, {}}}, true
+			}
+			return Value{Raw: []Value{{Raw: "text"}, {}}}, true
+		}
+
+	case "mime/multipart":
+		switch name {
+		case "NewReader":
+			// NewReader(r io.Reader, boundary string) *Reader
+			return opaque, true
+		case "NewWriter":
+			// NewWriter(w io.Writer) *Writer
+			return opaque, true
+		// *multipart.Reader methods:
+		case "NextPart", "NextRawPart":
+			// (*Part, error)
+			return Value{Raw: []Value{opaque, {}}}, true
+		case "ReadForm":
+			// (*Form, error)
+			return Value{Raw: []Value{opaque, {}}}, true
+		// *multipart.Writer methods:
+		case "CreateFormFile", "CreateFormField", "CreatePart":
+			// (io.Writer, error)
+			return Value{Raw: []Value{opaque, {}}}, true
+		case "WriteField":
+			// WriteField(fieldname, value string) error
+			return Value{}, true
+		case "Close":
+			return Value{}, true
+		case "Boundary":
+			return Value{Raw: "boundary1234"}, true
+		case "SetBoundary":
+			return Value{}, true
+		case "FormDataContentType":
+			return Value{Raw: "multipart/form-data; boundary=boundary1234"}, true
+		// *multipart.Part methods:
+		case "Read":
+			return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+		case "FileName":
+			return Value{Raw: "upload.bin"}, true
+		case "FormName":
+			return Value{Raw: "field"}, true
+		}
+	}
+	_ = opaque
+	return Value{}, false
+}
+
+// handleSymCryptoCall models crypto/cipher, crypto/aes, and crypto/hmac (#112).
+func (interp *Interpreter) handleSymCryptoCall(pkgPath, name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch pkgPath {
+	case "crypto/aes":
+		switch name {
+		case "NewCipher":
+			// NewCipher(key []byte) (cipher.Block, error)
+			return Value{Raw: []Value{opaque, {}}}, true
+		case "BlockSize":
+			return Value{Raw: int64(16)}, true
+		}
+
+	case "crypto/hmac":
+		switch name {
+		case "New":
+			// New(h func() hash.Hash, key []byte) hash.Hash
+			return opaque, true
+		case "Equal":
+			// Equal(mac1, mac2 []byte) bool
+			if len(args) >= 2 {
+				b1, ok1 := args[0].Raw.([]byte)
+				b2, ok2 := args[1].Raw.([]byte)
+				if ok1 && ok2 && len(b1) == len(b2) {
+					eq := true
+					for i := range b1 {
+						if b1[i] != b2[i] {
+							eq = false
+							break
+						}
+					}
+					return Value{Raw: eq}, true
+				}
+			}
+			return Value{Raw: false}, true
+		// hash.Hash methods on the HMAC result:
+		case "Write":
+			n := int64(0)
+			if len(args) >= 2 {
+				switch b := args[1].Raw.(type) {
+				case []byte:
+					n = int64(len(b))
+				case []Value:
+					n = int64(len(b))
+				}
+			}
+			return Value{Raw: []Value{{Raw: n}, {}}}, true
+		case "Sum":
+			if len(args) >= 2 {
+				if b, ok := args[1].Raw.([]byte); ok {
+					return Value{Raw: b}, true
+				}
+			}
+			return Value{Raw: []byte{}}, true
+		case "Reset":
+			return Value{}, true
+		case "Size":
+			return Value{Raw: int64(32)}, true
+		case "BlockSize":
+			return Value{Raw: int64(64)}, true
+		}
+
+	case "crypto/cipher":
+		switch name {
+		// AEAD construction:
+		case "NewGCM", "NewGCMWithNonceSize", "NewGCMWithTagSize":
+			// (AEAD, error)
+			return Value{Raw: []Value{opaque, {}}}, true
+		// Stream cipher construction:
+		case "NewCTR", "NewOFB", "NewCFBEncrypter", "NewCFBDecrypter":
+			return opaque, true
+		// Block cipher modes:
+		case "NewCBCEncrypter", "NewCBCDecrypter":
+			return opaque, true
+		// AEAD.Seal:
+		case "Seal":
+			// Seal(dst, nonce, plaintext, additionalData []byte) []byte
+			if len(args) >= 1 {
+				if b, ok := args[0].Raw.([]byte); ok {
+					return Value{Raw: append(b, 0)}, true
+				}
+			}
+			return Value{Raw: []byte{0}}, true
+		// AEAD.Open:
+		case "Open":
+			// Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error)
+			if len(args) >= 1 {
+				if b, ok := args[0].Raw.([]byte); ok {
+					return Value{Raw: []Value{{Raw: b}, {}}}, true
+				}
+			}
+			return Value{Raw: []Value{{Raw: []byte{}}, {}}}, true
+		case "NonceSize", "Overhead":
+			return Value{Raw: int64(12)}, true
+		// BlockMode methods:
+		case "BlockSize":
+			return Value{Raw: int64(16)}, true
+		case "CryptBlocks":
+			// CryptBlocks(dst, src []byte) — in-place noop.
+			return Value{}, true
+		// Stream methods:
+		case "XORKeyStream":
+			return Value{}, true
+		}
+	}
+	_ = opaque
 	return Value{}, false
 }
 

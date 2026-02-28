@@ -286,6 +286,35 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.30.0 regression tests
+	{
+		name:           "fs embed",
+		dir:            "fs_embed",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "zip archive",
+		dir:            "zip_archive",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "mime multipart",
+		dir:            "mime_multipart",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "aes cipher",
+		dir:            "aes_cipher",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.28.0 regression tests
 	{
 		name:           "tls dial",
