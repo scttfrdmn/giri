@@ -39,8 +39,8 @@ import (
 // "encoding/hex", "encoding/base64", "encoding/xml", "encoding/csv",
 // "crypto/rand", "crypto/md5", "crypto/sha1", "crypto/sha256",
 // "path/filepath", "path", "net", "net/url", "text/template", "html/template",
-// "reflect", "flag", "runtime", "os/exec", "compress/gzip", and
-// "compress/zlib".
+// "reflect", "flag", "runtime", "os/exec", "compress/gzip", "compress/zlib",
+// "net/http", and "os/signal".
 // Returns (result, true) when intercepted, (Value{}, false) otherwise.
 //
 // gid and site are required by handlers that invoke user callbacks
@@ -119,6 +119,10 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleGzipCall(name, args)
 	case "compress/zlib":
 		return interp.handleZlibCall(name, args)
+	case "net/http":
+		return interp.handleHTTPCall(name, args)
+	case "os/signal":
+		return interp.handleSignalCall(gid, name, args)
 	}
 	return Value{}, false
 }
@@ -577,14 +581,18 @@ func stringsToValues(ss []string) []Value {
 	return vs
 }
 
-// handleTimeCall models time.* functions (#45).
+// handleTimeCall models time.* functions (#45, #93).
 // time.After returns a channel that immediately has a value (simulates a fired timer).
-// time.Sleep is a noop.
+// time.Sleep is a noop. NewTicker/NewTimer return opaque values.
 func (interp *Interpreter) handleTimeCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
 	switch name {
 	case "After":
-		// Create a buffered channel with capacity 1 and pre-populate it so that
-		// any select case waiting on time.After fires immediately.
+		if len(args) >= 2 {
+			// (time.Time).After(u time.Time) bool — method call with receiver+arg.
+			return Value{Raw: false}, true
+		}
+		// time.After(d Duration) <-chan Time — package-level.
 		chanID := interp.createChannel(1)
 		if ch, ok := interp.channels[chanID]; ok {
 			ch.hasPending = true
@@ -592,17 +600,114 @@ func (interp *Interpreter) handleTimeCall(name string, args []Value) (Value, boo
 		}
 		interp.channelSenders[chanID] = true
 		return Value{Raw: chanID}, true
-	case "Sleep", "NewTimer", "NewTicker", "Since", "Now", "Unix":
-		// Noop — no side effects the interpreter needs to model.
+
+	case "Tick":
+		// time.Tick(d) <-chan Time — like After but never explicitly stopped.
+		chanID := interp.createChannel(1)
+		if ch, ok := interp.channels[chanID]; ok {
+			ch.hasPending = true
+			ch.pendingCount = 1
+		}
+		interp.channelSenders[chanID] = true
+		return Value{Raw: chanID}, true
+
+	case "Sleep":
+		// Noop — goroutine continues immediately; no side effects to model.
 		return Value{}, true
+
+	case "NewTicker":
+		// time.NewTicker(d) *Ticker — return opaque; Stop/Reset dispatched via same intercept.
+		return opaque, true
+
+	case "NewTimer":
+		// time.NewTimer(d) *Timer — return opaque; Stop/Reset dispatched via same intercept.
+		return opaque, true
+
+	case "Now":
+		// time.Now() time.Time — return opaque time.Time.
+		return opaque, true
+
+	case "Since", "Until":
+		// Returns time.Duration (int64 nanoseconds). Return 1ns so downstream
+		// comparisons against 0 see a non-zero value.
+		return Value{Raw: int64(1)}, true
+
+	case "Unix", "UnixMicro", "UnixMilli":
+		if len(args) <= 1 {
+			// Method: (time.Time).Unix() int64 / .UnixMicro() / .UnixMilli()
+			return Value{Raw: int64(0)}, true
+		}
+		// Package-level: time.Unix(sec, nsec) time.Time
+		return opaque, true
+
+	case "UnixNano":
+		// Only exists as a method: (time.Time).UnixNano() int64
+		return Value{Raw: int64(0)}, true
+
+	case "Date":
+		// time.Date(...) time.Time
+		return opaque, true
+
+	case "ParseDuration":
+		// Returns (time.Duration, error) — return (1ns, nil).
+		return Value{Raw: []Value{{Raw: int64(1)}, {}}}, true
+
+	case "Parse", "ParseInLocation":
+		// Returns (time.Time, error) — return (opaque, nil).
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	// time.Time methods (receiver in args[0]):
+	case "Add", "Round", "Truncate", "In", "UTC", "Local":
+		return opaque, true
+
+	case "Sub":
+		// (time.Time).Sub(time.Time) time.Duration
+		return Value{Raw: int64(0)}, true
+
+	case "Before", "Equal", "IsZero":
+		return Value{Raw: false}, true
+
+	case "Format", "String":
+		return Value{Raw: ""}, true
+
+	case "Year", "Month", "Day", "Hour", "Minute", "Second",
+		"Nanosecond", "YearDay", "Weekday":
+		return Value{Raw: int64(0)}, true
+
+	case "Zone":
+		// Returns (name string, offset int).
+		return Value{Raw: []Value{{Raw: ""}, {Raw: int64(0)}}}, true
+
+	case "MarshalJSON", "MarshalText", "MarshalBinary":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+
+	case "UnmarshalJSON", "UnmarshalText", "UnmarshalBinary":
+		return Value{}, true
+
+	// Ticker / Timer methods:
+	case "Stop":
+		// (*Ticker).Stop() and (*Timer).Stop() return bool.
+		return Value{Raw: false}, true
+
+	case "Reset":
+		// (*Ticker).Reset(d) and (*Timer).Reset(d) return bool.
+		return Value{Raw: false}, true
+
+	// time.Duration methods:
+	case "Hours", "Minutes", "Seconds":
+		return Value{Raw: float64(0)}, true
+
+	case "Milliseconds", "Microseconds", "Nanoseconds":
+		return Value{Raw: int64(0)}, true
 	}
 	return Value{}, false
 }
 
-// handleOSCall models os.* functions (#62).
+// handleOSCall models os.* functions (#62, #94).
 // os.Exit is handled separately in execCall (it needs to stop all goroutines).
-// This intercept covers environment and filesystem queries.
+// This intercept covers environment, filesystem queries, and *os.File methods.
 func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
 	switch name {
 	case "Getenv":
 		// Return empty string for any env var — conservative but safe.
@@ -616,15 +721,72 @@ func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool)
 	case "Getwd":
 		// Return ("/tmp", nil) — a valid directory path.
 		return Value{Raw: []Value{{Raw: "/tmp"}, {}}}, true
-	case "MkdirAll", "MkdirTemp", "Remove", "RemoveAll", "Rename":
+	case "MkdirAll", "MkdirTemp", "Mkdir", "Remove", "RemoveAll", "Rename":
 		// File-system mutations: noop with nil error.
 		return Value{}, true
-	case "Open", "Create", "OpenFile":
-		// File operations: return (nil, nil) — callers checking the error get nil,
-		// avoiding cascading panics; actual File methods are external and return zero.
-		return Value{Raw: []Value{{}, {}}}, true
+	case "Open", "Create", "CreateTemp", "OpenFile":
+		// Return (opaque *os.File, nil) — opaque so that method calls on the
+		// returned file are dispatched back to this intercept (#94).
+		return Value{Raw: []Value{opaque, {}}}, true
 	case "ReadFile", "WriteFile":
 		// Bulk I/O: return ([]byte{}, nil).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+
+	// *os.File methods — receiver in args[0], payload in args[1:].
+	case "Read", "ReadAt":
+		// (n int, err error) — return (len(p), nil) pessimistically.
+		n := int64(0)
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = int64(len(b))
+			case []Value:
+				n = int64(len(b))
+			}
+		}
+		return Value{Raw: []Value{{Raw: n}, {}}}, true
+	case "Write", "WriteAt":
+		// (n int, err error) — return (len(p), nil).
+		n := int64(0)
+		if len(args) >= 2 {
+			switch b := args[1].Raw.(type) {
+			case []byte:
+				n = int64(len(b))
+			case []Value:
+				n = int64(len(b))
+			}
+		}
+		return Value{Raw: []Value{{Raw: n}, {}}}, true
+	case "WriteString":
+		// (n int, err error) — return (len(s), nil).
+		n := int64(0)
+		if s, ok := stdlibArgString(args, 1); ok {
+			n = int64(len(s))
+		}
+		return Value{Raw: []Value{{Raw: n}, {}}}, true
+	case "Close":
+		return Value{}, true
+	case "Stat":
+		// (os.FileInfo, error) — return (opaque, nil).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Seek":
+		// (int64, error) — return (0, nil).
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Sync", "Chmod", "Chown", "Lchown", "Truncate", "Chdir":
+		return Value{}, true
+	case "Name":
+		return Value{Raw: ""}, true
+	case "Fd":
+		// Return 3 (first non-standard fd).
+		return Value{Raw: int64(3)}, true
+	case "ReadDir":
+		// Return ([]os.DirEntry{}, nil).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Readdirnames":
+		// Return ([]string{}, nil).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Readdir":
+		// Return ([]os.FileInfo{}, nil).
 		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
 	}
 	return Value{}, false
@@ -3593,6 +3755,106 @@ func (interp *Interpreter) handleGzipCall(name string, args []Value) (Value, boo
 		return Value{}, true
 	}
 	_ = opaque
+	return Value{}, false
+}
+
+// handleHTTPCall models net/http client and server functions (#95).
+// Server-side operations (ListenAndServe, Handle) are noops.
+// Client calls (Get/Post/NewRequest/Do) return opaque (*Response, nil) pairs.
+// Field accesses on *http.Response go through SSA FieldAddr on the opaque value
+// and cannot be resolved; tests should avoid direct field reads.
+func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, bool) {
+	opaque := Value{Raw: struct{}{}}
+	switch name {
+	// Package-level client functions:
+	case "Get", "Post", "Head", "PostForm":
+		// (*Response, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewRequest", "NewRequestWithContext":
+		// (*Request, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	// *http.Client methods:
+	case "Do":
+		// (*Response, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	// Server-side helpers — noops:
+	case "ListenAndServe", "ListenAndServeTLS":
+		return Value{}, true
+	case "Handle", "HandleFunc":
+		return Value{}, true
+	case "ServeHTTP", "ServeFile", "ServeContent":
+		return Value{}, true
+	case "Error", "Redirect", "NotFound", "NotFoundHandler":
+		return Value{}, true
+	case "StripPrefix":
+		return opaque, true
+
+	// Mux construction:
+	case "NewServeMux":
+		return opaque, true
+
+	// *ServeMux methods:
+	case "Handler", "ServeHTTP2":
+		return opaque, true
+
+	// Status text helper:
+	case "StatusText":
+		return Value{Raw: ""}, true
+
+	// *http.Request methods:
+	case "FormValue", "PostFormValue":
+		return Value{Raw: ""}, true
+	case "ParseForm", "ParseMultipartForm":
+		return Value{}, true
+	case "WithContext":
+		return opaque, true
+	case "Clone":
+		return opaque, true
+
+	// *http.Response methods (Body is io.ReadCloser — handled by io intercept):
+	case "Cookies":
+		return Value{Raw: []Value{}}, true
+
+	// Transport / round-tripper:
+	case "RoundTrip":
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	// Cookie helpers:
+	case "SetCookie":
+		return Value{}, true
+	case "ReadResponse":
+		return Value{Raw: []Value{opaque, {}}}, true
+	}
+	return Value{}, false
+}
+
+// handleSignalCall models os/signal functions (#96).
+// Notify pre-populates the target channel so goroutines waiting on it
+// are not falsely flagged as leaked.
+func (interp *Interpreter) handleSignalCall(gid int64, name string, args []Value) (Value, bool) {
+	switch name {
+	case "Notify":
+		// signal.Notify(ch chan<- os.Signal, sig ...os.Signal)
+		// Pre-populate the channel so it immediately has a pending value.
+		if len(args) >= 1 {
+			if chanID, ok := args[0].Raw.(ChanID); ok {
+				if ch, ok := interp.channels[chanID]; ok {
+					ch.hasPending = true
+					ch.pendingCount = 1
+				}
+				interp.channelSenders[chanID] = true
+			}
+		}
+		return Value{}, true
+	case "Stop", "Ignore", "Reset":
+		return Value{}, true
+	case "NotifyContext":
+		// Returns (context.Context, context.CancelFunc) — both opaque.
+		opaque := Value{Raw: struct{}{}}
+		return Value{Raw: []Value{opaque, opaque}}, true
+	}
 	return Value{}, false
 }
 

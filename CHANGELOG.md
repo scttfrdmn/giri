@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-02-27
+
+### Added
+
+- **`time` extras** (issue #93): Extended `handleTimeCall` with full coverage:
+  - `time.Tick` — returns pre-populated channel (like `time.After`)
+  - `time.NewTicker`/`time.NewTimer` — return opaque values (were previously
+    returning nil `Value{}`); `Ticker.Stop`/`Reset` and `Timer.Stop`/`Reset`
+    return `false` (bool)
+  - `time.Now` — returns opaque `time.Time` (was nil)
+  - `time.Since`/`time.Until` — return `int64(1)` nanosecond (non-zero duration)
+  - `time.ParseDuration` — returns `(1ns, nil)`
+  - `time.Parse`/`ParseInLocation` — returns `(opaque time.Time, nil)`
+  - `(time.Time)` methods: `Add`/`Round`/`Truncate`/`In`/`UTC`/`Local` → opaque;
+    `Sub` → `int64(0)`; `Before`/`Equal`/`IsZero` → `false`; `Format`/`String`
+    → `""`; year/month/day/... → `int64(0)`; `Zone` → `("", 0)`
+  - `(time.Duration)` methods: `Hours`/`Minutes`/`Seconds` → `float64(0)`;
+    `Milliseconds`/`Microseconds`/`Nanoseconds` → `int64(0)`
+  - Disambiguation: `time.After(d)` vs `(time.Time).After(u)` by arg count;
+    `time.Unix(sec, nsec)` vs `(time.Time).Unix()` by arg count
+  Integration test: `time_ticker`.
+
+- **`*os.File` method intercepts** (issue #94): `handleOSCall` now intercepts
+  method calls on the `*os.File` returned by `Open`/`Create`/`OpenFile`:
+  - `Open`/`Create`/`CreateTemp`/`OpenFile` now return `(opaque *File, nil)`
+    instead of `(nil, nil)` so method calls dispatch back to this intercept
+  - `Read`/`ReadAt` → `(len(p), nil)` (pessimistic); `Write`/`WriteAt` →
+    `(len(p), nil)`; `WriteString` → `(len(s), nil)`
+  - `Close`/`Sync`/`Chmod`/`Chown`/`Truncate`/`Chdir` → `nil error`
+  - `Stat` → `(opaque os.FileInfo, nil)`; `Seek` → `(0, nil)`
+  - `Name` → `""`; `Fd` → `3`
+  - `ReadDir`/`Readdirnames`/`Readdir` → `([], nil)`
+  Integration test: `os_file_rw`.
+
+- **`net/http` client intercepts** (issue #95): New `handleHTTPCall` covers the
+  HTTP client API surface:
+  - Package-level: `Get`/`Post`/`Head`/`PostForm` → `(*Response, nil)`;
+    `NewRequest`/`NewRequestWithContext` → `(*Request, nil)`
+  - `(*http.Client).Do` → `(*Response, nil)`;
+    `ListenAndServe`/`ListenAndServeTLS` → noop
+  - `NewServeMux` → opaque; `Handle`/`HandleFunc`/`ServeHTTP` → noop
+  - `Error`/`Redirect`/`NotFound`/`ServeFile` → noop; `StatusText` → `""`
+  - Request methods: `FormValue`/`PostFormValue` → `""`; `WithContext`/`Clone`
+    → opaque; `ParseForm` → noop
+  Note: direct field access on `*http.Response` (e.g. `resp.StatusCode`) goes
+  through SSA `FieldAddr` on an opaque value and cannot be resolved; tests should
+  use function-call patterns only. Integration test: `http_client`.
+
+- **`os/signal` intercepts** (issue #96): New `handleSignalCall`:
+  - `signal.Notify(ch, sig...)` — pre-populates the channel with a pending value
+    (like `time.After`) so goroutines waiting on it proceed without triggering
+    goroutine-leak violations; marks `channelSenders`
+  - `signal.Stop`/`Ignore`/`Reset` → noop
+  - `signal.NotifyContext` → `(opaque ctx, opaque cancelFunc)`
+  Integration test: `signal_notify`.
+
 ## [0.25.0] - 2026-02-27
 
 ### Added
