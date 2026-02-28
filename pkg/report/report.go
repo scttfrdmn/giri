@@ -294,6 +294,24 @@ func classifyError(err error) Finding {
 			Hint:     "Always call the cancel function returned by context.WithCancel/WithTimeout/WithDeadline, typically with: defer cancel()",
 		}
 
+	case *shadow.NilChannelError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "nil-channel",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "Initialize channels with make(chan T) before use. close(nil) panics; send/receive on nil channel blocks forever.",
+		}
+
+	case *shadow.InvalidMakeArgError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "make-invalid",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "make() length and capacity arguments must be non-negative. Check for negative values before calling make().",
+		}
+
 	default:
 		return Finding{
 			Severity: SeverityWarning,

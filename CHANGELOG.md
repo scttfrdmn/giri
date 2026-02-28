@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-02-28
+
+### Added
+
+- **Nil channel operation detection** (issue #122): Giri now reports a `nil-channel`
+  violation (severity: ERROR) when a nil channel is used in any of these positions:
+  - `close(nil)` — panics in Go: "close of nil channel"
+  - Send on nil (`nil <- v`) — blocks forever in Go (deadlock)
+  - Receive from nil (`<-nil`) — blocks forever in Go (deadlock)
+
+  New error type in `pkg/shadow`: `NilChannelError{Op, Site, GID}` where `Op` is
+  `"close"`, `"send"`, or `"receive"`.
+
+  Three new integration tests: `nil_channel_close`, `nil_channel_send`,
+  `nil_channel_recv` (1 violation each).
+
+- **`make()` negative argument detection** (issue #123): Giri now reports a
+  `make-invalid` violation (severity: ERROR) when `make()` is called with a negative
+  length or capacity argument. In Go this panics at runtime:
+  - `make([]T, -1)` → "makeslice: len out of range"
+  - `make([]T, 0, -1)` → "makeslice: cap out of range"
+  - `make(chan T, -1)` → "makechan: size out of range"
+
+  New error type in `pkg/shadow`: `InvalidMakeArgError{Kind, Value, Site, GID}` where
+  `Kind` is `"slice-len"`, `"slice-cap"`, or `"chan-cap"`.
+
+  Two new integration tests: `make_invalid_len` (1 violation), `make_valid`
+  (0 violations). 129 total integration tests.
+
 ## [0.34.0] - 2026-02-28
 
 ### Added

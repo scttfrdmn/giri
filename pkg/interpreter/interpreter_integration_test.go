@@ -286,6 +286,42 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.35.0 regression tests
+	{
+		name:           "nil channel close",
+		dir:            "nil_channel_close",
+		wantViolations: 1,
+		wantCategory:   "nil-channel",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "nil channel send",
+		dir:            "nil_channel_send",
+		wantViolations: 1,
+		wantCategory:   "nil-channel",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "nil channel recv",
+		dir:            "nil_channel_recv",
+		wantViolations: 1,
+		wantCategory:   "nil-channel",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "make invalid len",
+		dir:            "make_invalid_len",
+		wantViolations: 1,
+		wantCategory:   "make-invalid",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "make valid",
+		dir:            "make_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.34.0 regression tests
 	{
 		name:           "context cancel ok",

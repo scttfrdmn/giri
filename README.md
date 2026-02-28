@@ -325,6 +325,8 @@ giri/
 - [x] `giri -test ./...`: discovers and runs `TestXxx(*testing.T)` functions from `_test.go` files — v0.33.0
 - [x] Context cancel leak detection: `context.WithCancel/WithTimeout/WithDeadline` cancel functions tracked; uncalled ones reported as `context-cancel-leak` — v0.34.0
 - [x] HTML report format: `-format html` produces self-contained HTML with color-coded findings — v0.34.0
+- [x] Nil channel operation detection: `close(nil)`, send on nil, receive from nil — reported as `nil-channel` — v0.35.0
+- [x] `make()` negative argument detection: negative len/cap → reported as `make-invalid` — v0.35.0
 
 ## Contributing
 

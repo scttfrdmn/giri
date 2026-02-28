@@ -344,3 +344,36 @@ func (e *ContextCancelLeakError) Error() string {
 		e.Site, e.GID,
 	)
 }
+
+// NilChannelError is reported when close(), send, or receive is performed on
+// a nil channel. In Go, close(nil) panics with "close of nil channel";
+// send/receive on nil block forever (deadlock).
+type NilChannelError struct {
+	Op   string // "close", "send", or "receive"
+	Site string
+	GID  int64
+}
+
+func (e *NilChannelError) Error() string {
+	return fmt.Sprintf(
+		"nil-channel: %s on nil channel (goroutine %d) at %s",
+		e.Op, e.GID, e.Site,
+	)
+}
+
+// InvalidMakeArgError is reported when make() is called with a negative length
+// or capacity. In Go this panics at runtime: "makeslice: len out of range" or
+// "makechan: size out of range".
+type InvalidMakeArgError struct {
+	Kind  string // "slice-len", "slice-cap", "chan-cap"
+	Value int64  // the negative value that was passed
+	Site  string
+	GID   int64
+}
+
+func (e *InvalidMakeArgError) Error() string {
+	return fmt.Sprintf(
+		"make-invalid: %s argument is %d (goroutine %d) at %s",
+		e.Kind, e.Value, e.GID, e.Site,
+	)
+}

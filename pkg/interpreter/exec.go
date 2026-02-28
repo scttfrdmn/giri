@@ -441,6 +441,15 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			}
 			frame.Locals[inst.Name()] = result
 		case token.ARROW: // Channel receive (<-ch)
+			// Receive from nil channel blocks forever in Go (deadlock) (#122).
+			if operand.Raw == nil {
+				interp.recordViolation(gid, &shadow.NilChannelError{Op: "receive", Site: site, GID: gid})
+				if g := interp.goroutines[gid]; g != nil {
+					g.Status = GoroutineBlocked
+					g.BlockSite = site
+				}
+				break
+			}
 			var chanID ChanID
 			if id, ok := operand.Raw.(ChanID); ok {
 				chanID = id
@@ -633,6 +642,19 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		capVal := interp.resolveValue(frame, inst.Cap)
 		lenN := int(toInt64(lenVal))
 		capN := int(toInt64(capVal))
+		// Negative len or cap panics at runtime: "makeslice: len out of range" (#123).
+		if lenN < 0 {
+			interp.recordViolation(gid, &shadow.InvalidMakeArgError{
+				Kind: "slice-len", Value: int64(lenN), Site: site, GID: gid,
+			})
+			lenN = 0
+		}
+		if capN < 0 {
+			interp.recordViolation(gid, &shadow.InvalidMakeArgError{
+				Kind: "slice-cap", Value: int64(capN), Site: site, GID: gid,
+			})
+			capN = 0
+		}
 		if capN < lenN {
 			capN = lenN
 		}
@@ -739,9 +761,13 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 
 	case *ssa.MakeChan:
 		// Extract the channel capacity from the instruction operand (#44).
+		// Negative capacity panics at runtime: "makechan: size out of range" (#123).
 		capVal := interp.resolveValue(frame, inst.Size)
 		capacity := int(toInt64(capVal))
 		if capacity < 0 {
+			interp.recordViolation(gid, &shadow.InvalidMakeArgError{
+				Kind: "chan-cap", Value: int64(capacity), Site: site, GID: gid,
+			})
 			capacity = 0
 		}
 		chanID := interp.createChannel(capacity)
@@ -993,6 +1019,15 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 	case *ssa.Send:
 		chanVal := interp.resolveValue(frame, inst.Chan)
 		val := interp.resolveValue(frame, inst.X)
+		// Send on nil channel blocks forever in Go (deadlock) (#122).
+		if chanVal.Raw == nil {
+			interp.recordViolation(gid, &shadow.NilChannelError{Op: "send", Site: site, GID: gid})
+			if g := interp.goroutines[gid]; g != nil {
+				g.Status = GoroutineBlocked
+				g.BlockSite = site
+			}
+			break
+		}
 		var chanID ChanID
 		if id, ok := chanVal.Raw.(ChanID); ok {
 			chanID = id
@@ -1457,7 +1492,15 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 
 	case "close":
 		// Channel close (#31): mark channel as closed; future sends will panic.
+		// close(nil) panics at runtime: "close of nil channel" (#122).
 		if len(args) > 0 {
+			if args[0].Raw == nil {
+				interp.recordViolation(gid, &shadow.NilChannelError{Op: "close", Site: site, GID: gid})
+				if g := interp.goroutines[gid]; g != nil {
+					g.Panicked = true
+				}
+				return Value{}
+			}
 			if chanID, ok := args[0].Raw.(ChanID); ok {
 				interp.handleChannelClose(gid, chanID, site)
 			}
