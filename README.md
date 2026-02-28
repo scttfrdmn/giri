@@ -78,11 +78,17 @@ go install github.com/scttfrdmn/giri/cmd/giri@latest
 # Check a package
 giri ./...
 
+# Analyze existing TestXxx functions (no standalone main needed)
+giri -test ./...
+
 # Arena safety only
 giri -arena ./pkg/allocator
 
-# With PCT scheduling for concurrency bugs
-giri -strategy pct -seed 42 -depth 3 ./...
+# PCT multi-run concurrency sweep (tags violations with replay seed)
+giri -strategy pct -runs 100 ./...
+
+# Reproduce a specific PCT run
+giri -strategy pct -seed 42 ./...
 
 # JSON output for CI
 giri -format json ./... > giri-report.json
@@ -305,7 +311,7 @@ giri/
 - [x] Goroutine spawn happens-before
 - [x] `sync.Mutex` / `sync.WaitGroup` / `sync.Once` happens-before
 - [x] Send/close on closed channel detection
-- [ ] Systematic interleaving exploration (PCT schedules but doesn't replay)
+- [x] PCT replay seeds: `RunN` tags each violation with the seed that triggered it; text report prints `replay: giri -strategy pct -seed N ./...`
 
 ### Phase 4: Advanced
 - [x] Interprocedural analysis (follow calls across packages) — v0.17.0
@@ -313,7 +319,7 @@ giri/
 - [ ] `cgo` boundary checking
 - [ ] `reflect` package safety verification
 - [ ] `go:linkname` tracking
-- [ ] `go test -giri` integration
+- [x] `giri -test ./...`: discovers and runs `TestXxx(*testing.T)` functions from `_test.go` files — v0.33.0
 
 ## Contributing
 

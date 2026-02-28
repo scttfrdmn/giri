@@ -5,6 +5,7 @@ package ssautil
 import (
 	"fmt"
 	"go/token"
+	"go/types"
 	"os"
 	"strings"
 
@@ -269,6 +270,136 @@ func LoadAllPrograms(patterns []string) ([]*interpreter.Program, error) {
 		return nil, fmt.Errorf("no main packages found in %v", patterns)
 	}
 	return programs, nil
+}
+
+// LoadTestPrograms loads packages in test mode and returns one Program per
+// package that contains TestXxx(*testing.T) functions. Each program's
+// TestFuncs field lists the discovered test functions in member-iteration order.
+//
+// This is the ssautil counterpart to RunTests in the interpreter package.
+// Use it with giri -test to analyze existing test suites without writing
+// standalone main programs.
+func LoadTestPrograms(patterns []string) ([]*interpreter.Program, error) {
+	cfg := &packages.Config{
+		Mode: packages.NeedName |
+			packages.NeedFiles |
+			packages.NeedCompiledGoFiles |
+			packages.NeedImports |
+			packages.NeedDeps |
+			packages.NeedTypes |
+			packages.NeedSyntax |
+			packages.NeedTypesInfo,
+		Tests: true,
+	}
+
+	initial, err := packages.Load(cfg, patterns...)
+	if err != nil {
+		return nil, fmt.Errorf("loading test packages: %w", err)
+	}
+
+	if pkgsHaveArenaError(initial) {
+		fmt.Fprintf(os.Stderr,
+			"warning: some packages import \"arena\" but GOEXPERIMENT=arenas is not set.\n"+
+				"  Arena analysis is disabled. Re-run with GOEXPERIMENT=arenas.\n")
+	}
+
+	var loadErrs []error
+	for _, pkg := range initial {
+		for _, e := range pkg.Errors {
+			if !strings.Contains(e.Msg, "arena") {
+				loadErrs = append(loadErrs, fmt.Errorf("%s: %s", pkg.PkgPath, e.Msg))
+			}
+		}
+	}
+	if len(loadErrs) > 0 {
+		return nil, fmt.Errorf("package errors: %v", loadErrs)
+	}
+
+	prog, pkgs := ssautil.AllPackages(initial, ssa.InstantiateGenerics)
+	prog.Build()
+
+	fset := token.NewFileSet()
+	if len(initial) > 0 {
+		fset = initial[0].Fset
+	}
+	suppressions := ParseSuppressions(fset, initial)
+
+	// Collect TestXxx functions grouped by their SSA package.
+	type pkgEntry struct {
+		ssaPkg *ssa.Package
+		tests  []interpreter.TestFunc
+	}
+	// Use a slice to preserve package order deterministically.
+	var pkgOrder []*ssa.Package
+	pkgTests := make(map[*ssa.Package]*pkgEntry)
+
+	for _, pkg := range pkgs {
+		if pkg == nil {
+			continue
+		}
+		for _, mem := range pkg.Members {
+			fn, ok := mem.(*ssa.Function)
+			if !ok {
+				continue
+			}
+			if isTestFunc(fn) {
+				if pkgTests[pkg] == nil {
+					pkgTests[pkg] = &pkgEntry{ssaPkg: pkg}
+					pkgOrder = append(pkgOrder, pkg)
+				}
+				pkgTests[pkg].tests = append(pkgTests[pkg].tests, interpreter.TestFunc{
+					Name: fn.Name(),
+					Fn:   fn,
+				})
+			}
+		}
+	}
+
+	var programs []*interpreter.Program
+	for _, ssaPkg := range pkgOrder {
+		entry := pkgTests[ssaPkg]
+		programs = append(programs, &interpreter.Program{
+			SSA:          prog,
+			Main:         ssaPkg,
+			Fset:         fset,
+			Suppressions: suppressions,
+			TestFuncs:    entry.tests,
+		})
+	}
+
+	if len(programs) == 0 {
+		return nil, fmt.Errorf("no TestXxx(*testing.T) functions found in %v", patterns)
+	}
+	return programs, nil
+}
+
+// isTestFunc reports whether fn is a TestXxx(*testing.T) function eligible
+// for Giri analysis. It matches the naming convention (Test followed by a
+// capital letter) and verifies the parameter type is exactly *testing.T.
+func isTestFunc(fn *ssa.Function) bool {
+	name := fn.Name()
+	if len(name) < 5 || !strings.HasPrefix(name, "Test") {
+		return false
+	}
+	// "Test" alone or "Testlower..." does not match.
+	if name[4] < 'A' || name[4] > 'Z' {
+		return false
+	}
+	// Verify the signature is func(*testing.T).
+	sig := fn.Signature
+	if sig.Params().Len() != 1 {
+		return false
+	}
+	ptr, ok := sig.Params().At(0).Type().(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := ptr.Elem().(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	return obj.Name() == "T" && obj.Pkg() != nil && obj.Pkg().Path() == "testing"
 }
 
 // pkgsHaveArenaError reports whether any loaded package has an error whose

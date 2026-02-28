@@ -1146,3 +1146,63 @@ func TestIntegration(t *testing.T) {
 		})
 	}
 }
+
+// TestTestMode verifies the giri -test workflow: LoadTestPrograms discovers
+// TestXxx functions in _test.go files and RunTests runs each through the
+// interpreter independently.
+//
+// test_mode/lib.go exports SafeAdd (no side effects) and Counter (shared global).
+// test_mode/lib_test.go has:
+//   - TestSafeAdd: calls SafeAdd(2,3); expects 0 violations.
+//   - TestCounterRace: two goroutines race on Counter; expects ≥1 data-race violation.
+func TestTestMode(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Skipf("could not get working directory: %v", err)
+	}
+	dir := filepath.Join(wd, "testdata", "integration", "test_mode")
+
+	progs, err := ssautil.LoadTestPrograms([]string{dir})
+	if err != nil {
+		t.Skipf("LoadTestPrograms: %v", err)
+	}
+	if len(progs) == 0 {
+		t.Fatal("expected at least one test program")
+	}
+
+	// Run all test functions. Use the first program (there is only one package).
+	results := interpreter.RunTests(progs[0], interpreter.DefaultConfig())
+
+	// Build a name → result index.
+	byName := make(map[string]*interpreter.TestRunResult)
+	for _, r := range results {
+		byName[r.Name] = r
+	}
+
+	// TestSafeAdd: no violations.
+	safe, ok := byName["TestSafeAdd"]
+	if !ok {
+		t.Error("TestSafeAdd not found in RunTests results")
+	} else if !safe.Passed() {
+		t.Errorf("TestSafeAdd: expected 0 violations, got %d: %v", len(safe.Violations), safe.Violations)
+	}
+
+	// TestCounterRace: at least one data-race violation.
+	race, ok := byName["TestCounterRace"]
+	if !ok {
+		t.Error("TestCounterRace not found in RunTests results")
+	} else if race.Passed() {
+		t.Error("TestCounterRace: expected ≥1 violation, got 0")
+	} else {
+		found := false
+		for _, v := range race.Violations {
+			if strings.Contains(v.Error(), "data race") || strings.Contains(v.Error(), "race") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("TestCounterRace: expected data-race violation, got: %v", race.Violations)
+		}
+	}
+}

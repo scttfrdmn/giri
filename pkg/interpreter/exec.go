@@ -29,6 +29,13 @@ import (
 	"github.com/scttfrdmn/safearena"
 )
 
+// TestFunc identifies a single TestXxx function found in a _test.go file.
+// Populated by ssautil.LoadTestPrograms; consumed by RunTests.
+type TestFunc struct {
+	Name string         // e.g. "TestMyRace"
+	Fn   *ssa.Function  // the SSA function object
+}
+
 // Program represents a loaded Go program ready for interpretation.
 type Program struct {
 	SSA  *ssa.Program
@@ -39,6 +46,11 @@ type Program struct {
 	// found in the source files. Violations whose current-instruction site
 	// matches an entry here are silently dropped by recordViolation (#58).
 	Suppressions map[string]bool
+
+	// TestFuncs lists the TestXxx functions to run when this Program was
+	// loaded in test mode (via ssautil.LoadTestPrograms). Nil for non-test
+	// programs loaded with LoadAllPrograms.
+	TestFuncs []TestFunc
 }
 
 // RunResult holds the results of interpreting a program.
@@ -176,11 +188,122 @@ func RunN(prog *Program, config Config, n int, seed int64) *RunResult {
 			key := v.Error()
 			if !seen[key] {
 				seen[key] = true
+				// Tag the violation with the seed that found it so callers
+				// can reproduce the exact run with -strategy pct -seed N.
+				if vws, ok := v.(*ViolationWithStack); ok {
+					vws.ReproSeed = c.RandomSeed
+				}
 				all = append(all, v)
 			}
 		}
 	}
 	return &RunResult{Violations: all}
+}
+
+// TestRunResult is the result of interpreting a single TestXxx function.
+type TestRunResult struct {
+	Name       string             // "TestFoo"
+	Violations []error            // violations detected during this test
+	MemStats   shadow.MemoryStats // memory usage snapshot
+}
+
+// Passed reports whether the test produced no violations.
+func (r *TestRunResult) Passed() bool { return len(r.Violations) == 0 }
+
+// RunTests interprets each TestXxx function listed in prog.TestFuncs and
+// returns one TestRunResult per function. Functions are run in order;
+// each test gets a fresh interpreter instance so that violations in one
+// test cannot affect the results of another.
+//
+// RunTests is the counterpart to Run for programs loaded with
+// ssautil.LoadTestPrograms. For regular programs, use Run or RunN.
+func RunTests(prog *Program, config Config) []*TestRunResult {
+	results := make([]*TestRunResult, 0, len(prog.TestFuncs))
+	for _, tf := range prog.TestFuncs {
+		results = append(results, runTestFn(prog, tf, config))
+	}
+	return results
+}
+
+// runTestFn interprets a single TestXxx function with an opaque *testing.T
+// as its sole argument. It is structurally identical to Run but starts from
+// tf.Fn instead of prog.Main.Func("main").
+func runTestFn(prog *Program, tf TestFunc, config Config) *TestRunResult {
+	result := safearena.Scoped(func(a *safearena.Arena) *RunResult {
+		interp := newWithArena(prog.Fset, config, a)
+		interp.prog = prog.SSA
+		interp.suppressions = prog.Suppressions
+
+		// Initialize global variable state (same as Run).
+		interp.globals = make(map[*ssa.Global]Value)
+		for _, pkg := range prog.SSA.AllPackages() {
+			for _, member := range pkg.Members {
+				if g, ok := member.(*ssa.Global); ok {
+					elemType := deref(g.Type())
+					size := interp.typeSizeOf(elemType)
+					if size <= 0 {
+						size = 8
+					}
+					allocID := interp.Memory.Allocate(shadow.AllocGlobal, size, g.Type().String(), g.Name())
+					ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
+					interp.globals[g] = Value{Raw: ptr, Provenance: ptr}
+				}
+			}
+		}
+
+		// Spawn the entry goroutine named after the test function.
+		mainGID, err := interp.spawnGoroutine(tf.Name, "entry")
+		if err != nil {
+			return &RunResult{Violations: []error{err}}
+		}
+
+		// Call the test function with an opaque *testing.T as its argument.
+		// handleTestingCall in stdlib.go intercepts t.Fatal, t.Log, t.Run, etc.
+		tArg := Value{Raw: struct{}{}}
+		interp.execFunction(mainGID, tf.Fn, []Value{tArg})
+		if g := interp.goroutines[mainGID]; g != nil && g.Status == GoroutineRunning {
+			if g.Panicking {
+				g.Panicking = false
+				g.Panicked = true
+			}
+			if !g.Panicked {
+				g.Status = GoroutineFinished
+			}
+		}
+
+		// Drain the run queue (goroutines spawned inside the test).
+		for len(interp.runQueue) > 0 {
+			runnable := make([]int64, len(interp.runQueue))
+			for i, t := range interp.runQueue {
+				runnable[i] = t.gid
+			}
+			nextGID := interp.sched.Next(runnable)
+			for i, t := range interp.runQueue {
+				if t.gid == nextGID {
+					interp.runQueue = append(interp.runQueue[:i], interp.runQueue[i+1:]...)
+					interp.execFunction(t.gid, t.fn, t.args)
+					if g := interp.goroutines[t.gid]; g != nil && g.Status == GoroutineRunning {
+						if g.Panicking {
+							g.Panicking = false
+							g.Panicked = true
+						}
+						if !g.Panicked {
+							g.Status = GoroutineFinished
+						}
+					}
+					break
+				}
+			}
+		}
+
+		finalErrs := interp.Finish()
+		return &RunResult{Violations: finalErrs, MemStats: interp.Memory.Stats()}
+	})
+	return &TestRunResult{
+		Name:       tf.Name,
+		Violations: result.Violations,
+		MemStats:   result.MemStats,
+	}
 }
 
 // execFunction interprets a single SSA function.

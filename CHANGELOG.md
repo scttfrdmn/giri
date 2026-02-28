@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-02-28
+
+### Added
+
+- **`giri -test ./...` — test function analysis** (issue #118): Run Giri directly on
+  existing `TestXxx(*testing.T)` functions without writing standalone `package main`
+  programs. Giri discovers test functions, runs each through the interpreter with an
+  opaque `*testing.T`, and reports violations tagged with the test name.
+
+  New public API in `pkg/interpreter`:
+
+  ```go
+  // TestFunc identifies a single TestXxx function.
+  type TestFunc struct {
+      Name string
+      Fn   *ssa.Function
+  }
+
+  // TestRunResult holds the result of running one test function.
+  type TestRunResult struct {
+      Name       string
+      Violations []error
+      MemStats   shadow.MemoryStats
+  }
+  func (r *TestRunResult) Passed() bool
+
+  // RunTests runs each function in prog.TestFuncs independently.
+  func RunTests(prog *Program, config Config) []*TestRunResult
+  ```
+
+  New field on `Program`:
+
+  ```go
+  TestFuncs []TestFunc // populated by ssautil.LoadTestPrograms
+  ```
+
+  New `ssautil` function:
+
+  ```go
+  func LoadTestPrograms(patterns []string) ([]*interpreter.Program, error)
+  ```
+
+  `isTestFunc` validates that the function has signature `func(*testing.T)` (not
+  just a name prefix), so `TestHelper(t, x)` style helpers are correctly excluded.
+
+  CLI: `-test` flag; stderr shows `--- PASS: TestFoo` / `--- FAIL: TestFoo (N violation(s))`.
+
+  Integration test: `test_mode` package with `TestSafeAdd` (0 violations) and
+  `TestCounterRace` (1 data-race violation).
+
+- **PCT replay seeds** (issue #119): When `RunN` finds a violation during its
+  multi-run PCT sweep, it tags the violation with the random seed that triggered it.
+
+  - New field `ReproSeed int64` on `ViolationWithStack`; set by `RunN` on first
+    discovery for each unique violation.
+  - New method `ReproSeedValue() int64` on `ViolationWithStack` (satisfies the
+    `reproSeeder` interface in `pkg/report` without an import cycle).
+  - New field `ReproSeed int64` on `Finding` (JSON key `repro_seed`).
+  - Text report prints `replay: giri -strategy pct -seed <N> ./...` for any
+    finding with a non-zero seed, turning PCT from a one-shot oracle into a
+    reproducible debugger.
+
+### Closes
+
+- #118 (`giri -test` test function analysis), #119 (PCT replay seeds)
+
 ## [0.32.0] - 2026-02-28
 
 ### Added

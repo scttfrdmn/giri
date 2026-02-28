@@ -80,6 +80,12 @@ type ViolationWithStack struct {
 	GID       int64
 	SpawnSite string       // where this goroutine was created
 	Frames    []StackFrame // call stack, innermost first
+
+	// ReproSeed is the PCT random seed that triggered this violation, set
+	// by RunN when the violation is discovered during a multi-run sweep.
+	// A non-zero value means the violation can be reproduced with:
+	//   giri -strategy pct -seed <ReproSeed> ./...
+	ReproSeed int64
 }
 
 // Error implements the error interface. The message is the underlying error's.
@@ -104,6 +110,11 @@ func (v *ViolationWithStack) StackTrace() string {
 
 // GoroutineID returns the goroutine ID that recorded this violation.
 func (v *ViolationWithStack) GoroutineID() int64 { return v.GID }
+
+// ReproSeedValue returns the PCT seed that triggered this violation, or 0
+// if this violation was found outside a RunN multi-run sweep.
+// Named ReproSeedValue (not ReproSeed) to avoid shadowing the field.
+func (v *ViolationWithStack) ReproSeedValue() int64 { return v.ReproSeed }
 
 // ClosureValue represents a closure: a function together with its captured
 // free variables. Created by ssa.MakeClosure; called by execCall/ssa.Go.

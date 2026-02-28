@@ -35,6 +35,9 @@ type Finding struct {
 	DetectorName string   `json:"detector"`
 	StackTrace   string   `json:"stack_trace,omitempty"`
 	GoroutineID  int64    `json:"goroutine_id,omitempty"`
+	// ReproSeed is non-zero when this violation was found by RunN's PCT sweep.
+	// Reproduce the exact run with: giri -strategy pct -seed <ReproSeed> ./...
+	ReproSeed int64 `json:"repro_seed,omitempty"`
 }
 
 // stackTracer is implemented by ViolationWithStack in pkg/interpreter.
@@ -45,6 +48,13 @@ type stackTracer interface {
 	StackTrace() string
 	GoroutineID() int64
 	Unwrap() error
+}
+
+// reproSeeder is optionally implemented by violations that were discovered
+// via RunN's PCT multi-run sweep. When present, the replay seed is surfaced
+// in the text report as a "Replay:" line.
+type reproSeeder interface {
+	ReproSeedValue() int64
 }
 
 // Severity levels for findings.
@@ -94,19 +104,24 @@ func Build(violations []error, memStats *shadow.MemoryStats) *Report {
 	}
 
 	for _, err := range violations {
-		// Extract stack trace and goroutine ID before classifying the core error.
+		// Extract stack trace, goroutine ID, and replay seed before classifying.
 		var stackTrace string
 		var goroutineID int64
+		var reproSeed int64
 		underlying := err
 		if st, ok := err.(stackTracer); ok {
 			stackTrace = st.StackTrace()
 			goroutineID = st.GoroutineID()
 			underlying = st.Unwrap()
 		}
+		if rs, ok := err.(reproSeeder); ok {
+			reproSeed = rs.ReproSeedValue()
+		}
 
 		f := classifyError(underlying)
 		f.StackTrace = stackTrace
 		f.GoroutineID = goroutineID
+		f.ReproSeed = reproSeed
 		r.Findings = append(r.Findings, f)
 
 		r.Summary.TotalFindings++
@@ -337,6 +352,9 @@ func (r *Report) writeText(w io.Writer) error {
 				for _, line := range strings.Split(strings.TrimRight(f.StackTrace, "\n"), "\n") {
 					tw.printf("    %s\n", line)
 				}
+			}
+			if f.ReproSeed != 0 {
+				tw.printf("\n  replay: giri -strategy pct -seed %d ./...\n", f.ReproSeed)
 			}
 			if f.Hint != "" {
 				tw.printf("\n  hint: %s\n", f.Hint)

@@ -127,6 +127,7 @@ var (
 
 	// Mode flags
 	flagDump = flag.Bool("dump-ssa", false, "Dump SSA and exit (for debugging)")
+	flagTest = flag.Bool("test", false, "Analyze TestXxx(*testing.T) functions in *_test.go files instead of main")
 )
 
 func main() {
@@ -142,10 +143,12 @@ func main() {
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  giri ./...                          Check all packages\n")
+		fmt.Fprintf(os.Stderr, "  giri -test ./...                    Analyze TestXxx functions in _test.go files\n")
 		fmt.Fprintf(os.Stderr, "  giri -arena ./pkg/allocator         Arena safety only\n")
 		fmt.Fprintf(os.Stderr, "  giri -format json ./... > r.json    CI integration\n")
 		fmt.Fprintf(os.Stderr, "  giri -format sarif ./... > r.sarif  GitHub code scanning\n")
-		fmt.Fprintf(os.Stderr, "  giri -seed 42 -strategy pct ./...   Reproducible concurrency testing\n")
+		fmt.Fprintf(os.Stderr, "  giri -strategy pct -runs 100 ./...  PCT multi-run concurrency testing\n")
+		fmt.Fprintf(os.Stderr, "  giri -strategy pct -seed 42 ./...   Reproduce a specific PCT run\n")
 	}
 
 	flag.Parse()
@@ -163,6 +166,46 @@ func main() {
 
 	// Build configuration (file values < defaults; CLI flags override both)
 	config := buildConfig(pc)
+
+	// -test mode: analyze TestXxx functions from *_test.go files.
+	if *flagTest {
+		fmt.Fprintf(os.Stderr, "Loading test packages...\n")
+		testProgs, tErr := ssautil.LoadTestPrograms(patterns)
+		if tErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", tErr)
+			os.Exit(2)
+		}
+		anyFail := false
+		var allViolations []error
+		for _, prog := range testProgs {
+			results := interpreter.RunTests(prog, config)
+			for _, tr := range results {
+				if tr.Passed() {
+					fmt.Fprintf(os.Stderr, "--- PASS: %s\n", tr.Name)
+				} else {
+					fmt.Fprintf(os.Stderr, "--- FAIL: %s (%d violation(s))\n", tr.Name, len(tr.Violations))
+					anyFail = true
+					allViolations = append(allViolations, tr.Violations...)
+				}
+			}
+		}
+		rpt := report.Build(allViolations, nil)
+		format := report.FormatText
+		switch *flagFormat {
+		case "json":
+			format = report.FormatJSON
+		case "sarif":
+			format = report.FormatSARIF
+		}
+		if err := rpt.Write(os.Stdout, format); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing report: %v\n", err)
+			os.Exit(2)
+		}
+		if anyFail {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	// Load all matching programs (supports ./... and multiple patterns)
 	fmt.Fprintf(os.Stderr, "Loading packages...\n")
