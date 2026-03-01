@@ -1548,6 +1548,14 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 		ms.lockGoroutine = gid
 
 	case "Unlock", "RUnlock":
+		// Unlock of unlocked mutex panics at runtime: "sync: unlock of unlocked mutex" (#127).
+		if !ms.locked {
+			interp.recordViolation(gid, &shadow.MutexUnlockError{Op: name, Site: site, GID: gid})
+			if g != nil {
+				g.Panicked = true
+			}
+			return Value{}
+		}
 		// Tick the goroutine's clock, then snapshot it into the mutex state.
 		// This establishes that this Unlock HB any subsequent Lock.
 		g.VClock.Tick(gid)
@@ -1657,6 +1665,9 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 		return Value{Raw: true}
 
 	case "TryRLock":
+		// Pessimistic: assume read lock is acquired (mirrors TryLock).
+		ms.locked = true
+		ms.lockGoroutine = gid
 		return Value{Raw: true}
 
 	// sync.Cond methods (#92): model signal/wait using the mutex clock.

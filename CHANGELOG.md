@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-02-28
+
+### Added
+
+- **Nil slice element access detection** (issue #126): `s[i]` where `s` is a nil
+  slice now reports an `out-of-bounds` violation (severity: ERROR).
+
+  A nil slice (`var s []T`) has `Len=0, Cap=0` and no backing allocation. In Go,
+  accessing any element panics: `"runtime error: index out of range [0] with length 0"`.
+  Previously Giri silently returned `Value{}` or reported an unrelated "nil pointer
+  dereference" at the subsequent dereference. The fix is in `ssa.IndexAddr` (the SSA
+  instruction used for slice element addresses): when the base type is a slice and
+  `base.Raw == nil` (uninitialized) or `base.Raw.(*SliceValue).Backing == nil` (nil
+  slice value), the error is reported immediately and accurately.
+
+  Two new integration tests: `nil_slice_index` (1 violation), `slice_index_valid`
+  (0 violations).
+
+- **Unlock of unlocked mutex detection** (issue #127): `sync.Mutex.Unlock()` and
+  `sync.RWMutex.RUnlock()` when the mutex is not locked now report a `mutex-unlock`
+  violation (severity: ERROR).
+
+  New error type in `pkg/shadow`: `MutexUnlockError{Op, Site, GID}`.
+
+  In Go, calling `Unlock()` on a mutex that is not locked panics at runtime:
+  `"sync: unlock of unlocked mutex"`. The `mutexState.locked` field already tracked
+  lock state; this release adds a check before the unlock logic fires. The goroutine
+  is marked Panicked to match real Go behavior.
+
+  Two new integration tests: `mutex_unlock_unowned` (1 violation — double-unlock),
+  `mutex_unlock_valid` (0 violations — correct lock/unlock pattern).
+  137 total integration tests.
+
+### Fixed
+
+- `TryRLock` intercept now sets `ms.locked = true` (mirroring `TryLock`) so a
+  subsequent `RUnlock` after a successful `TryRLock` does not false-positive as
+  "unlock of unlocked mutex".
+
 ## [0.36.0] - 2026-02-28
 
 ### Added

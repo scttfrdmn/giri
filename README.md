@@ -329,6 +329,8 @@ giri/
 - [x] `make()` negative argument detection: negative len/cap → reported as `make-invalid` — v0.35.0
 - [x] String index out-of-bounds detection: `s[i]` where `i >= len(s)` — reported as `out-of-bounds` — v0.36.0
 - [x] Negative shift count detection: `x << n` where `n < 0` — reported as `negative-shift` — v0.36.0
+- [x] Nil slice element access detection: `s[i]` on a nil slice — reported as `out-of-bounds` — v0.37.0
+- [x] Unlock of unlocked mutex: `mu.Unlock()` / `mu.RUnlock()` without prior lock — reported as `mutex-unlock` — v0.37.0
 
 ## Contributing
 

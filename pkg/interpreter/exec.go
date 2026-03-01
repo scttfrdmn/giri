@@ -536,6 +536,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		idx := interp.resolveValue(frame, inst.Index)
 		indexVal := int(toInt64(idx))
 		elemSize := 8
+		nilSlice := false
 		switch t := inst.X.Type().Underlying().(type) {
 		case *types.Pointer:
 			if arr, ok := t.Elem().Underlying().(*types.Array); ok {
@@ -543,6 +544,29 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			}
 		case *types.Slice:
 			elemSize = interp.typeSizeOf(t.Elem())
+			// Nil slice: base.Raw is nil (uninitialized) or *SliceValue with nil Backing (#126).
+			if base.Raw == nil {
+				nilSlice = true
+			} else if sv, ok := base.Raw.(*SliceValue); ok && sv.Backing == nil {
+				nilSlice = true
+			}
+		}
+		if nilSlice {
+			sliceLen := 0
+			if sv, ok := base.Raw.(*SliceValue); ok {
+				sliceLen = sv.Len
+			}
+			interp.recordViolation(gid, &shadow.OutOfBoundsError{
+				AllocSize:  sliceLen,
+				Offset:     indexVal,
+				AccessSize: elemSize,
+				Site:       site,
+			})
+			if g := interp.goroutines[gid]; g != nil {
+				g.Panicked = true
+			}
+			frame.Locals[inst.Name()] = Value{}
+			break
 		}
 		result := interp.handleIndexAddr(gid, base, indexVal, elemSize, site)
 		frame.Locals[inst.Name()] = result
@@ -563,11 +587,11 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		case *SliceValue:
 			// Slice element access: derive the element pointer and call handleLoad
 			// so that BoundsDetector and RaceDetector fire on OOB/racy access (#25).
+			elemSize := 8
+			if t, ok := inst.X.Type().Underlying().(*types.Slice); ok {
+				elemSize = interp.typeSizeOf(t.Elem())
+			}
 			if sv.Backing != nil {
-				elemSize := 8
-				if t, ok := inst.X.Type().Underlying().(*types.Slice); ok {
-					elemSize = interp.typeSizeOf(t.Elem())
-				}
 				elemPtr := interp.Memory.DerivePointer(sv.Backing, idxInt*elemSize)
 				addrVal := Value{Raw: elemPtr, Provenance: elemPtr}
 				result, err := interp.handleLoad(gid, addrVal, elemSize, site)
@@ -576,6 +600,16 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 				}
 				frame.Locals[inst.Name()] = result
 			} else {
+				// Nil slice (Backing==nil): any element access is out of bounds (#126).
+				interp.recordViolation(gid, &shadow.OutOfBoundsError{
+					AllocSize:  sv.Len,
+					Offset:     idxInt,
+					AccessSize: elemSize,
+					Site:       site,
+				})
+				if g := interp.goroutines[gid]; g != nil {
+					g.Panicked = true
+				}
 				frame.Locals[inst.Name()] = Value{}
 			}
 		case string:

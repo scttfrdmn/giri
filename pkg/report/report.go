@@ -294,6 +294,15 @@ func classifyError(err error) Finding {
 			Hint:     "Always call the cancel function returned by context.WithCancel/WithTimeout/WithDeadline, typically with: defer cancel()",
 		}
 
+	case *shadow.MutexUnlockError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "mutex-unlock",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "Ensure each Unlock() call is preceded by a matching Lock(). Use defer mu.Unlock() immediately after mu.Lock() to avoid mismatches.",
+		}
+
 	case *shadow.NegativeShiftError:
 		return Finding{
 			Severity: SeverityError,

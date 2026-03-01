@@ -345,6 +345,22 @@ func (e *ContextCancelLeakError) Error() string {
 	)
 }
 
+// MutexUnlockError is reported when a sync.Mutex or sync.RWMutex is unlocked
+// without being locked first. In Go this panics at runtime:
+// "sync: unlock of unlocked mutex".
+type MutexUnlockError struct {
+	Op   string // "Unlock" or "RUnlock"
+	Site string
+	GID  int64
+}
+
+func (e *MutexUnlockError) Error() string {
+	return fmt.Sprintf(
+		"mutex-unlock: sync: %s of unlocked mutex (goroutine %d) at %s",
+		e.Op, e.GID, e.Site,
+	)
+}
+
 // NegativeShiftError is reported when a shift operation (<<, >>) uses a
 // negative shift count. In Go 1.13+, this panics at runtime:
 // "runtime error: negative shift count".

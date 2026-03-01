@@ -286,6 +286,35 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.37.0 regression tests
+	{
+		name:           "nil slice index",
+		dir:            "nil_slice_index",
+		wantViolations: 1,
+		wantCategory:   "out-of-bounds",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "slice index valid",
+		dir:            "slice_index_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "mutex unlock unowned",
+		dir:            "mutex_unlock_unowned",
+		wantViolations: 1,
+		wantCategory:   "mutex-unlock",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "mutex unlock valid",
+		dir:            "mutex_unlock_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.36.0 regression tests
 	{
 		name:           "string index oob",
