@@ -297,7 +297,7 @@ giri/
 - [x] Deferred call handling (`defer arena.Free()`)
 - [x] Goroutine spawning, closures, multi-return
 - [x] Report generation (text, JSON, SARIF)
-- [x] Integration test suite (120+ tests)
+- [x] Integration test suite (171+ tests)
 
 ### Phase 2: unsafe.Pointer Rules ✓
 - [x] Rule 1: Alignment verification at conversion sites
@@ -331,6 +331,24 @@ giri/
 - [x] Negative shift count detection: `x << n` where `n < 0` — reported as `negative-shift` — v0.36.0
 - [x] Nil slice element access detection: `s[i]` on a nil slice — reported as `out-of-bounds` — v0.37.0
 - [x] Unlock of unlocked mutex: `mu.Unlock()` / `mu.RUnlock()` without prior lock — reported as `mutex-unlock` — v0.37.0
+- [x] `unsafe.Slice` negative length detection: `unsafe.Slice(ptr, n)` where `n < 0` — reported as `unsafe-slice` — v0.38.0
+- [x] `unsafe.Slice` nil pointer detection: `unsafe.Slice(nil, n)` where `n != 0` — reported as `unsafe-slice` — v0.38.0
+- [x] `FieldAddr` nil struct pointer detection: `var p *T; _ = p.Field` — reported as `nil-pointer-deref` — v0.39.0
+- [x] `unsafe.String` argument validation: negative length or nil pointer with non-zero length — reported as `unsafe-slice` — v0.39.0
+- [x] Array pointer bounds detection: `p[i]` where `p` is `*[N]T` and `i >= N` — reported as `out-of-bounds` — v0.40.0
+- [x] Slice element OOB beyond declared length: `s[i]` where `i >= len(s)` even if `i < cap(s)` — reported as `out-of-bounds` — v0.41.0
+- [x] `make([]T, len, cap)` with len > cap detection — reported as `make-invalid` — v0.41.0
+- [x] `make(map[K]V, n)` negative size hint detection: `n < 0` → reported as `make-invalid` — v0.42.0
+- [x] Range-over-array: `for i, v := range [N]T{}` now executes the loop body (fixes silent skip that hid violations) — v0.42.0
+- [x] `len(map)` / `len(chan)` / `cap(chan)` now return correct values (fixes false-positive violations in non-empty guards) — v0.43.0
+- [x] Integer truncation in `ssa.Convert`: `int8(300)=44`, `int8(256)=0` etc. now apply correct bit-width semantics — v0.43.0
+- [x] `token.AND_NOT` (`&^`) bit-clear operator now evaluated correctly in `evalBinOp` — v0.44.0
+- [x] Complex number support: `real()`, `imag()`, `complex()` builtins + `complex128` arithmetic (`+`, `-`, `*`, `/`, `==`, `!=`) — v0.44.0
+- [x] `string → []rune` and `[]rune → string` conversions in `convertValue` (Unicode text-processing) — v0.45.0
+- [x] `for x := range ch {}` range-over-channel: `CommaOk` receive now returns `ok=false` when channel is closed and drained (was: always `ok=true`, causing infinite loop) — v0.45.0
+- [x] Complex128 unary negation: `-c` where `c` is `complex128` now correctly returns `-c` (was: returned `c` unchanged) — v0.46.0
+- [x] `complex64 ↔ complex128` type conversions in `convertValue`; defensive `int/float → complex` — v0.46.0
+- [x] `ssa.Select` receive readiness: buffered-channel `pendingCount` and closed-channel state now checked; `recvOk` formula aligned with `token.ARROW CommaOk` fix from v0.45.0 — v0.46.0
 
 ## Contributing
 

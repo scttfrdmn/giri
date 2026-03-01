@@ -466,9 +466,19 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 					break // Don't assign result; execBlock will see GoroutineBlocked
 				}
 			}
+			// Determine ok BEFORE consuming the value (#143).
+			// ok=false only when the channel is both closed and fully drained.
+			// Computing after handleChannelRecv wrongly returns ok=false for
+			// the last real item (when pendingCount transitions 1→0 after recv).
+			recvOk := true
+			if chanID != 0 {
+				if ch, exists := interp.channels[chanID]; exists {
+					recvOk = !ch.closed || ch.hasPending || ch.pendingCount > 0
+				}
+			}
 			interp.handleChannelRecv(gid, chanID, site)
 			if inst.CommaOk {
-				frame.Locals[inst.Name()] = Value{Raw: []Value{{}, {Raw: true}}}
+				frame.Locals[inst.Name()] = Value{Raw: []Value{{}, {Raw: recvOk}}}
 			} else {
 				frame.Locals[inst.Name()] = Value{}
 			}
@@ -477,6 +487,8 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 				frame.Locals[inst.Name()] = Value{Raw: -v}
 			} else if v, ok := operand.Raw.(float64); ok {
 				frame.Locals[inst.Name()] = Value{Raw: -v}
+			} else if c, ok := operand.Raw.(complex128); ok { // (#144)
+				frame.Locals[inst.Name()] = Value{Raw: -c}
 			} else {
 				frame.Locals[inst.Name()] = operand
 			}
@@ -537,18 +549,49 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		indexVal := int(toInt64(idx))
 		elemSize := 8
 		nilSlice := false
+		arrayOOB := false
+		sliceOOB := false
 		switch t := inst.X.Type().Underlying().(type) {
 		case *types.Pointer:
 			if arr, ok := t.Elem().Underlying().(*types.Array); ok {
 				elemSize = interp.typeSizeOf(arr.Elem())
+				arrLen := int(arr.Len())
+				// Bounds check for pointer-to-array indexing (#133).
+				if indexVal < 0 || indexVal >= arrLen {
+					interp.recordViolation(gid, &shadow.OutOfBoundsError{
+						AllocSize:  arrLen,
+						Offset:     indexVal,
+						AccessSize: elemSize,
+						Site:       site,
+					})
+					if g := interp.goroutines[gid]; g != nil {
+						g.Panicked = true
+					}
+					arrayOOB = true
+				}
 			}
 		case *types.Slice:
 			elemSize = interp.typeSizeOf(t.Elem())
-			// Nil slice: base.Raw is nil (uninitialized) or *SliceValue with nil Backing (#126).
 			if base.Raw == nil {
+				// Nil slice: uninitialized local (#126).
 				nilSlice = true
-			} else if sv, ok := base.Raw.(*SliceValue); ok && sv.Backing == nil {
-				nilSlice = true
+			} else if sv, ok := base.Raw.(*SliceValue); ok {
+				if sv.Backing == nil {
+					// Nil slice: explicit nil backing (#126).
+					nilSlice = true
+				} else if indexVal < 0 || indexVal >= sv.Len {
+					// OOB beyond declared length (#134): panics even when i < cap.
+					interp.recordViolation(gid, &shadow.OutOfBoundsError{
+						AllocSize:  sv.Len,
+						Offset:     indexVal,
+						AccessSize: elemSize,
+						Site:       site,
+					})
+					if g := interp.goroutines[gid]; g != nil {
+						g.Panicked = true
+					}
+					sliceOOB = true
+				}
 			}
 		}
 		if nilSlice {
@@ -565,6 +608,10 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			if g := interp.goroutines[gid]; g != nil {
 				g.Panicked = true
 			}
+			frame.Locals[inst.Name()] = Value{}
+			break
+		}
+		if arrayOOB || sliceOOB {
 			frame.Locals[inst.Name()] = Value{}
 			break
 		}
@@ -711,7 +758,11 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			capN = 0
 		}
 		if capN < lenN {
-			capN = lenN
+			// len > cap panics at runtime: "makeslice: len larger than cap" (#135).
+			interp.recordViolation(gid, &shadow.InvalidMakeArgError{
+				Kind: "slice-len-gt-cap", Value: int64(lenN), Site: site, GID: gid,
+			})
+			capN = lenN // continue with clamped value
 		}
 		allocSize := capN * elemSize
 		if allocSize <= 0 {
@@ -808,6 +859,15 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		frame.Locals[inst.Name()] = Value{Raw: &ClosureValue{Fn: fn, FreeVars: freeVars}}
 
 	case *ssa.MakeMap:
+		// Negative size hint panics at runtime: "makemap: size out of range" (#136).
+		if inst.Reserve != nil {
+			reserveVal := interp.resolveValue(frame, inst.Reserve)
+			if n := toInt64(reserveVal); n < 0 {
+				interp.recordViolation(gid, &shadow.InvalidMakeArgError{
+					Kind: "map-cap", Value: n, Site: site, GID: gid,
+				})
+			}
+		}
 		// Allocate a shadow pointer for the map so race detection can track
 		// concurrent reads and writes to the same map (#46).
 		allocID := interp.Memory.Allocate(shadow.AllocHeap, 8, inst.Type().String(), site)
@@ -830,13 +890,50 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 
 	case *ssa.Range:
 		base := interp.resolveValue(frame, inst.X)
-		frame.Locals[inst.Name()] = Value{Raw: &rangeIter{val: base, idx: 0}}
+		ri := &rangeIter{val: base, idx: 0}
+		// For range-over-array ([N]T or *[N]T), store N so advance() knows when to stop.
+		// Without this, the iterator falls through to default and returns false immediately,
+		// silently skipping all loop iterations (#137).
+		switch t := inst.X.Type().Underlying().(type) {
+		case *types.Array:
+			ri.arrayLen = int(t.Len())
+		case *types.Pointer:
+			if at, ok := t.Elem().Underlying().(*types.Array); ok {
+				ri.arrayLen = int(at.Len())
+			}
+		}
+		frame.Locals[inst.Name()] = Value{Raw: ri}
 
 	case *ssa.Next:
 		iter := interp.resolveValue(frame, inst.Iter)
 		if ri, ok := iter.Raw.(*rangeIter); ok {
-			ok2, k, v := ri.advance()
-			frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: ok2}, k, v}}
+			// Range-over-channel: handle channel receives directly here (not in
+			// rangeIter.advance) because we need access to the interpreter and gid (#143).
+			if chanID, ok := ri.val.Raw.(ChanID); ok {
+				if ch, exists := interp.channels[chanID]; exists {
+					if ch.hasPending || ch.pendingCount > 0 {
+						// Consume one value; return (true, receivedVal, _).
+						val := ch.pendingVal
+						interp.handleChannelRecv(gid, chanID, site)
+						frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: true}, val, {}}}
+					} else if ch.closed {
+						// Channel closed and empty: terminate the range loop.
+						frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: false}, {}, {}}}
+					} else {
+						// Channel empty and not closed: block goroutine.
+						if g := interp.goroutines[gid]; g != nil {
+							g.Status = GoroutineBlocked
+							g.BlockChanID = chanID
+							g.BlockSite = site
+						}
+					}
+				} else {
+					frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: false}, {}, {}}}
+				}
+			} else {
+				ok2, k, v := ri.advance()
+				frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: ok2}, k, v}}
+			}
 		} else {
 			frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: false}, {}, {}}}
 		}
@@ -1115,11 +1212,12 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 					break
 				}
 			} else {
-				// Ready to receive if there's a pending value or channel is closed
-				if ch.hasPending || ch.closed {
+				// Ready to receive if there's a pending value or channel is closed (#145).
+				// Check pendingCount too (buffered channels) to match the v0.45.0 ARROW fix.
+				if ch.hasPending || ch.pendingCount > 0 || ch.closed {
 					chosenIdx = int64(i)
-					recvOk = !ch.closed || ch.hasPending
-					if ch.hasPending {
+					recvOk = !ch.closed || ch.hasPending || ch.pendingCount > 0
+					if ch.hasPending || ch.pendingCount > 0 {
 						interp.handleChannelRecv(gid, chanID, site)
 					}
 					break
@@ -1378,14 +1476,48 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 				return Value{Raw: int64(sv.Len)}
 			case string:
 				return Value{Raw: int64(len(sv))}
+			case map[interface{}]Value: // map length (#138)
+				return Value{Raw: int64(len(sv))}
+			case ChanID: // buffered channel: pending item count (#138)
+				if ch, ok := interp.channels[sv]; ok {
+					return Value{Raw: int64(ch.pendingCount)}
+				}
+				return Value{Raw: int64(0)}
 			}
 		}
 
 	case "cap":
 		if len(args) > 0 {
-			if sv, ok := args[0].Raw.(*SliceValue); ok {
+			switch sv := args[0].Raw.(type) {
+			case *SliceValue:
 				return Value{Raw: int64(sv.Cap)}
+			case ChanID: // buffered channel: buffer capacity (#138)
+				if ch, ok := interp.channels[sv]; ok {
+					return Value{Raw: int64(ch.capacity)}
+				}
+				return Value{Raw: int64(0)}
 			}
+		}
+
+	case "real":
+		if len(args) > 0 {
+			if c, ok := args[0].Raw.(complex128); ok {
+				return Value{Raw: real(c)}
+			}
+		}
+
+	case "imag":
+		if len(args) > 0 {
+			if c, ok := args[0].Raw.(complex128); ok {
+				return Value{Raw: imag(c)}
+			}
+		}
+
+	case "complex":
+		if len(args) >= 2 {
+			r, _ := args[0].Raw.(float64)
+			i, _ := args[1].Raw.(float64)
+			return Value{Raw: complex(r, i)}
 		}
 
 	case "append":
@@ -1584,9 +1716,60 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 	case "print", "println":
 		// Ignore print output during interpretation
 
+	case "String": // unsafe.String(ptr *byte, len) — create string from pointer + length (Go 1.20+)
+		if len(args) < 2 {
+			break
+		}
+		lenN := int(toInt64(args[1]))
+		// Negative length panics at runtime (#131).
+		if lenN < 0 {
+			interp.recordViolation(gid, &shadow.InvalidUnsafeArgError{
+				Op: "unsafe.String", Arg: "len", Value: int64(lenN), Site: site, GID: gid,
+			})
+			if g := interp.goroutines[gid]; g != nil {
+				g.Panicked = true
+			}
+			break
+		}
+		// Nil pointer with non-zero length panics at runtime (#131).
+		if args[0].Provenance == nil && args[0].Raw == nil && lenN != 0 {
+			interp.recordViolation(gid, &shadow.InvalidUnsafeArgError{
+				Op: "unsafe.String", Arg: "ptr", Site: site, GID: gid,
+			})
+			if g := interp.goroutines[gid]; g != nil {
+				g.Panicked = true
+			}
+			break
+		}
+		// Valid: return an opaque string value.
+		return Value{Raw: ""}
+
 	case "Slice": // unsafe.Slice(ptr, len) — create slice from pointer + length
-		if len(args) >= 2 && args[0].Provenance != nil {
-			lenN := int(toInt64(args[1]))
+		if len(args) < 2 {
+			break
+		}
+		lenN := int(toInt64(args[1]))
+		// Negative length panics at runtime (#128).
+		if lenN < 0 {
+			interp.recordViolation(gid, &shadow.InvalidUnsafeArgError{
+				Op: "unsafe.Slice", Arg: "len", Value: int64(lenN), Site: site, GID: gid,
+			})
+			if g := interp.goroutines[gid]; g != nil {
+				g.Panicked = true
+			}
+			break
+		}
+		// Nil pointer with non-zero length panics at runtime (#129).
+		if args[0].Provenance == nil && lenN != 0 {
+			interp.recordViolation(gid, &shadow.InvalidUnsafeArgError{
+				Op: "unsafe.Slice", Arg: "ptr", Site: site, GID: gid,
+			})
+			if g := interp.goroutines[gid]; g != nil {
+				g.Panicked = true
+			}
+			break
+		}
+		if args[0].Provenance != nil {
 			sv := arenaNew(interp.arena, SliceValue{Backing: args[0].Provenance, Len: lenN, Cap: lenN})
 			return Value{Raw: sv, Provenance: args[0].Provenance}
 		}
@@ -1651,6 +1834,10 @@ func (interp *Interpreter) constToValue(c *ssa.Const) Value {
 		return Value{Raw: v}
 	case constant.String:
 		return Value{Raw: constant.StringVal(c.Value)}
+	case constant.Complex:
+		re, _ := constant.Float64Val(constant.Real(c.Value))
+		im, _ := constant.Float64Val(constant.Imag(c.Value))
+		return Value{Raw: complex(re, im)}
 	}
 	return Value{Raw: c.Value.String()}
 }
@@ -1741,6 +1928,8 @@ func evalBinOp(op token.Token, x, y Value) Value {
 			return Value{Raw: xi | yi}
 		case token.XOR:
 			return Value{Raw: xi ^ yi}
+		case token.AND_NOT:
+			return Value{Raw: xi &^ yi}
 		case token.SHL:
 			return Value{Raw: xi << uint(yi)}
 		case token.SHR:
@@ -1785,6 +1974,26 @@ func evalBinOp(op token.Token, x, y Value) Value {
 			return Value{Raw: xf > yf}
 		case token.GEQ:
 			return Value{Raw: xf >= yf}
+		}
+	}
+
+	// Complex arithmetic (#141)
+	xc, xIsComplex := x.Raw.(complex128)
+	yc, yIsComplex := y.Raw.(complex128)
+	if xIsComplex && yIsComplex {
+		switch op {
+		case token.ADD:
+			return Value{Raw: xc + yc}
+		case token.SUB:
+			return Value{Raw: xc - yc}
+		case token.MUL:
+			return Value{Raw: xc * yc}
+		case token.QUO:
+			return Value{Raw: xc / yc}
+		case token.EQL:
+			return Value{Raw: xc == yc}
+		case token.NEQ:
+			return Value{Raw: xc != yc}
 		}
 	}
 
@@ -1871,13 +2080,24 @@ func structFields(st *types.Struct) []*types.Var {
 
 // rangeIter holds iterator state for range over a collection.
 type rangeIter struct {
-	val     Value
-	idx     int
-	mapKeys []interface{} // lazily populated for map iteration
+	val      Value
+	idx      int
+	mapKeys  []interface{} // lazily populated for map iteration
+	arrayLen int           // > 0 for range-over-array ([N]T or *[N]T); 0 otherwise (#137)
 }
 
 // advance returns the next (ok, key, value) triple from the iterator.
 func (ri *rangeIter) advance() (bool, Value, Value) {
+	// Array iteration (#137): arrayLen > 0 means we're ranging over [N]T or *[N]T.
+	// The element value is loaded by the loop body via ssa.Index/IndexAddr.
+	if ri.arrayLen > 0 {
+		if ri.idx >= ri.arrayLen {
+			return false, Value{}, Value{}
+		}
+		k := Value{Raw: int64(ri.idx)}
+		ri.idx++
+		return true, k, Value{}
+	}
 	switch sv := ri.val.Raw.(type) {
 	case *SliceValue:
 		if ri.idx >= sv.Len {
@@ -1967,30 +2187,51 @@ func convertValue(v Value, srcType, dstType types.Type) Value {
 		}
 	}
 
-	// string → []byte
+	// string → []byte or string → []rune (#142)
 	if srcIsBasic && srcBasic.Kind() == types.String {
 		if dstSlice, ok := dstUnderlying.(*types.Slice); ok {
-			if elem, ok := dstSlice.Elem().Underlying().(*types.Basic); ok && elem.Kind() == types.Uint8 {
+			if elem, ok := dstSlice.Elem().Underlying().(*types.Basic); ok {
 				if s, ok := v.Raw.(string); ok {
-					return Value{Raw: []byte(s)}
+					switch elem.Kind() {
+					case types.Uint8: // []byte
+						return Value{Raw: []byte(s)}
+					case types.Int32: // []rune
+						runes := []rune(s)
+						vals := make([]Value, len(runes))
+						for i, r := range runes {
+							vals[i] = Value{Raw: int64(r)}
+						}
+						return Value{Raw: vals}
+					}
 				}
 			}
 		}
 	}
 
-	// []byte → string
+	// []byte → string or []rune → string (#142)
 	if srcSlice, ok := srcUnderlying.(*types.Slice); ok {
-		if elem, ok := srcSlice.Elem().Underlying().(*types.Basic); ok && elem.Kind() == types.Uint8 {
+		if elem, ok := srcSlice.Elem().Underlying().(*types.Basic); ok {
 			if dstIsBasic && dstBasic.Kind() == types.String {
-				switch b := v.Raw.(type) {
-				case []byte:
-					return Value{Raw: string(b)}
-				case []Value:
-					bs := make([]byte, len(b))
-					for i, bv := range b {
-						bs[i] = byte(toInt64(bv))
+				switch elem.Kind() {
+				case types.Uint8: // []byte → string
+					switch b := v.Raw.(type) {
+					case []byte:
+						return Value{Raw: string(b)}
+					case []Value:
+						bs := make([]byte, len(b))
+						for i, bv := range b {
+							bs[i] = byte(toInt64(bv))
+						}
+						return Value{Raw: string(bs)}
 					}
-					return Value{Raw: string(bs)}
+				case types.Int32: // []rune → string
+					if rv, ok := v.Raw.([]Value); ok {
+						runes := make([]rune, len(rv))
+						for i, r := range rv {
+							runes[i] = rune(toInt64(r))
+						}
+						return Value{Raw: string(runes)}
+					}
 				}
 			}
 		}
@@ -2007,6 +2248,40 @@ func convertValue(v Value, srcType, dstType types.Type) Value {
 		// int → float promotion
 		if srcBasic.Info()&types.IsInteger != 0 && dstBasic.Info()&types.IsFloat != 0 {
 			return Value{Raw: float64(toInt64(v))}
+		}
+		// int → complex: complex128(42) = 42+0i (#144)
+		if srcBasic.Info()&types.IsInteger != 0 && dstBasic.Info()&types.IsComplex != 0 {
+			return Value{Raw: complex(float64(toInt64(v)), 0)}
+		}
+		// float → complex: complex128(3.14) = 3.14+0i (#144)
+		if srcBasic.Info()&types.IsFloat != 0 && dstBasic.Info()&types.IsComplex != 0 {
+			if f, ok := v.Raw.(float64); ok {
+				return Value{Raw: complex(f, 0)}
+			}
+		}
+		// int → int: apply bit-width truncation/sign-extension (#139).
+		// Without this, int8(300) returns 300 instead of 44, causing incorrect
+		// branch decisions in programs relying on Go's well-defined wrap-around.
+		if srcBasic.Info()&types.IsInteger != 0 && dstBasic.Info()&types.IsInteger != 0 {
+			n := toInt64(v)
+			switch dstBasic.Kind() {
+			case types.Int8:
+				return Value{Raw: int64(int8(n))}
+			case types.Uint8:
+				return Value{Raw: int64(uint8(n))}
+			case types.Int16:
+				return Value{Raw: int64(int16(n))}
+			case types.Uint16:
+				return Value{Raw: int64(uint16(n))}
+			case types.Int32:
+				return Value{Raw: int64(int32(n))}
+			case types.Uint32:
+				return Value{Raw: int64(uint32(n))}
+			case types.Int64, types.Int:
+				return Value{Raw: n}
+			case types.Uint64, types.Uint, types.Uintptr:
+				return Value{Raw: int64(uint64(n))} // bit pattern preserved as int64
+			}
 		}
 	}
 

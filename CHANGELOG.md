@@ -7,6 +7,299 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-03-01
+
+### Fixed
+
+- **Complex128 unary negation** (issue #144): `ssa.UnOp` with `token.SUB` handled `int64`
+  and `float64` but not `complex128`. The expression `-c` where `c` is `complex128` returned
+  `c` unchanged, causing any comparison like `neg != complex(-1,-2)` to go the wrong way.
+  Added `} else if c, ok := operand.Raw.(complex128); ok { ... Value{Raw: -c} }` in the
+  `token.SUB` handler. Also added defensive `int→complex` and `float→complex` cases in
+  `convertValue` (e.g. `complex128(42)` → `42+0i`).
+
+  Two new integration tests: `complex_neg` (unary negation + double-negation + zero-complex
+  canaries), `complex_conv` (`complex64 ↔ complex128` widening/narrowing conversions).
+
+- **`ssa.Select` receive readiness and `recvOk` consistency with v0.45.0 fix** (issue #145):
+  The `ssa.Select` handler checked only `ch.hasPending` when deciding whether a receive case
+  was ready, ignoring `ch.pendingCount > 0` (buffered channels) and `ch.closed` (closed
+  channels always readable). Also, the `recvOk` value was not updated to use the same
+  formula introduced in v0.45.0 for `token.ARROW CommaOk`.
+
+  Fixed readiness: `ch.hasPending || ch.pendingCount > 0 || ch.closed`.
+  Fixed recvOk: `!ch.closed || ch.hasPending || ch.pendingCount > 0` (computed before
+  `handleChannelRecv`, consistent with `token.ARROW CommaOk`).
+
+  Two new integration tests: `select_recv_ok` (select on closed buffered channel with pending
+  items → `ok=true`), `select_recv_closed` (select on closed empty channel → `ok=false`).
+
+## [0.45.0] - 2026-03-01
+
+### Fixed
+
+- **`string → []rune` and `[]rune → string` conversions** (issue #142): `convertValue` handled
+  `string ↔ []byte` but not `string ↔ []rune`, a common Unicode text-processing pattern.
+  Added two new cases in `convertValue` parallel to the existing byte-slice cases:
+  - `string → []rune`: checks `dstSlice.Elem().Kind() == types.Int32`, converts with `[]rune(s)`
+    and wraps each rune as `Value{Raw: int64(r)}`
+  - `[]rune → string`: checks `srcSlice.Elem().Kind() == types.Int32`, reassembles from
+    `[]Value` by casting each element with `rune(toInt64(r))`
+
+  Two new integration tests: `string_to_rune` (Unicode string→rune-slice with canary on
+  length and rune value), `rune_to_string` (round-trip and explicit rune-slice construction).
+
+- **Range-over-channel: `for x := range ch` silently skipped all iterations** (issue #143):
+  Go SSA lowers `for range ch` as `ssa.UnOp` with `token.ARROW, CommaOk=true` (NOT
+  `ssa.Range`+`ssa.Next`). The `CommaOk` path always returned `ok=true`, causing an
+  infinite loop for pre-populated closed channels and silently-zero iterations for
+  conceptually-looping channels.
+
+  Fixed the `token.ARROW, CommaOk=true` handler to compute `recvOk` **before** calling
+  `handleChannelRecv` (so the last real item returns `ok=true`), using
+  `recvOk = !ch.closed || ch.hasPending || ch.pendingCount > 0`. This correctly terminates
+  the range loop when the channel is closed and fully drained.
+
+  Two new integration tests: `range_chan` (pre-populated buffered channel, counts 3
+  iterations via false-positive canary), `range_chan_valid` (empty closed channel → 0
+  iterations, no false positive).
+
+## [0.44.0] - 2026-03-01
+
+### Fixed
+
+- **Missing `token.AND_NOT` (`&^`) in `evalBinOp`** (issue #140): The bit-clear operator
+  `a &^ b` was not handled in the integer arithmetic block of `evalBinOp`, causing any use
+  of `&^` to return `Value{}`. This made comparisons involving bit-clearing produce non-bool
+  results, sending `ssa.If` down the default (true) branch and triggering false-positive
+  violations. Added `case token.AND_NOT: return Value{Raw: xi &^ yi}` after the existing
+  `token.XOR` case.
+
+  Two new integration tests: `and_not` (false-positive canary using `&^` result in
+  comparison), `and_not_valid` (idiomatic bit-flag clearing patterns).
+
+- **Complex number support: `real`/`imag`/`complex` builtins + `complex128` arithmetic**
+  (issue #141): Four related gaps resolved:
+  - `constToValue`: added `case constant.Complex:` to convert `go/constant` complex literals
+    to `complex128` using `constant.Real`/`constant.Imag` + `constant.Float64Val`.
+  - `execBuiltin`: added `"real"`, `"imag"`, and `"complex"` cases to extract/construct
+    `complex128` values.
+  - `evalBinOp`: added a `complex128` arithmetic block supporting `+`, `-`, `*`, `/`, `==`,
+    `!=` on complex operands.
+
+  Two new integration tests: `complex_builtins` (round-trip `complex`/`real`/`imag`
+  with false-positive canaries), `complex_arith` (add, sub, mul, equality on `complex128`).
+
+## [0.43.0] - 2026-03-01
+
+### Fixed
+
+- **`len(map)` + `len(chan)` + `cap(chan)` returning `Value{}`** (issue #138): The `len` and
+  `cap` builtins in `execBuiltin` only handled `*SliceValue` and `string`. For maps and
+  channels the builtins returned `Value{}`, causing `evalBinOp` to produce a non-bool result
+  for comparisons like `len(m) == 0`; `ssa.If` then took the default (true) branch for any
+  condition, inserting false-positive violations inside "empty" guards.
+
+  Added three cases:
+  - `case map[interface{}]Value:` → `int64(len(sv))` for `len`
+  - `case ChanID:` → `int64(ch.pendingCount)` for `len`
+  - `case ChanID:` → `int64(ch.capacity)` for `cap`
+
+  Two new integration tests: `len_map_chan` (false-positive canary with non-empty
+  map/channel), `len_map_chan_zero` (genuinely-empty cases).
+
+- **Integer truncation in `convertValue`** (issue #139): Integer-to-integer conversions
+  (e.g. `int8(300)`) passed through unchanged, returning the full 64-bit value instead of
+  applying Go's well-defined bit-width truncation. This caused programs relying on
+  wrap-around semantics to take incorrect control-flow branches.
+
+  Added `int → int` case inside the existing `if srcIsBasic && dstIsBasic` block:
+  switches on `dstBasic.Kind()` and applies the appropriate Go cast (`int8(n)`, `uint8(n)`,
+  etc.), then rewraps as `int64`. Key example: `int8(256) == 0` now evaluates to `true`.
+
+  Two new integration tests: `int_truncate` (uses `int8(256)=0` canary — OOB fires only if
+  truncation is skipped), `int_truncate_valid` (widening and small-value conversions, 0
+  violations).
+
+### Closes
+- Issue #138: `len(map)` / `len(chan)` / `cap(chan)` incorrect
+- Issue #139: integer truncation in `convertValue`
+
+## [0.42.0] - 2026-03-01
+
+### Added
+
+- **`make(map[K]V, n)` negative size hint detection** (issue #136): `make(map[string]int, n)`
+  where `n < 0` now reports a `make-invalid` violation. The Go runtime panics with
+  "makemap: size out of range" for negative hints.
+
+  `ssa.MakeMap.Reserve` is an optional operand that the interpreter previously ignored
+  entirely. The handler now checks `Reserve != nil && toInt64(reserveVal) < 0`, recording
+  `InvalidMakeArgError{Kind: "map-cap", Value: n}`. The existing `classifyError` path
+  already maps `*InvalidMakeArgError` to category `"make-invalid"`, so no report changes
+  were needed.
+
+  Two new integration tests: `make_map_neg` (1 violation), `make_map_valid` (0 violations).
+
+- **Range-over-array iteration** (issue #137): `for i, v := range [N]T{...}` now correctly
+  executes the loop body N times. Previously `rangeIter.advance()` had no case for arrays
+  and always returned `(false, {}, {})`, silently skipping all iterations and hiding any
+  violations inside the loop body.
+
+  Two changes:
+  1. Added `arrayLen int` field to `rangeIter`; `ssa.Range` populates it when `inst.X`
+     has type `[N]T` or `*[N]T` by extracting `types.Array.Len()`.
+  2. `advance()` checks `ri.arrayLen > 0` first; yields indices 0…N−1 and returns key only
+     (element values are loaded by the loop body via `ssa.Index`/`ssa.IndexAddr`).
+
+  Four new integration tests: `make_map_neg`, `make_map_valid`, `range_array` (0 violations;
+  the divide-by-zero at the end fires only if the loop was skipped — regression test for the
+  silent-skip bug), `range_array_race` (1 data race violation from two sibling goroutines
+  writing a shared counter inside range-over-array loops).
+
+### Closes
+- Issue #136: `make(map[K]V, n)` where n < 0
+- Issue #137: range-over-array silent skip
+
+## [0.41.0] - 2026-03-01
+
+### Added
+
+- **Slice element OOB against declared length** (issue #134): `s[i]` where `i >= len(s)`
+  now reports an `out-of-bounds` violation (severity: ERROR), even when `i < cap(s)`.
+
+  The `ssa.IndexAddr` handler for slices previously checked nil/nil-backing but relied on
+  `handleIndexAddr` → `CheckAccess` for bounds, which validates against the allocation size
+  (capacity × elemSize), not the declared length. A resliced or under-populated slice like
+  `make([]int, 3, 10)` would silently allow access at index 7.
+
+  A new `sliceOOB bool` flag (alongside `nilSlice` and `arrayOOB`) fires when
+  `sv.Backing != nil && (indexVal < 0 || indexVal >= sv.Len)`, recording
+  `OutOfBoundsError{AllocSize: sv.Len}` and setting `g.Panicked = true`.
+
+  Two new integration tests: `slice_elem_oob` (1 violation), `slice_elem_valid` (0 violations).
+
+- **`make([]T, len, cap)` with len > cap detection** (issue #135): `make([]int, 10, 3)`
+  now reports a `make-invalid` violation. The `ssa.MakeSlice` handler previously clamped
+  `capN = lenN` silently. The violation is recorded before clamping so execution continues
+  conservatively. Uses existing `InvalidMakeArgError` with `Kind: "slice-len-gt-cap"`.
+
+  As with negative-length tests, the Go compiler rejects constant-folded len>cap at compile
+  time, so the integration test uses helper functions `makeLen()`/`makeCap()` to produce
+  the values at runtime.
+
+  Two new integration tests: `make_len_gt_cap` (1 violation), `make_len_eq_cap` (0 violations).
+
+### Closes
+
+- Issue #134 — Slice element OOB beyond declared length
+- Issue #135 — `make([]T, len, cap)` with len > cap
+
+## [0.40.0] - 2026-03-01
+
+### Added
+
+- **Array pointer bounds detection** (issue #133): indexing `p[i]` where `p` is `*[N]T`
+  and `i >= N` or `i < 0` now reports an `out-of-bounds` violation (severity: ERROR).
+
+  The `ssa.IndexAddr` handler for the `*types.Pointer → *types.Array` case already
+  computed `elemSize` from `arr.Elem()` but never used `arr.Len()` for a bounds check.
+  A new `arrayOOB bool` flag (mirroring `nilSlice`) accumulates the OOB state and
+  short-circuits `handleIndexAddr` when set.
+
+  Two new integration tests: `array_index_oob` (1 violation), `array_index_valid`
+  (0 violations). The OOB test uses `wantCategory: "out-of-bounds"` (report-category
+  style, enabled by #132).
+
+### Fixed
+
+- **Test framework: `wantCategory` now matches report category OR error message substring**
+  (issue #132): previously `wantCategory` was checked only via
+  `strings.Contains(v.Error(), wantCategory)`, requiring test authors to know the exact
+  wording of error messages (e.g. `"nil pointer"` instead of `"nil-pointer-deref"`).
+  This caused a subtle failure in v0.39.0's `fieldaddr_nil_struct` test.
+
+  `report.CategoryFor(err error) string` is now exported from `pkg/report`. The test
+  `wantCategory` check now accepts either style:
+  - Legacy: `wantCategory: "nil pointer"` — substring of `v.Error()`
+  - Preferred: `wantCategory: "nil-pointer-deref"` — exact match of `report.CategoryFor(v)`
+
+### Closes
+
+- Issue #132 — Test framework category check inconsistency
+- Issue #133 — Array pointer out-of-bounds detection
+
+## [0.39.0] - 2026-03-01
+
+### Added
+
+- **`FieldAddr` nil struct pointer detection** (issue #130): accessing a field on a nil
+  struct pointer (`var p *T; _ = p.Field`) now reports a `nil-pointer-deref` violation
+  (severity: ERROR).
+
+  `handleFieldAddr` previously returned `Value{}` silently when `base.Provenance == nil`,
+  making no distinction between a nil pointer and an opaque/external value. The fix applies
+  the same `base.Raw == nil` guard already present in `handleLoad`/`handleStore`: only a
+  truly nil base (both `Raw` and `Provenance` are nil) triggers the violation; opaque
+  values from stdlib intercepts (where `Raw == struct{}{}`) are correctly left alone.
+
+  Two new integration tests: `fieldaddr_nil_struct` (1 violation), `fieldaddr_valid`
+  (0 violations).
+
+- **`unsafe.String` argument validation** (issue #131): `unsafe.String(ptr *byte, len)`
+  (Go 1.20+) now validates its arguments, matching the behavior added for `unsafe.Slice`
+  in v0.38.0.
+
+  - `len < 0` → reports `InvalidUnsafeArgError{Arg: "len"}`, category `"unsafe-slice"`
+  - `ptr == nil && len != 0` → reports `InvalidUnsafeArgError{Arg: "ptr"}`, category `"unsafe-slice"`
+  - `ptr == nil && len == 0` → valid, returns opaque string
+
+  A new `case "String"` in `execBuiltin` handles this. Note: the Go compiler rejects
+  constant negative lengths at compile time, so tests use a helper function to produce
+  a runtime-negative value.
+
+  Three new integration tests: `unsafe_string_neg` (1 violation), `unsafe_string_nil`
+  (1 violation), `unsafe_string_valid` (0 violations).
+
+### Closes
+
+- Issue #130 — `FieldAddr` nil struct pointer dereference
+- Issue #131 — `unsafe.String` negative length and nil pointer
+
+## [0.38.0] - 2026-02-28
+
+### Added
+
+- **`unsafe.Slice` negative length detection** (issue #128): `unsafe.Slice(ptr, n)` where
+  `n < 0` now reports an `unsafe-slice` violation (severity: ERROR).
+
+  At runtime Go panics with `"unsafe.Slice: len out of range"`. The interpreter previously
+  created a `SliceValue` with a negative `Len`/`Cap`, silently masking the bug. A new check
+  in `execBuiltin` case `"Slice"` fires `InvalidUnsafeArgError{Arg: "len"}` before the
+  `SliceValue` is constructed.
+
+  New integration test: `unsafe_slice_neg` (1 violation).
+
+- **`unsafe.Slice` nil pointer detection** (issue #129): `unsafe.Slice(nil, n)` where
+  `n != 0` now reports an `unsafe-slice` violation (severity: ERROR).
+
+  At runtime Go panics with `"unsafe.Slice: ptr is nil"`. The interpreter previously
+  returned `Value{}` silently when the pointer's `Provenance == nil`. A new check
+  fires `InvalidUnsafeArgError{Arg: "ptr"}` before the silent return.
+
+  New integration tests: `unsafe_slice_nil` (1 violation), `unsafe_slice_valid` (0 violations).
+
+### New Error Type
+
+- `shadow.InvalidUnsafeArgError{Op, Arg, Value, Site, GID}`: covers both `unsafe.Slice`
+  argument violations (negative `len` and nil `ptr` with non-zero `len`). Classified as
+  category `"unsafe-slice"` in report output.
+
+### Closes
+
+- Issue #128 — `unsafe.Slice` negative length
+- Issue #129 — `unsafe.Slice` nil pointer with non-zero length
+
 ## [0.37.0] - 2026-02-28
 
 ### Added

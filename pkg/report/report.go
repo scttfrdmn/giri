@@ -330,6 +330,15 @@ func classifyError(err error) Finding {
 			Hint:     "make() length and capacity arguments must be non-negative. Check for negative values before calling make().",
 		}
 
+	case *shadow.InvalidUnsafeArgError:
+		return Finding{
+			Severity: SeverityError,
+			Category: "unsafe-slice",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "unsafe.Slice requires a non-nil pointer and a non-negative length. Validate both arguments before calling unsafe.Slice.",
+		}
+
 	default:
 		return Finding{
 			Severity: SeverityWarning,
@@ -777,6 +786,18 @@ func (r *Report) HasErrors() bool {
 		}
 	}
 	return false
+}
+
+// CategoryFor returns the report category string for a violation error,
+// unwrapping ViolationWithStack if present. This allows test code to check
+// precise category names (e.g. "nil-pointer-deref") rather than substrings
+// of error messages (e.g. "nil pointer"). (#132)
+func CategoryFor(err error) string {
+	underlying := err
+	if st, ok := err.(stackTracer); ok {
+		underlying = st.Unwrap()
+	}
+	return classifyError(underlying).Category
 }
 
 // FilterByCategory returns findings matching the given category prefix.

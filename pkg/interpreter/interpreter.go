@@ -1029,6 +1029,14 @@ func (interp *Interpreter) handleStore(gid int64, addr Value, val Value, size in
 // handleFieldAddr interprets a field address computation (s.Field).
 func (interp *Interpreter) handleFieldAddr(gid int64, base Value, fieldOffset int, site string) Value {
 	if base.Provenance == nil {
+		// Distinguish nil pointer dereference from an untracked (opaque) value.
+		// When base.Raw is also nil, this is a program nil dereference (#130).
+		if base.Raw == nil {
+			if g := interp.goroutines[gid]; g != nil {
+				g.Panicked = true
+			}
+			interp.recordViolation(gid, &shadow.NilPointerDerefError{Site: site, GID: gid})
+		}
 		return Value{}
 	}
 

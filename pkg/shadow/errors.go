@@ -394,10 +394,10 @@ func (e *NilChannelError) Error() string {
 }
 
 // InvalidMakeArgError is reported when make() is called with a negative length
-// or capacity. In Go this panics at runtime: "makeslice: len out of range" or
-// "makechan: size out of range".
+// or capacity. In Go this panics at runtime: "makeslice: len out of range",
+// "makechan: size out of range", or "makemap: size out of range".
 type InvalidMakeArgError struct {
-	Kind  string // "slice-len", "slice-cap", "chan-cap"
+	Kind  string // "slice-len", "slice-cap", "slice-len-gt-cap", "chan-cap", "map-cap"
 	Value int64  // the negative value that was passed
 	Site  string
 	GID   int64
@@ -407,5 +407,30 @@ func (e *InvalidMakeArgError) Error() string {
 	return fmt.Sprintf(
 		"make-invalid: %s argument is %d (goroutine %d) at %s",
 		e.Kind, e.Value, e.GID, e.Site,
+	)
+}
+
+// InvalidUnsafeArgError is reported when unsafe.Slice or unsafe.String is called
+// with an invalid argument. In Go this panics at runtime:
+//   - unsafe.Slice(ptr, n): panics if n < 0, or if ptr is nil and n != 0.
+//   - unsafe.String(ptr, n): panics if n < 0, or if ptr is nil and n != 0.
+type InvalidUnsafeArgError struct {
+	Op    string // "unsafe.Slice" or "unsafe.String"
+	Arg   string // "len" or "ptr"
+	Value int64  // the invalid value (for len violations; 0 for ptr violations)
+	Site  string
+	GID   int64
+}
+
+func (e *InvalidUnsafeArgError) Error() string {
+	if e.Arg == "ptr" {
+		return fmt.Sprintf(
+			"unsafe-slice: %s called with nil ptr and non-zero len (goroutine %d) at %s",
+			e.Op, e.GID, e.Site,
+		)
+	}
+	return fmt.Sprintf(
+		"unsafe-slice: %s len argument is %d (goroutine %d) at %s",
+		e.Op, e.Value, e.GID, e.Site,
 	)
 }

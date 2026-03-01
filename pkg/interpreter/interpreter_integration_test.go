@@ -8,13 +8,14 @@ import (
 
 	"github.com/scttfrdmn/giri/internal/ssautil"
 	"github.com/scttfrdmn/giri/pkg/interpreter"
+	"github.com/scttfrdmn/giri/pkg/report"
 )
 
 var integrationTests = []struct {
 	name           string
 	dir            string
 	wantViolations int
-	wantCategory   string // empty = don't check; substring match against error string
+	wantCategory   string // empty = don't check; matches error message substring OR report.CategoryFor(v)
 	config         interpreter.Config
 }{
 	{
@@ -282,6 +283,253 @@ var integrationTests = []struct {
 	{
 		name:           "sync map no race",
 		dir:            "sync_map_no_race",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	// v0.46.0 regression tests
+	{
+		name:           "complex neg",
+		dir:            "complex_neg",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "complex conv",
+		dir:            "complex_conv",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "select recv ok",
+		dir:            "select_recv_ok",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "select recv closed",
+		dir:            "select_recv_closed",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	// v0.45.0 regression tests
+	{
+		name:           "string to rune",
+		dir:            "string_to_rune",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "rune to string",
+		dir:            "rune_to_string",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "range chan",
+		dir:            "range_chan",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "range chan valid",
+		dir:            "range_chan_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	// v0.44.0 regression tests
+	{
+		name:           "and not",
+		dir:            "and_not",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "and not valid",
+		dir:            "and_not_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "complex builtins",
+		dir:            "complex_builtins",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "complex arith",
+		dir:            "complex_arith",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	// v0.43.0 regression tests
+	{
+		name:           "len map chan",
+		dir:            "len_map_chan",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "len map chan zero",
+		dir:            "len_map_chan_zero",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "int truncate",
+		dir:            "int_truncate",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "int truncate valid",
+		dir:            "int_truncate_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	// v0.42.0 regression tests
+	{
+		name:           "make map neg",
+		dir:            "make_map_neg",
+		wantViolations: 1,
+		wantCategory:   "make-invalid",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "make map valid",
+		dir:            "make_map_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "range array",
+		dir:            "range_array",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "range array race",
+		dir:            "range_array_race",
+		wantViolations: 1,
+		wantCategory:   "data race",
+		config:         interpreter.DefaultConfig(),
+	},
+	// v0.41.0 regression tests
+	{
+		name:           "slice elem oob",
+		dir:            "slice_elem_oob",
+		wantViolations: 1,
+		wantCategory:   "out-of-bounds",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "slice elem valid",
+		dir:            "slice_elem_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "make len gt cap",
+		dir:            "make_len_gt_cap",
+		wantViolations: 1,
+		wantCategory:   "make-invalid",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "make len eq cap",
+		dir:            "make_len_eq_cap",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	// v0.40.0 regression tests
+	{
+		name:           "array index oob",
+		dir:            "array_index_oob",
+		wantViolations: 1,
+		wantCategory:   "out-of-bounds", // uses report category style (exercises #132 fix)
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "array index valid",
+		dir:            "array_index_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	// v0.39.0 regression tests
+	{
+		name:           "fieldaddr nil struct",
+		dir:            "fieldaddr_nil_struct",
+		wantViolations: 1,
+		wantCategory:   "nil pointer",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "fieldaddr valid",
+		dir:            "fieldaddr_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "unsafe string neg",
+		dir:            "unsafe_string_neg",
+		wantViolations: 1,
+		wantCategory:   "unsafe-slice",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "unsafe string nil",
+		dir:            "unsafe_string_nil",
+		wantViolations: 1,
+		wantCategory:   "unsafe-slice",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "unsafe string valid",
+		dir:            "unsafe_string_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	// v0.38.0 regression tests
+	{
+		name:           "unsafe slice neg",
+		dir:            "unsafe_slice_neg",
+		wantViolations: 1,
+		wantCategory:   "unsafe-slice",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "unsafe slice nil",
+		dir:            "unsafe_slice_nil",
+		wantViolations: 1,
+		wantCategory:   "unsafe-slice",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "unsafe slice valid",
+		dir:            "unsafe_slice_valid",
 		wantViolations: 0,
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
@@ -1243,13 +1491,17 @@ func TestIntegration(t *testing.T) {
 			if tt.wantCategory != "" {
 				found := false
 				for _, v := range result.Violations {
-					if strings.Contains(v.Error(), tt.wantCategory) {
+					// Accept either an error message substring match (legacy style,
+					// e.g. "nil pointer") or an exact report category match (preferred
+					// style, e.g. "nil-pointer-deref"). (#132)
+					if strings.Contains(v.Error(), tt.wantCategory) ||
+						report.CategoryFor(v) == tt.wantCategory {
 						found = true
 						break
 					}
 				}
 				if !found {
-					t.Errorf("want violation containing %q, violations: %v", tt.wantCategory, result.Violations)
+					t.Errorf("want violation with category/message %q, violations: %v", tt.wantCategory, result.Violations)
 				}
 			}
 		})
