@@ -297,7 +297,7 @@ giri/
 - [x] Deferred call handling (`defer arena.Free()`)
 - [x] Goroutine spawning, closures, multi-return
 - [x] Report generation (text, JSON, SARIF)
-- [x] Integration test suite (173+ tests)
+- [x] Integration test suite (174+ tests)
 
 ### Phase 2: unsafe.Pointer Rules ✓
 - [x] Rule 1: Alignment verification at conversion sites
@@ -351,7 +351,7 @@ giri/
 - [x] `ssa.Select` receive readiness: buffered-channel `pendingCount` and closed-channel state now checked; `recvOk` formula aligned with `token.ARROW CommaOk` fix from v0.45.0 — v0.46.0
 - [x] `handleLoad` uninitialized global: false out-of-bounds replaced by correct nil-pointer-deref; returning `Value{}` for offset-0 miss in `valueStore` — v0.47.0
 - [x] `golang.org/x/tools/go/packages` intercept: `Load` returns empty list; prevents false violations in programs that import go/packages — v0.47.0
-- [ ] Package `init()` called before `main()` — tracked as issue #146
+- [x] Package `init()` called before `main()`: synthesized init now runs before main(); dependency package inits suppressed; `flag.*` intercepts preserve default values; `handleLoad` dereferences native Go primitive pointers — v0.48.0
 
 ## Contributing
 

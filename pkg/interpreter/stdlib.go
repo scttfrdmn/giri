@@ -60,6 +60,17 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 			return fn(args)
 		}
 	}
+
+	// Skip dependency package init() calls (#146). The main package's own
+	// init is invoked directly in Run() before main(). Any call to a function
+	// literally named "init" that reaches execCall is a dependency package's
+	// synthesized init (e.g. runtime.init, fmt.init), which initializes runtime
+	// internals that the interpreter cannot model. User-defined init functions
+	// are renamed init$1, init$2, etc. in SSA and are NOT filtered here.
+	if name == "init" {
+		return Value{}, true
+	}
+
 	switch pkgPath {
 	case "strings":
 		return interp.handleStringsCall(name, args)
@@ -3371,42 +3382,90 @@ func (interp *Interpreter) handleFlagCall(name string, args []Value) (Value, boo
 		if name == "StringVar" {
 			return Value{}, true // sets *string in place, no return
 		}
-		return Value{Raw: new(string)}, true
+		p := new(string)
+		if len(args) >= 2 {
+			if def, ok := args[1].Raw.(string); ok {
+				*p = def
+			}
+		}
+		return Value{Raw: p}, true
 	case "Int", "IntVar":
 		if name == "IntVar" {
 			return Value{}, true
 		}
-		return Value{Raw: new(int)}, true
+		p := new(int)
+		if len(args) >= 2 {
+			if def, ok := args[1].Raw.(int64); ok {
+				*p = int(def)
+			}
+		}
+		return Value{Raw: p}, true
 	case "Int64", "Int64Var":
 		if name == "Int64Var" {
 			return Value{}, true
 		}
-		return Value{Raw: new(int64)}, true
+		p := new(int64)
+		if len(args) >= 2 {
+			if def, ok := args[1].Raw.(int64); ok {
+				*p = def
+			}
+		}
+		return Value{Raw: p}, true
 	case "Uint", "UintVar":
 		if name == "UintVar" {
 			return Value{}, true
 		}
-		return Value{Raw: new(uint)}, true
+		p := new(uint)
+		if len(args) >= 2 {
+			if def, ok := args[1].Raw.(int64); ok {
+				*p = uint(def)
+			}
+		}
+		return Value{Raw: p}, true
 	case "Uint64", "Uint64Var":
 		if name == "Uint64Var" {
 			return Value{}, true
 		}
-		return Value{Raw: new(uint64)}, true
+		p := new(uint64)
+		if len(args) >= 2 {
+			if def, ok := args[1].Raw.(int64); ok {
+				*p = uint64(def)
+			}
+		}
+		return Value{Raw: p}, true
 	case "Bool", "BoolVar":
 		if name == "BoolVar" {
 			return Value{}, true
 		}
-		return Value{Raw: new(bool)}, true
+		p := new(bool)
+		if len(args) >= 2 {
+			if def, ok := args[1].Raw.(bool); ok {
+				*p = def
+			}
+		}
+		return Value{Raw: p}, true
 	case "Float64", "Float64Var":
 		if name == "Float64Var" {
 			return Value{}, true
 		}
-		return Value{Raw: new(float64)}, true
+		p := new(float64)
+		if len(args) >= 2 {
+			if def, ok := args[1].Raw.(float64); ok {
+				*p = def
+			}
+		}
+		return Value{Raw: p}, true
 	case "Duration", "DurationVar":
 		if name == "DurationVar" {
 			return Value{}, true
 		}
-		return Value{Raw: new(int64)}, true // time.Duration is int64
+		p := new(int64) // time.Duration is int64
+		if len(args) >= 2 {
+			if def, ok := args[1].Raw.(int64); ok {
+				*p = def
+			}
+		}
+		return Value{Raw: p}, true
 
 	case "Func":
 		// flag.Func(name, usage string, fn func(string) error)

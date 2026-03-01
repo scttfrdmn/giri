@@ -316,6 +316,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.48.0 regression tests
+	{
+		name:           "init pkg global",
+		dir:            "init_pkg_global",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.47.0 regression tests
 	{
 		name:           "global nil ptr",

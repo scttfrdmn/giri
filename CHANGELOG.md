@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-03-01
+
+### Added
+
+- **Package `init()` called before `main()`** (issue #146): Giri now invokes the
+  main package's synthesized `init()` function before running `main()`. This
+  correctly initializes package-level variables whose values come from function
+  calls (e.g. `var ch = make(chan int, 1)`, `var s = strings.NewReplacer(...)`).
+
+  Dependency package inits (e.g. `runtime.init()`, `fmt.init()`) would crash
+  Giri if executed, so they are suppressed: any call to a function literally
+  named `"init"` that reaches `execStdlibCall` returns immediately. User-defined
+  init functions are renamed `init$1`, `init$2`, etc. in SSA and are therefore
+  NOT filtered — they execute normally as part of the main package's init body.
+
+  New integration test: `init_pkg_global` — `var ch = make(chan int, 1)` at
+  package level; `main()` sends 42 and receives it → 0 violations (proves init
+  correctly initialized the buffered channel).
+
+- **`flag.*` intercepts now preserve default values** (issue #146): `flag.Bool`,
+  `flag.String`, `flag.Int`, `flag.Int64`, `flag.Uint`, `flag.Uint64`,
+  `flag.Float64`, and `flag.Duration` now initialize the returned pointer to the
+  caller-specified default value instead of the zero value.
+
+- **Native-pointer dereference in `handleLoad`** (issue #146): When loading
+  through an untracked value whose `Raw` field is a native Go pointer to a
+  primitive type (`*bool`, `*string`, `*int`, `*int64`, `*uint64`, `*float64`,
+  `*uint`), `handleLoad` now dereferences it automatically. This allows code like
+  `if *flagVerbose { ... }` to see the actual flag value rather than the pointer.
+
+### Removed
+
+- **Known Limitation resolved**: Issue #146 ("Package init() not called before
+  main()") is now fixed. The warning previously documented in v0.47.0 has been
+  removed.
+
 ## [0.47.0] - 2026-03-01
 
 ### Fixed

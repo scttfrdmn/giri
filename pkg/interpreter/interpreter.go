@@ -925,7 +925,25 @@ func (interp *Interpreter) handleLoad(gid int64, addr Value, size int, site stri
 			}
 			return Value{}, &shadow.NilPointerDerefError{Site: site, GID: gid}
 		}
-		// Non-nil Raw but no provenance: untracked value, skip shadow checks.
+		// Non-nil Raw but no provenance: untracked value from an intercept.
+		// If Raw is a native Go pointer to a primitive, dereference it so that
+		// loads through flag.Bool/String/etc. return the actual value (#146).
+		switch ptr := addr.Raw.(type) {
+		case *bool:
+			return Value{Raw: *ptr}, nil
+		case *string:
+			return Value{Raw: *ptr}, nil
+		case *int:
+			return Value{Raw: int64(*ptr)}, nil
+		case *int64:
+			return Value{Raw: *ptr}, nil
+		case *uint64:
+			return Value{Raw: int64(*ptr)}, nil
+		case *float64:
+			return Value{Raw: *ptr}, nil
+		case *uint:
+			return Value{Raw: int64(*ptr)}, nil
+		}
 		return Value{Raw: addr.Raw}, nil
 	}
 

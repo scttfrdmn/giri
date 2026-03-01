@@ -107,9 +107,21 @@ func Run(prog *Program, config Config) *RunResult {
 			return &RunResult{Violations: []error{err}}
 		}
 
+		// Run package init() before main() to initialize package-level variables
+		// declared with function-call initializers (e.g. flag.String, make, etc.).
+		// Dependency package inits called from within init() are suppressed in
+		// execStdlibCall; only the main package's own init body executes (#146).
+		ranInit := false
+		if initFn := prog.Main.Func("init"); initFn != nil {
+			interp.execFunction(mainGID, initFn, nil)
+			ranInit = true
+		}
+
 		// Find and execute main function
 		mainFn := prog.Main.Func("main")
-		if mainFn == nil {
+		if mainFn == nil && !ranInit {
+			// Legacy fallback for init-only programs; not triggered when init()
+			// has already run above.
 			mainFn = prog.Main.Func("init")
 		}
 
