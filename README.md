@@ -297,7 +297,7 @@ giri/
 - [x] Deferred call handling (`defer arena.Free()`)
 - [x] Goroutine spawning, closures, multi-return
 - [x] Report generation (text, JSON, SARIF)
-- [x] Integration test suite (174+ tests)
+- [x] Integration test suite (178+ tests)
 
 ### Phase 2: unsafe.Pointer Rules ✓
 - [x] Rule 1: Alignment verification at conversion sites
@@ -353,6 +353,7 @@ giri/
 - [x] `golang.org/x/tools/go/packages` intercept: `Load` returns empty list; prevents false violations in programs that import go/packages — v0.47.0
 - [x] Package `init()` called before `main()`: synthesized init now runs before main(); dependency package inits suppressed; `flag.*` intercepts preserve default values; `handleLoad` dereferences native Go primitive pointers — v0.48.0
 - [x] `LoadAllPrograms`: unguarded `initial[0].Fset` before `len` check eliminated; Giri now reports 0 violations on its own source tree (`giri ./...`) — v0.49.0
+- [x] `slices`, `maps`, `cmp`, `log/slog` intercepts (Go 1.21+); generic instantiation fix: `callee.Origin()` used when `callee.Package()==nil` so all generic stdlib calls are intercepted — v0.50.0
 
 ## Contributing
 

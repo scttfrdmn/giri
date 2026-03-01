@@ -316,6 +316,35 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.50.0 regression tests
+	{
+		name:           "slices intercept",
+		dir:            "slices_intercept",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "maps keys values",
+		dir:            "maps_keys_values",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "cmp compare",
+		dir:            "cmp_compare",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "slog basic",
+		dir:            "slog_basic",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.48.0 regression tests
 	{
 		name:           "init pkg global",

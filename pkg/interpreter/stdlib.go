@@ -45,7 +45,8 @@ import (
 // "hash/adler32", "container/list", "container/heap", "container/ring",
 // "math/big", "crypto/tls", "database/sql", "testing",
 // "io/fs", "embed", "archive/zip", "archive/tar",
-// "mime", "mime/multipart", "crypto/cipher", "crypto/aes", and "crypto/hmac".
+// "mime", "mime/multipart", "crypto/cipher", "crypto/aes", "crypto/hmac",
+// "slices", "maps", "cmp", and "log/slog".
 // strings.NewReader and bytes.NewReader/NewBuffer/NewBufferString are handled
 // within the existing "strings" and "bytes" cases.
 // Returns (result, true) when intercepted, (Value{}, false) otherwise.
@@ -172,6 +173,14 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleSymCryptoCall(pkgPath, name, args)
 	case "golang.org/x/tools/go/packages":
 		return interp.handleGoPackagesCall(name, args)
+	case "slices":
+		return interp.handleSlicesCall(gid, name, args, site)
+	case "maps":
+		return interp.handleMapsCall(gid, name, args, site)
+	case "cmp":
+		return interp.handleCmpCall(name, args)
+	case "log/slog":
+		return interp.handleSlogCall(name, args)
 	}
 	return Value{}, false
 }
@@ -5020,4 +5029,418 @@ func valuesToInterfaces(vals []Value) []interface{} {
 		}
 	}
 	return result
+}
+
+// genericBaseName strips SSA type-parameter suffixes from instantiated generic
+// function names, e.g. "Contains[int]" → "Contains", "SortFunc[[]int,int]" → "SortFunc".
+// This is needed because Go's SSA (with InstantiateGenerics) appends the concrete
+// type arguments to the function name at each call site.
+func genericBaseName(name string) string {
+	if i := strings.Index(name, "["); i != -1 {
+		return name[:i]
+	}
+	return name
+}
+
+// handleSlicesCall models slices.* functions (Go 1.21 generics package, #149).
+// For functions accepting a comparison callback, the callback is probed once
+// with representative arguments to surface violations inside it.
+func (interp *Interpreter) handleSlicesCall(gid int64, name string, args []Value, site string) (Value, bool) {
+	// probeCallback calls the function-value at args[argIdx] with callArgs.
+	probeCallback := func(argIdx int, callArgs []Value) {
+		if argIdx >= len(args) {
+			return
+		}
+		switch fn := args[argIdx].Raw.(type) {
+		case *ssa.Function:
+			if fn.Blocks != nil {
+				interp.execFunction(gid, fn, callArgs)
+			}
+		case *ClosureValue:
+			all := append(callArgs, fn.FreeVars...)
+			interp.execFunction(gid, fn.Fn, all)
+		}
+	}
+
+	// asSlice returns args[i] as []Value, or nil if not a concrete Giri slice.
+	// Giri intercepts (e.g. handleStringsCall) use []Value as a native slice
+	// representation; shadow-tracked *SliceValue does not expose element values.
+	asSlice := func(i int) []Value {
+		if i >= len(args) {
+			return nil
+		}
+		if sv, ok := args[i].Raw.([]Value); ok {
+			return sv
+		}
+		return nil
+	}
+
+	switch genericBaseName(name) {
+	// ── Predicates ────────────────────────────────────────────────────────────
+	case "Contains":
+		// slices.Contains(s []E, v E) bool
+		if s := asSlice(0); s != nil {
+			target := Value{}
+			if len(args) >= 2 {
+				target = args[1]
+			}
+			for _, elem := range s {
+				if fmt.Sprintf("%v", elem.Raw) == fmt.Sprintf("%v", target.Raw) {
+					return Value{Raw: true}, true
+				}
+			}
+			return Value{Raw: false}, true
+		}
+		return Value{Raw: true}, true // conservative: unknown slice may contain it
+
+	case "ContainsFunc":
+		// slices.ContainsFunc(s []E, f func(E) bool) bool
+		if s := asSlice(0); s != nil && len(s) > 0 {
+			probeCallback(1, []Value{s[0]})
+		} else {
+			probeCallback(1, []Value{{}})
+		}
+		return Value{Raw: true}, true
+
+	case "Index":
+		// slices.Index(s []E, v E) int
+		return Value{Raw: int64(-1)}, true // conservative: not found
+
+	case "IndexFunc":
+		// slices.IndexFunc(s []E, f func(E) bool) int
+		if s := asSlice(0); s != nil && len(s) > 0 {
+			probeCallback(1, []Value{s[0]})
+		} else {
+			probeCallback(1, []Value{{}})
+		}
+		return Value{Raw: int64(-1)}, true
+
+	case "Equal":
+		// slices.Equal(s1, s2 []E) bool
+		return Value{Raw: false}, true // conservative
+
+	case "EqualFunc":
+		// slices.EqualFunc(s1, s2 []E, eq func(E1,E2) bool) bool
+		probeCallback(2, []Value{{}, {}})
+		return Value{Raw: false}, true
+
+	// ── Search ────────────────────────────────────────────────────────────────
+	case "BinarySearch":
+		// slices.BinarySearch(s []E, target E) (int, bool)
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
+
+	case "BinarySearchFunc":
+		// slices.BinarySearchFunc(s []E, target T, cmp func(E,T) int) (int, bool)
+		probeCallback(2, []Value{{}, {}})
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
+
+	// ── Ordering ──────────────────────────────────────────────────────────────
+	case "Sort", "SortStable":
+		// slices.Sort(s []E) — in-place noop.
+		return Value{}, true
+
+	case "SortFunc", "SortStableFunc":
+		// slices.SortFunc(s []E, cmp func(a, b E) int)
+		probeCallback(1, []Value{{}, {}})
+		return Value{}, true
+
+	case "IsSorted":
+		return Value{Raw: true}, true
+
+	case "IsSortedFunc":
+		probeCallback(1, []Value{{}, {}})
+		return Value{Raw: true}, true
+
+	case "Max", "Min":
+		// slices.Max/Min(s []E) E — return zero/opaque value.
+		return Value{}, true
+
+	case "MaxFunc", "MinFunc":
+		probeCallback(1, []Value{{}, {}})
+		return Value{}, true
+
+	// ── Transformation ────────────────────────────────────────────────────────
+	case "Reverse":
+		// In-place noop.
+		return Value{}, true
+
+	case "Clone":
+		// slices.Clone(s []E) []E — return the input slice.
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{}, true
+
+	case "Compact":
+		// slices.Compact(s []E) []E — noop, return input.
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{}, true
+
+	case "CompactFunc":
+		// slices.CompactFunc(s []E, eq func(E,E) bool) []E
+		probeCallback(1, []Value{{}, {}})
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{}, true
+
+	case "Clip", "Grow":
+		// Capacity adjustments — return input unchanged.
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{}, true
+
+	case "Insert":
+		// slices.Insert(s []E, i int, v ...E) []E
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{}, true
+
+	case "Delete", "DeleteFunc":
+		// slices.Delete(s []E, i, j int) []E
+		if genericBaseName(name) == "DeleteFunc" {
+			probeCallback(1, []Value{{}})
+		}
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{}, true
+
+	case "Replace":
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{}, true
+
+	case "Concat":
+		// slices.Concat(slices ...[]E) []E — return first arg or empty.
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{Raw: []Value{}}, true
+
+	case "Repeat":
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{Raw: []Value{}}, true
+
+	case "Collect":
+		// slices.Collect(seq iter.Seq[E]) []E — return empty slice.
+		return Value{Raw: []Value{}}, true
+
+	case "AppendSeq":
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{Raw: []Value{}}, true
+
+	case "All", "Values", "Backward":
+		// slices.All(s []E) iter.Seq2[int,E] etc. — return opaque.
+		return Value{Raw: struct{}{}}, true
+	}
+	return Value{}, true // safe noop for unknown slices functions
+}
+
+// handleMapsCall models maps.* functions (Go 1.21 generics package, #150).
+func (interp *Interpreter) handleMapsCall(gid int64, name string, args []Value, site string) (Value, bool) {
+	// probeCallback calls the function-value at args[argIdx] with callArgs.
+	probeCallback := func(argIdx int, callArgs []Value) {
+		if argIdx >= len(args) {
+			return
+		}
+		switch fn := args[argIdx].Raw.(type) {
+		case *ssa.Function:
+			if fn.Blocks != nil {
+				interp.execFunction(gid, fn, callArgs)
+			}
+		case *ClosureValue:
+			all := append(callArgs, fn.FreeVars...)
+			interp.execFunction(gid, fn.Fn, all)
+		}
+	}
+
+	switch genericBaseName(name) {
+	case "Keys":
+		// maps.Keys returns iter.Seq[K] (a function value) — return opaque non-nil
+		// so callers don't nil-deref; actual iteration handled as range-over-func.
+		return Value{Raw: struct{}{}}, true
+
+	case "Values":
+		// maps.Values returns iter.Seq[V] — opaque iterator.
+		return Value{Raw: struct{}{}}, true
+
+	case "Clone":
+		// maps.Clone(m map[K]V) map[K]V — return a copy.
+		if len(args) > 0 {
+			if m, ok := args[0].Raw.(map[interface{}]Value); ok {
+				clone := make(map[interface{}]Value, len(m))
+				for k, v := range m {
+					clone[k] = v
+				}
+				return Value{Raw: clone, Provenance: args[0].Provenance}, true
+			}
+			return args[0], true
+		}
+		return Value{}, true
+
+	case "Copy":
+		// maps.Copy(dst, src map[K]V) — merge src into dst in-place.
+		if len(args) >= 2 {
+			dst, dstOk := args[0].Raw.(map[interface{}]Value)
+			src, srcOk := args[1].Raw.(map[interface{}]Value)
+			if dstOk && srcOk {
+				for k, v := range src {
+					dst[k] = v
+				}
+			}
+		}
+		return Value{}, true
+
+	case "DeleteFunc":
+		// maps.DeleteFunc(m map[K]V, del func(K,V) bool) — probe callback.
+		probeCallback(1, []Value{{}, {}})
+		return Value{}, true
+
+	case "Equal", "EqualFunc":
+		if genericBaseName(name) == "EqualFunc" {
+			probeCallback(2, []Value{{}, {}})
+		}
+		return Value{Raw: false}, true // conservative
+
+	case "Collect":
+		// maps.Collect(seq iter.Seq2[K,V]) map[K]V
+		return Value{Raw: map[interface{}]Value{}}, true
+
+	case "All":
+		// maps.All(m map[K]V) iter.Seq2[K,V] — opaque iterator.
+		return Value{Raw: struct{}{}}, true
+
+	case "Insert":
+		// maps.Insert(m map[K]V, seq iter.Seq2[K,V])
+		return Value{}, true
+	}
+	return Value{}, true // safe noop
+}
+
+// handleCmpCall models cmp.* functions (Go 1.21, #151).
+func (interp *Interpreter) handleCmpCall(name string, args []Value) (Value, bool) {
+	switch genericBaseName(name) {
+	case "Compare":
+		// cmp.Compare[T Ordered](x, y T) int
+		// Attempt a concrete comparison for numeric types.
+		if len(args) >= 2 {
+			xi, xok := args[0].Raw.(int64)
+			yi, yok := args[1].Raw.(int64)
+			if xok && yok {
+				switch {
+				case xi < yi:
+					return Value{Raw: int64(-1)}, true
+				case xi > yi:
+					return Value{Raw: int64(1)}, true
+				default:
+					return Value{Raw: int64(0)}, true
+				}
+			}
+			xf, xfok := args[0].Raw.(float64)
+			yf, yfok := args[1].Raw.(float64)
+			if xfok && yfok {
+				switch {
+				case xf < yf:
+					return Value{Raw: int64(-1)}, true
+				case xf > yf:
+					return Value{Raw: int64(1)}, true
+				default:
+					return Value{Raw: int64(0)}, true
+				}
+			}
+			xs, xsok := args[0].Raw.(string)
+			ys, ysok := args[1].Raw.(string)
+			if xsok && ysok {
+				return Value{Raw: int64(strings.Compare(xs, ys))}, true
+			}
+		}
+		return Value{Raw: int64(0)}, true // equal (conservative)
+
+	case "Less":
+		// cmp.Less[T Ordered](x, y T) bool
+		if len(args) >= 2 {
+			xi, xok := args[0].Raw.(int64)
+			yi, yok := args[1].Raw.(int64)
+			if xok && yok {
+				return Value{Raw: xi < yi}, true
+			}
+			xf, xfok := args[0].Raw.(float64)
+			yf, yfok := args[1].Raw.(float64)
+			if xfok && yfok {
+				return Value{Raw: xf < yf}, true
+			}
+			xs, xsok := args[0].Raw.(string)
+			ys, ysok := args[1].Raw.(string)
+			if xsok && ysok {
+				return Value{Raw: xs < ys}, true
+			}
+		}
+		return Value{Raw: true}, true // conservative
+
+	case "Or":
+		// cmp.Or[T comparable](vals ...T) T — return first non-zero value.
+		for _, a := range args {
+			if a.Raw != nil && a.Raw != false && a.Raw != int64(0) && a.Raw != "" && a.Raw != 0.0 {
+				return a, true
+			}
+		}
+		if len(args) > 0 {
+			return args[len(args)-1], true // last arg (zero) if all are zero
+		}
+		return Value{}, true
+	}
+	return Value{}, true // safe noop
+}
+
+// handleSlogCall models log/slog.* functions (Go 1.21, #152).
+// All logging functions are noops for violation analysis purposes.
+// Constructors return opaque non-nil values so nil-checks pass.
+func (interp *Interpreter) handleSlogCall(name string, args []Value) (Value, bool) {
+	switch name {
+	// Package-level logging — noops.
+	case "Debug", "Info", "Warn", "Error",
+		"DebugContext", "InfoContext", "WarnContext", "ErrorContext",
+		"Log", "LogAttrs":
+		return Value{}, true
+
+	// Default logger access.
+	case "Default", "SetDefault":
+		return Value{Raw: struct{}{}}, true
+
+	// Logger constructors — return opaque non-nil so method calls on them
+	// don't trigger nil-pointer-deref.
+	case "New":
+		return Value{Raw: struct{}{}}, true
+
+	case "NewTextHandler", "NewJSONHandler":
+		// (io.Writer, *HandlerOptions) → Handler
+		return Value{Raw: struct{}{}}, true
+
+	// Attribute constructors.
+	case "String", "Int", "Int64", "Uint64", "Float64", "Bool",
+		"Time", "Duration", "Group", "Any", "AnyValue":
+		return Value{Raw: struct{}{}}, true
+
+	case "With":
+		// (*Logger).With or slog.With — return opaque Logger.
+		return Value{Raw: struct{}{}}, true
+
+	// Logger method calls — all noops or opaque returns.
+	case "Handler", "Enabled", "WithGroup":
+		return Value{Raw: struct{}{}}, true
+
+	case "Handle", "Enabled2":
+		return Value{}, true
+	}
+	return Value{}, true // safe noop for unknown slog functions
 }

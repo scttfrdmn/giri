@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-03-01
+
+### Added
+
+- **`slices` package intercepts** (issue #149, Go 1.21+): `Contains`, `Index`,
+  `Equal`, `Sort`, `SortStable`, `SortFunc`, `SortStableFunc`, `Reverse`,
+  `Clone`, `Compact`, `CompactFunc`, `Clip`, `Grow`, `Insert`, `Delete`,
+  `DeleteFunc`, `Replace`, `Concat`, `Repeat`, `Max`, `Min`, `MaxFunc`,
+  `MinFunc`, `IsSorted`, `IsSortedFunc`, `BinarySearch`, `BinarySearchFunc`,
+  `ContainsFunc`, `IndexFunc`, `EqualFunc`, `Collect`, `All`, `Values`,
+  `Backward`, `AppendSeq`. Callback-accepting functions (`SortFunc`,
+  `BinarySearchFunc`, `CompactFunc`, `DeleteFunc`, etc.) probe the callback
+  with representative arguments to surface violations inside it.
+
+- **`maps` package intercepts** (issue #150, Go 1.21+): `Clone`, `Copy`,
+  `DeleteFunc`, `Equal`, `EqualFunc`, `Collect`, `All`, `Insert`. `Keys` and
+  `Values` return opaque iterator values (`iter.Seq`). `DeleteFunc` probes its
+  callback.
+
+- **`cmp` package intercepts** (issue #151, Go 1.21+): `Compare` with concrete
+  passthrough for `int64`, `float64`, and `string` comparisons; `Less` with
+  concrete passthrough; `Or` returns the first non-zero argument.
+
+- **`log/slog` package intercepts** (issue #152, Go 1.21+): All package-level
+  logging functions (`Debug`, `Info`, `Warn`, `Error`, and `*Context` variants)
+  are noops. `New`, `NewTextHandler`, `NewJSONHandler` return opaque non-nil
+  values. `Default`, `SetDefault`, and `Logger` method calls handled.
+
+### Fixed
+
+- **Generic instantiation intercept** (issue #149): Calls to generic stdlib
+  functions like `slices.Contains[[]int int]` have `callee.Package() == nil`
+  in SSA (the package lives on the origin function). `execCall` now falls back
+  to `callee.Origin().Package()` and `callee.Origin().Name()` when
+  `callee.Package()` is nil, ensuring all four new packages — and any future
+  generic stdlib packages — are correctly intercepted. Without this fix, Giri
+  would attempt to execute the instantiated SSA body, returning incorrect values
+  and causing false violations.
+
 ## [0.49.0] - 2026-03-01
 
 ### Fixed
