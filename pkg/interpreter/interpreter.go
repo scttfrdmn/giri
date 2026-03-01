@@ -950,9 +950,18 @@ func (interp *Interpreter) handleLoad(gid int64, addr Value, size int, site stri
 		if stored, ok := interp.valueStore[addr.Provenance.Alloc]; ok {
 			return stored, nil
 		}
+		// No stored value at offset 0: the allocation is uninitialized. Return
+		// a zero/nil value (#147). Returning the container's shadow pointer as
+		// the loaded value (the old fallthrough) caused false out-of-bounds
+		// violations: the inherited provenance pointed back at the container's
+		// allocation, so a subsequent dereference with a larger size (e.g.
+		// reading 16-byte string through an 8-byte *string container) would
+		// incorrectly fire an OOB check against the container's shadow entry.
+		return Value{}, nil
 	}
 
-	// The loaded value inherits provenance if it's a pointer type
+	// Non-zero offset: field/element address. The loaded value inherits
+	// provenance for arena and unsafe-pointer tracking.
 	return Value{
 		Raw:        addr.Raw,
 		Provenance: addr.Provenance,

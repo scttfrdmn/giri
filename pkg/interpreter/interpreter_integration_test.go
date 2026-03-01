@@ -316,6 +316,21 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.47.0 regression tests
+	{
+		name:           "global nil ptr",
+		dir:            "global_nil_ptr",
+		wantViolations: 1,
+		wantCategory:   "nil-pointer-deref",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "global nil ptr valid",
+		dir:            "global_nil_ptr_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.45.0 regression tests
 	{
 		name:           "string to rune",

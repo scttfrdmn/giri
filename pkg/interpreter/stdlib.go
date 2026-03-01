@@ -159,8 +159,27 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleMimeCall(pkgPath, name, args)
 	case "crypto/cipher", "crypto/aes", "crypto/hmac":
 		return interp.handleSymCryptoCall(pkgPath, name, args)
+	case "golang.org/x/tools/go/packages":
+		return interp.handleGoPackagesCall(name, args)
 	}
 	return Value{}, false
+}
+
+// handleGoPackagesCall intercepts golang.org/x/tools/go/packages calls (#148).
+// packages.Load requires running "go list" via os/exec, which is not possible
+// inside the interpreter. Return safe zero values to prevent false positives
+// when analyzing programs that import go/packages (linters, code generators, etc.).
+func (interp *Interpreter) handleGoPackagesCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Load":
+		// Load([]*Package, error) — return empty slice and nil error.
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "NeedName", "NeedFiles", "NeedCompiledGoFiles", "NeedImports",
+		"NeedDeps", "NeedTypes", "NeedSyntax", "NeedTypesInfo", "NeedTypesSizes":
+		// LoadMode constants — return opaque non-zero value.
+		return Value{Raw: int64(1)}, true
+	}
+	return Value{}, true // safe noop for anything else
 }
 
 // handleStringsCall models strings.* functions.

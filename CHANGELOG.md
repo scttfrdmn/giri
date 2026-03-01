@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-03-01
+
+### Fixed
+
+- **`handleLoad` uninitialized global: false out-of-bounds replaced by correct
+  nil-pointer-deref** (issue #147): When a package-level global pointer is never
+  written (because Giri starts from `main()` without calling `init()`), the
+  `valueStore` has no entry for that allocation. The old fallthrough path returned
+  the *container's* shadow pointer as the loaded value, inheriting the container's
+  8-byte provenance. A subsequent dereference with the pointed-to type size (e.g.
+  16 bytes for `string`) then called `CheckAccess` against the container allocation
+  → false out-of-bounds.
+
+  Fixed by returning `Value{}` (zero/nil) when `addr.Provenance.Offset == 0` and
+  `valueStore` has no entry, instead of inheriting provenance. Uninitialized globals
+  now correctly produce nil-pointer-deref on the first dereference — the right
+  diagnosis for the root cause.
+
+  Two new integration tests: `global_nil_ptr` (uninitialized `*string` global → 1
+  nil-pointer-deref violation), `global_nil_ptr_valid` (global initialized in
+  `main()` → 0 violations).
+
+  *Discovered by running Giri on itself (`giri ./...` in the Giri source tree).
+  See issue #148 for the second self-analysis violation.*
+
+- **False nil-pointer-deref inside `golang.org/x/tools/go/packages.Load`** (issue
+  #148): Programs that import `go/packages` (linters, code generators, build tools)
+  triggered a nil-pointer-deref deep inside `packages.Load` because Giri attempted
+  to execute the full `packages.Load` implementation. That function calls
+  `go list` via `os/exec`, which is not possible inside the interpreter; some
+  internal state that would normally be non-nil was nil in Giri's model.
+
+  Added an intercept for `golang.org/x/tools/go/packages`: `Load` returns an
+  empty package list and nil error; `NeedXxx` constants return an opaque non-zero
+  value; all other function names return safe noops.
+
+  *Discovered by running Giri on itself.*
+
+### Known Limitation
+
+- **Package `init()` not called before `main()`** (issue #146): Giri starts
+  execution directly from `main()` without running the package's synthesized
+  `init()` function. This means package-level variable declarations with
+  function-call initializers (e.g. `var flagStrategy = flag.String(...)`) remain
+  at their zero values during analysis. Accessing these uninitialized pointers now
+  correctly reports nil-pointer-deref (improved by #147) rather than a spurious
+  out-of-bounds, but the root cause is still present. Tracked in issue #146.
+
 ## [0.46.0] - 2026-03-01
 
 ### Fixed
