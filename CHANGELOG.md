@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-03-01
+
+### Fixed
+
+- **`LoadAllPrograms`: unguarded `initial[0].Fset` access** (self-analysis,
+  follow-up to v0.48.0): `LoadAllPrograms` called
+  `ParseSuppressions(initial[0].Fset, initial)` before checking
+  `len(initial) > 0`. When `packages.Load` returns an empty slice (e.g. under
+  Giri's `go/packages` intercept), this caused an index-out-of-bounds /
+  nil-pointer-deref at `ssautil/loader.go:250`.
+
+  Fixed by extracting `fset` with the `len(initial) > 0` guard (already present
+  two lines below, and correctly used in `LoadTestPrograms`) and passing that
+  `fset` to `ParseSuppressions`. No behaviour change for real runs; eliminates
+  the false positive in Giri's own self-analysis.
+
+  Giri now reports **0 violations** when run on its own source tree
+  (`giri ./...`).
+
 ## [0.48.0] - 2026-03-01
 
 ### Added

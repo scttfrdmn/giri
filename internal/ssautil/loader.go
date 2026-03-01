@@ -247,12 +247,11 @@ func LoadAllPrograms(patterns []string) ([]*interpreter.Program, error) {
 	prog, pkgs := ssautil.AllPackages(initial, ssa.InstantiateGenerics)
 	prog.Build()
 
-	suppressions := ParseSuppressions(initial[0].Fset, initial)
-
 	fset := token.NewFileSet()
 	if len(initial) > 0 {
 		fset = initial[0].Fset
 	}
+	suppressions := ParseSuppressions(fset, initial)
 
 	var programs []*interpreter.Program
 	for _, pkg := range pkgs {

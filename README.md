@@ -352,6 +352,7 @@ giri/
 - [x] `handleLoad` uninitialized global: false out-of-bounds replaced by correct nil-pointer-deref; returning `Value{}` for offset-0 miss in `valueStore` — v0.47.0
 - [x] `golang.org/x/tools/go/packages` intercept: `Load` returns empty list; prevents false violations in programs that import go/packages — v0.47.0
 - [x] Package `init()` called before `main()`: synthesized init now runs before main(); dependency package inits suppressed; `flag.*` intercepts preserve default values; `handleLoad` dereferences native Go primitive pointers — v0.48.0
+- [x] `LoadAllPrograms`: unguarded `initial[0].Fset` before `len` check eliminated; Giri now reports 0 violations on its own source tree (`giri ./...`) — v0.49.0
 
 ## Contributing
 
