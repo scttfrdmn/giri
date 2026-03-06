@@ -30,6 +30,10 @@ type Scheduler interface {
 	// OnSpawn is called when a new goroutine is created.
 	OnSpawn(parentGID, childGID int64)
 
+	// OnFinish is called when a goroutine completes normally.
+	// Schedulers may use this to clean up goroutine-specific state.
+	OnFinish(gid int64)
+
 	// Stats returns scheduling statistics.
 	Stats() ScheduleStats
 }
@@ -73,6 +77,9 @@ func (s *RoundRobin) OnSyncPoint(_ int64) { s.stats.SyncPoints++ }
 // OnSpawn implements Scheduler.
 func (s *RoundRobin) OnSpawn(_, _ int64) { s.stats.GoroutinesSpawned++ }
 
+// OnFinish implements Scheduler (noop for RoundRobin).
+func (s *RoundRobin) OnFinish(_ int64) {}
+
 // Stats implements Scheduler.
 func (s *RoundRobin) Stats() ScheduleStats { return s.stats }
 
@@ -106,6 +113,9 @@ func (s *Random) OnSyncPoint(_ int64) { s.stats.SyncPoints++ }
 
 // OnSpawn implements Scheduler.
 func (s *Random) OnSpawn(_, _ int64) { s.stats.GoroutinesSpawned++ }
+
+// OnFinish implements Scheduler (noop for Random).
+func (s *Random) OnFinish(_ int64) {}
 
 // Stats implements Scheduler.
 func (s *Random) Stats() ScheduleStats { return s.stats }
@@ -196,6 +206,12 @@ func (s *PCT) OnSyncPoint(_ int64) { s.stats.SyncPoints++ }
 func (s *PCT) OnSpawn(_, child int64) {
 	s.stats.GoroutinesSpawned++
 	s.priorities[child] = s.rng.Int()
+}
+
+// OnFinish implements Scheduler. Removes the finished goroutine from the
+// priorities map to prevent unbounded growth for programs with many goroutines.
+func (s *PCT) OnFinish(gid int64) {
+	delete(s.priorities, gid)
 }
 
 // Stats implements Scheduler.

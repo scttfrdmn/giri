@@ -13,11 +13,17 @@
 package interpreter
 
 import (
+	"encoding/asn1"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"encoding/xml"
 	"fmt"
+	"html"
 	"math"
+	"math/bits"
+	"math/cmplx"
 	"math/rand"
 	"net"
 	"net/url"
@@ -28,11 +34,17 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/scttfrdmn/giri/pkg/shadow"
 	"golang.org/x/tools/go/ssa"
 )
+
+// stdlibOpaque is a shared sentinel Value used by stdlib intercept handlers to
+// represent an opaque non-nil result (e.g. an un-modeled struct or interface
+// pointer). Using a package-level var avoids 100+ identical local declarations.
+var stdlibOpaque = Value{Raw: struct{}{}}
 
 // execStdlibCall intercepts standard library function calls in packages
 // "strings", "strconv", "fmt", "time", "os", "math/rand", "bytes",
@@ -46,7 +58,33 @@ import (
 // "math/big", "crypto/tls", "database/sql", "testing",
 // "io/fs", "embed", "archive/zip", "archive/tar",
 // "mime", "mime/multipart", "crypto/cipher", "crypto/aes", "crypto/hmac",
-// "slices", "maps", "cmp", and "log/slog".
+// "slices", "maps", "cmp", "log/slog", "iter",
+// "math/bits", "math/cmplx", "html", "unicode/utf16", "os/user",
+// "runtime/debug", "net/netip",
+// "math/rand/v2", "encoding/pem", "encoding/asn1",
+// "crypto/rsa", "crypto/ecdsa", "crypto/ed25519", "crypto/ecdh",
+// "crypto/x509", "runtime/pprof", "runtime/trace",
+// "golang.org/x/sync/errgroup", "golang.org/x/sync/singleflight",
+// "encoding/gob", "encoding/base32",
+// "image", "image/color", "image/draw", "image/png", "image/jpeg", "image/gif",
+// "expvar", "text/tabwriter", "text/scanner",
+// "net/smtp", "net/mail", "net/textproto",
+// "go/token", "go/ast", "go/parser", "go/format",
+// "syscall", "testing/iotest", "testing/fstest",
+// "net/http/httptest", "net/http/httputil", "net/rpc",
+// "debug/pprof", "net/http/pprof", "plugin",
+// "golang.org/x/sync/semaphore",
+// "io/ioutil", "compress/bzip2", "compress/flate", "compress/lzw",
+// "go/types", "go/importer", "go/build", "go/doc", "net/http/cookiejar",
+// "crypto/subtle", "hash/maphash", "regexp/syntax", "unique",
+// "go/printer", "go/constant", "go/scanner", "go/version",
+// "debug/buildinfo", "debug/dwarf", "debug/elf", "debug/macho", "debug/pe",
+// "testing/quick", "mime/quotedprintable", "net/http/httptrace", "net/rpc/jsonrpc",
+// "go/build/constraint", "go/doc/comment", "text/template/parse",
+// "debug/gosym", "debug/plan9obj", "runtime/metrics", "runtime/coverage",
+// "net/http/cgi", "net/http/fcgi", "encoding/ascii85", "index/suffixarray", "log/syslog",
+// "crypto/dsa", "crypto/elliptic", "hash/crc64",
+// "golang.org/x/crypto/bcrypt", "golang.org/x/net/http2".
 // strings.NewReader and bytes.NewReader/NewBuffer/NewBufferString are handled
 // within the existing "strings" and "bytes" cases.
 // Returns (result, true) when intercepted, (Value{}, false) otherwise.
@@ -181,6 +219,332 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return interp.handleCmpCall(name, args)
 	case "log/slog":
 		return interp.handleSlogCall(name, args)
+	case "iter":
+		return interp.handleIterCall(name, args)
+	case "math/bits":
+		return interp.handleMathBitsCall(name, args)
+	case "math/cmplx":
+		return interp.handleMathCmplxCall(name, args)
+	case "html":
+		return interp.handleHTMLCall(name, args)
+	case "unicode/utf16":
+		return interp.handleUTF16Call(name, args)
+	case "os/user":
+		return interp.handleOSUserCall(name, args)
+	case "runtime/debug":
+		return interp.handleRuntimeDebugCall(name, args)
+	case "net/netip":
+		return interp.handleNetNetipCall(name, args)
+	case "math/rand/v2":
+		return interp.handleMathRandV2Call(name, args)
+	case "encoding/pem":
+		return interp.handleEncodingPEMCall(name, args)
+	case "encoding/asn1":
+		return interp.handleEncodingASN1Call(name, args)
+	case "crypto/rsa":
+		return interp.handleCryptoRSACall(name, args)
+	case "crypto/ecdsa":
+		return interp.handleCryptoECDSACall(name, args)
+	case "crypto/ed25519":
+		return interp.handleCryptoEd25519Call(name, args)
+	case "crypto/ecdh":
+		return interp.handleCryptoECDHCall(name, args)
+	case "crypto/x509":
+		return interp.handleCryptoX509Call(name, args)
+	case "runtime/pprof":
+		return interp.handleRuntimePprofCall(name, args)
+	case "runtime/trace":
+		return interp.handleRuntimeTraceCall(name, args)
+	case "golang.org/x/sync/errgroup":
+		return interp.handleErrgroupCall(gid, name, args, site)
+	case "golang.org/x/sync/singleflight":
+		return interp.handleSingleflightCall(gid, name, args, site)
+	case "encoding/gob":
+		return interp.handleEncodingGobCall(name, args)
+	case "encoding/base32":
+		return interp.handleEncodingBase32Call(name, args)
+	case "image", "image/color", "image/draw":
+		return interp.handleImageCall(pkgPath, name, args)
+	case "image/png", "image/jpeg", "image/gif":
+		return interp.handleImageCodecCall(pkgPath, name, args)
+	case "expvar":
+		return interp.handleExpvarCall(name, args)
+	case "text/tabwriter":
+		return interp.handleTabwriterCall(name, args)
+	case "text/scanner":
+		return interp.handleTextScannerCall(name, args)
+	case "net/smtp":
+		return interp.handleNetSMTPCall(name, args)
+	case "net/mail":
+		return interp.handleNetMailCall(name, args)
+	case "net/textproto":
+		return interp.handleNetTextprotoCall(name, args)
+	case "go/token":
+		return interp.handleGoTokenCall(gid, name, args)
+	case "go/ast":
+		return interp.handleGoASTCall(gid, site, name, args)
+	case "go/parser":
+		return interp.handleGoParserCall(name, args)
+	case "go/format":
+		return interp.handleGoFormatCall(name, args)
+	case "syscall":
+		return interp.handleSyscallCall(name, args)
+	case "testing/iotest":
+		return interp.handleTestingIotestCall(name, args)
+	case "testing/fstest":
+		return interp.handleTestingFstestCall(name, args)
+	case "net/http/httptest":
+		return interp.handleHTTPTestCall(name, args)
+	case "net/http/httputil":
+		return interp.handleHTTPUtilCall(name, args)
+	case "net/rpc":
+		return interp.handleNetRPCCall(name, args)
+	case "debug/pprof":
+		return interp.handleDebugPprofCall(name, args)
+	case "net/http/pprof":
+		return interp.handleNetHTTPPprofCall(name, args)
+	case "plugin":
+		return interp.handlePluginCall(name, args)
+	case "golang.org/x/sync/semaphore":
+		return interp.handleSemaphoreCall(name, args)
+	// v0.57.0 additions (#169-172).
+	case "io/ioutil":
+		return interp.handleIOIoutilCall(name, args)
+	case "compress/bzip2":
+		return interp.handleCompressBzip2Call(name, args)
+	case "compress/flate":
+		return interp.handleCompressFlateCall(name, args)
+	case "compress/lzw":
+		return interp.handleCompressLZWCall(name, args)
+	case "go/types":
+		return interp.handleGoTypesCall(gid, site, name, args)
+	case "go/importer":
+		return interp.handleGoImporterCall(name, args)
+	case "go/build":
+		return interp.handleGoBuildCall(name, args)
+	case "go/doc":
+		return interp.handleGoDocCall(name, args)
+	case "net/http/cookiejar":
+		return interp.handleCookiejarCall(name, args)
+	// v0.58.0 additions (#173-176).
+	case "crypto/subtle":
+		return interp.handleCryptoSubtleCall(name, args)
+	case "hash/maphash":
+		return interp.handleMapHashCall(name, args)
+	case "regexp/syntax":
+		return interp.handleRegexpSyntaxCall(name, args)
+	case "unique":
+		return interp.handleUniqueCall(name, args)
+	case "go/printer":
+		return interp.handleGoPrinterCall(name, args)
+	case "go/constant":
+		return interp.handleGoConstantCall(name, args)
+	case "go/scanner":
+		return interp.handleGoScannerCall(name, args)
+	case "go/version":
+		return interp.handleGoVersionCall(name, args)
+	case "debug/buildinfo":
+		return interp.handleDebugBuildinfoCall(name, args)
+	case "debug/dwarf":
+		return interp.handleDebugDWARFCall(name, args)
+	case "debug/elf":
+		return interp.handleDebugELFCall(name, args)
+	case "debug/macho":
+		return interp.handleDebugMachoCall(name, args)
+	case "debug/pe":
+		return interp.handleDebugPECall(name, args)
+	case "testing/quick":
+		return interp.handleTestingQuickCall(gid, site, name, args)
+	case "mime/quotedprintable":
+		return interp.handleQuotedPrintableCall(name, args)
+	case "net/http/httptrace":
+		return interp.handleHTTPTraceCall(name, args)
+	case "net/rpc/jsonrpc":
+		return interp.handleJSONRPCCall(name, args)
+	// v0.59.0 additions (#177-180).
+	case "go/build/constraint":
+		return interp.handleGoBuildConstraintCall(name, args)
+	case "go/doc/comment":
+		return interp.handleGoDocCommentCall(name, args)
+	case "text/template/parse":
+		return interp.handleTemplateParseCall(name, args)
+	case "debug/gosym":
+		return interp.handleDebugGosymCall(name, args)
+	case "debug/plan9obj":
+		return interp.handleDebugPlan9Call(name, args)
+	case "runtime/metrics":
+		return interp.handleRuntimeMetricsCall(name, args)
+	case "runtime/coverage":
+		return interp.handleRuntimeCoverageCall(name, args)
+	case "net/http/cgi":
+		return interp.handleHTTPCGICall(name, args)
+	case "net/http/fcgi":
+		return interp.handleHTTPFCGICall(name, args)
+	case "encoding/ascii85":
+		return interp.handleASCII85Call(name, args)
+	case "index/suffixarray":
+		return interp.handleSuffixArrayCall(name, args)
+	case "log/syslog":
+		return interp.handleSyslogCall(name, args)
+	case "crypto/dsa":
+		return interp.handleCryptoDSACall(name, args)
+	case "crypto/elliptic":
+		return interp.handleCryptoEllipticCall(name, args)
+	case "hash/crc64":
+		return interp.handleHashCRC64Call(name, args)
+	case "golang.org/x/crypto/bcrypt":
+		return interp.handleBcryptCall(name, args)
+	case "golang.org/x/net/http2":
+		return interp.handleNetHTTP2Call(name, args)
+	// v0.60.0 additions (#181-184).
+	case "crypto/des":
+		return interp.handleCryptoDESCall(name, args)
+	case "crypto/rc4":
+		return interp.handleCryptoRC4Call(name, args)
+	case "crypto/pbkdf2":
+		return interp.handleCryptoPBKDF2Call(name, args)
+	case "crypto/hkdf":
+		return interp.handleCryptoHKDFCall(name, args)
+	case "crypto/sha3":
+		return interp.handleCryptoSHA3Call(name, args)
+	case "crypto/hpke":
+		return interp.handleCryptoHPKECall(name, args)
+	case "crypto/mlkem":
+		return interp.handleCryptoMLKEMCall(name, args)
+	case "crypto/fips140":
+		return interp.handleCryptoFIPS140Call(name, args)
+	case "database/sql/driver":
+		return interp.handleSQLDriverCall(name, args)
+	case "crypto/x509/pkix":
+		return interp.handleX509PKIXCall(name, args)
+	case "image/color/palette":
+		return interp.handleColorPaletteCall(name, args)
+	case "time/tzdata":
+		return interp.handleTZDataCall(name, args)
+	case "structs":
+		return interp.handleStructsCall(name, args)
+	case "weak":
+		return interp.handleWeakCall(name, args)
+	case "testing/slogtest":
+		return interp.handleSlogTestCall(name, args)
+	case "testing/synctest":
+		return interp.handleSyncTestCall(name, args)
+	case "golang.org/x/sys/unix":
+		return interp.handleSysUnixCall(name, args)
+	case "golang.org/x/net/html":
+		return interp.handleNetHTMLCall(gid, site, name, args)
+	case "golang.org/x/net/html/charset":
+		return interp.handleNetHTMLCharsetCall(name, args)
+	case "golang.org/x/net/publicsuffix":
+		return interp.handleNetPublicSuffixCall(name, args)
+	case "golang.org/x/net/idna":
+		return interp.handleNetIDNACall(name, args)
+	case "golang.org/x/net/proxy":
+		return interp.handleNetProxyCall(gid, site, name, args)
+	case "golang.org/x/net/netutil":
+		return interp.handleNetNetUtilCall(name, args)
+	case "golang.org/x/net/http/httpguts":
+		return interp.handleHTTPGutsCall(name, args)
+	case "golang.org/x/mod/semver":
+		return interp.handleModSemverCall(name, args)
+	case "golang.org/x/mod/module":
+		return interp.handleModModuleCall(name, args)
+	case "golang.org/x/mod/modfile":
+		return interp.handleModModfileCall(name, args)
+	case "crypto":
+		return interp.handleCryptoTopCall(name, args)
+	case "testing/cryptotest":
+		return interp.handleCryptoTestCall(name, args)
+	// v0.63.0: x/text, x/term, x/crypto extras
+	case "golang.org/x/text/cases":
+		return interp.handleTextCasesCall(name, args)
+	case "golang.org/x/text/language":
+		return interp.handleTextLanguageCall(name, args)
+	case "golang.org/x/text/transform":
+		return interp.handleTextTransformCall(gid, site, name, args)
+	case "golang.org/x/text/unicode/norm":
+		return interp.handleTextNormCall(name, args)
+	case "golang.org/x/text/width":
+		return interp.handleTextWidthCall(name, args)
+	case "golang.org/x/text/runes":
+		return interp.handleTextRunesCall(gid, site, name, args)
+	case "golang.org/x/term":
+		return interp.handleTermCall(name, args)
+	case "golang.org/x/crypto/chacha20poly1305":
+		return interp.handleChacha20Call(name, args)
+	case "golang.org/x/crypto/argon2":
+		return interp.handleArgon2Call(name, args)
+	case "golang.org/x/crypto/ssh":
+		return interp.handleSSHCall(name, args)
+	// v0.64.0: x/crypto NaCl, Blake2, ed25519; x/text encoding, collate, search
+	case "golang.org/x/crypto/nacl/box":
+		return interp.handleNaclBoxCall(name, args)
+	case "golang.org/x/crypto/nacl/secretbox":
+		return interp.handleNaclSecretboxCall(name, args)
+	case "golang.org/x/crypto/curve25519":
+		return interp.handleCurve25519Call(name, args)
+	case "golang.org/x/crypto/poly1305":
+		return interp.handlePoly1305Call(name, args)
+	case "golang.org/x/crypto/blake2b":
+		return interp.handleBlake2bCall(name, args)
+	case "golang.org/x/crypto/blake2s":
+		return interp.handleBlake2sCall(name, args)
+	case "golang.org/x/crypto/ed25519":
+		return interp.handleXEd25519Call(name, args)
+	case "golang.org/x/text/encoding":
+		return interp.handleTextEncodingCall(name, args)
+	case "golang.org/x/text/encoding/charmap":
+		return interp.handleTextCharmapCall(name, args)
+	case "golang.org/x/text/encoding/unicode":
+		return interp.handleTextEncodingUnicodeCall(name, args)
+	case "golang.org/x/text/collate":
+		return interp.handleTextCollateCall(name, args)
+	case "golang.org/x/text/search":
+		return interp.handleTextSearchCall(name, args)
+	// v0.65.0: x/crypto stream ciphers + KDF; x/text message/number/currency/bidi/precis/encoding
+	case "golang.org/x/crypto/scrypt":
+		return interp.handleScryptCall(name, args)
+	case "golang.org/x/crypto/chacha20":
+		return interp.handleChacha20PrimCall(name, args)
+	case "golang.org/x/crypto/xts":
+		return interp.handleXTSCall(name, args)
+	case "golang.org/x/crypto/salsa20":
+		return interp.handleSalsa20Call(name, args)
+	case "golang.org/x/text/message":
+		return interp.handleTextMessageCall(name, args)
+	case "golang.org/x/text/number":
+		return interp.handleTextNumberCall(name, args)
+	case "golang.org/x/text/currency":
+		return interp.handleTextCurrencyCall(name, args)
+	case "golang.org/x/text/unicode/bidi":
+		return interp.handleTextBidiCall(name, args)
+	case "golang.org/x/text/unicode/runenames":
+		return interp.handleRuneNamesCall(name, args)
+	case "golang.org/x/text/secure/bidirule":
+		return interp.handleBidiRuleCall(name, args)
+	case "golang.org/x/text/secure/precis":
+		return interp.handlePrecisCall(name, args)
+	case "golang.org/x/text/encoding/japanese":
+		return interp.handleTextEncodingJapaneseCall(name, args)
+	case "golang.org/x/text/encoding/htmlindex":
+		return interp.handleTextHTMLIndexCall(name, args)
+	// v0.66.0
+	case "golang.org/x/text/encoding/korean":
+		return interp.handleTextEncodingKoreanCall(name, args)
+	case "golang.org/x/text/encoding/simplifiedchinese":
+		return interp.handleTextEncodingSimplifiedChineseCall(name, args)
+	case "golang.org/x/text/encoding/traditionalchinese":
+		return interp.handleTextEncodingTraditionalChineseCall(name, args)
+	case "golang.org/x/text/encoding/ianaindex":
+		return interp.handleTextIANAIndexCall(name, args)
+	case "golang.org/x/net/trace":
+		return interp.handleNetTraceCall(name, args)
+	case "golang.org/x/net/dns/dnsmessage":
+		return interp.handleDNSMessageCall(name, args)
+	case "golang.org/x/net/http2/hpack":
+		return interp.handleHPACKCall(name, args)
+	case "golang.org/x/sync/syncmap":
+		return interp.handleSyncMapCall(name, args)
 	}
 	return Value{}, false
 }
@@ -373,10 +737,11 @@ func (interp *Interpreter) handleStringsCall(name string, args []Value) (Value, 
 		}
 		return Value{Raw: []Value{{Raw: "x"}, {Raw: "x"}, {Raw: true}}}, true
 	case "NewReplacer":
-		// Returns a *strings.Replacer; method calls on it are not modelable here.
-		return Value{}, false
+		// Returns a *strings.Replacer (opaque but non-nil so method calls are dispatched).
+		// Method calls (Replace, WriteString) share existing cases below.
+		return Value{Raw: struct{}{}}, true
 
-	// strings.Builder method calls (#79): receiver = args[0], other args follow.
+	// strings.Builder and *Replacer method calls (#79, #169): receiver = args[0], other args follow.
 	case "WriteString":
 		// b.WriteString(s) (int, error)
 		n := 0
@@ -640,6 +1005,14 @@ func (interp *Interpreter) handleFmtCall(name string, args []Value) (Value, bool
 	case "Sscanf", "Sscan", "Sscanln":
 		// Return (0, nil): 0 items scanned, nil error.
 		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	case "Scan", "Scanf", "Scanln":
+		// fmt.Scan/Scanf/Scanln read from os.Stdin — return (0, nil) (#161).
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	case "Fscan", "Fscanf", "Fscanln":
+		// fmt.Fscan/Fscanf/Fscanln read from an io.Reader — return (0, nil) (#161).
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
 	}
 	return Value{}, false
 }
@@ -695,7 +1068,7 @@ func stringsToValues(ss []string) []Value {
 // time.After returns a channel that immediately has a value (simulates a fired timer).
 // time.Sleep is a noop. NewTicker/NewTimer return opaque values.
 func (interp *Interpreter) handleTimeCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	case "After":
 		if len(args) >= 2 {
@@ -817,7 +1190,7 @@ func (interp *Interpreter) handleTimeCall(name string, args []Value) (Value, boo
 // os.Exit is handled separately in execCall (it needs to stop all goroutines).
 // This intercept covers environment, filesystem queries, and *os.File methods.
 func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	case "Getenv":
 		// Return empty string for any env var — conservative but safe.
@@ -1897,6 +2270,113 @@ func (interp *Interpreter) handleMathCall(name string, args []Value) (Value, boo
 			}
 		}
 		return Value{Raw: float64(0)}, true
+
+	case "Sincos":
+		if xok {
+			s, c := math.Sincos(x)
+			return Value{Raw: []Value{{Raw: s}, {Raw: c}}}, true
+		}
+		return Value{Raw: []Value{{Raw: float64(0)}, {Raw: float64(1)}}}, true
+
+	case "Asinh":
+		if xok {
+			return Value{Raw: math.Asinh(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Acosh":
+		if xok {
+			return Value{Raw: math.Acosh(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Atanh":
+		if xok {
+			return Value{Raw: math.Atanh(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Float64bits":
+		if xok {
+			return Value{Raw: math.Float64bits(x)}, true
+		}
+		return Value{Raw: uint64(0)}, true
+
+	case "Float64frombits":
+		if b, bok := stdlibArgUint(args, 0); bok {
+			return Value{Raw: math.Float64frombits(b)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Float32bits":
+		if len(args) > 0 {
+			switch f := args[0].Raw.(type) {
+			case float32:
+				return Value{Raw: math.Float32bits(f)}, true
+			case float64:
+				return Value{Raw: math.Float32bits(float32(f))}, true
+			}
+		}
+		return Value{Raw: uint32(0)}, true
+
+	case "Float32frombits":
+		if len(args) > 0 {
+			switch b := args[0].Raw.(type) {
+			case uint32:
+				return Value{Raw: math.Float32frombits(b)}, true
+			case int64:
+				return Value{Raw: math.Float32frombits(uint32(b))}, true
+			case uint64:
+				return Value{Raw: math.Float32frombits(uint32(b))}, true
+			}
+		}
+		return Value{Raw: float32(0)}, true
+
+	case "Nextafter":
+		if xok && yok {
+			return Value{Raw: math.Nextafter(x, y)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Nextafter32":
+		if len(args) >= 2 {
+			if x32, ok := args[0].Raw.(float32); ok {
+				if y32, ok2 := args[1].Raw.(float32); ok2 {
+					return Value{Raw: math.Nextafter32(x32, y32)}, true
+				}
+			}
+			// Fallback: interpret as float64 and convert.
+			if xok && yok {
+				return Value{Raw: math.Nextafter32(float32(x), float32(y))}, true
+			}
+		}
+		return Value{Raw: float32(0)}, true
+
+	case "Jn":
+		n, nok := stdlibArgInt(args, 0)
+		if nok && yok {
+			return Value{Raw: math.Jn(int(n), y)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Y0":
+		if xok {
+			return Value{Raw: math.Y0(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Y1":
+		if xok {
+			return Value{Raw: math.Y1(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+
+	case "Yn":
+		n, nok := stdlibArgInt(args, 0)
+		if nok && yok {
+			return Value{Raw: math.Yn(int(n), y)}, true
+		}
+		return Value{Raw: float64(0)}, true
 	}
 	return Value{}, false
 }
@@ -2111,7 +2591,7 @@ func (interp *Interpreter) handleUnicodeCall(name string, args []Value) (Value, 
 // registered in interp.cancelFuncs. If the cancel function is never called,
 // Finish() reports a ContextCancelLeakError.
 func (interp *Interpreter) handleContextCall(gid int64, site, name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 
 	switch name {
 	case "Background", "TODO":
@@ -2191,9 +2671,7 @@ func (interp *Interpreter) handleAtomicCall(name string, args []Value) (Value, b
 				cur = toInt64(v)
 			}
 			newVal := Value{Raw: cur + toInt64(args[1])}
-			if interp.valueStore != nil {
-				interp.valueStore[allocID] = newVal
-			}
+			interp.valueStore[allocID] = newVal
 			return newVal, true
 		}
 		return Value{Raw: int64(0)}, true
@@ -2213,9 +2691,7 @@ func (interp *Interpreter) handleAtomicCall(name string, args []Value) (Value, b
 				newRaw = cur | delta
 			}
 			newVal := Value{Raw: newRaw}
-			if interp.valueStore != nil {
-				interp.valueStore[allocID] = newVal
-			}
+			interp.valueStore[allocID] = newVal
 			return newVal, true
 		}
 		return Value{Raw: int64(0)}, true
@@ -2229,9 +2705,7 @@ func (interp *Interpreter) handleAtomicCall(name string, args []Value) (Value, b
 				cur = toInt64(v)
 			}
 			if cur == toInt64(args[1]) {
-				if interp.valueStore != nil {
-					interp.valueStore[allocID] = args[2]
-				}
+				interp.valueStore[allocID] = args[2]
 				return Value{Raw: true}, true
 			}
 			return Value{Raw: false}, true
@@ -2244,9 +2718,7 @@ func (interp *Interpreter) handleAtomicCall(name string, args []Value) (Value, b
 			if v, ok := interp.valueStore[allocID]; ok {
 				old = v
 			}
-			if interp.valueStore != nil {
-				interp.valueStore[allocID] = args[1]
-			}
+			interp.valueStore[allocID] = args[1]
 			return old, true
 		}
 		return Value{Raw: int64(0)}, true
@@ -2261,7 +2733,7 @@ func (interp *Interpreter) handleAtomicCall(name string, args []Value) (Value, b
 
 // handleIOCall models io.* functions (#78).
 func (interp *Interpreter) handleIOCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	case "ReadAll":
 		// io.ReadAll(r Reader) ([]byte, error)
@@ -2327,7 +2799,7 @@ func (interp *Interpreter) handleIOCall(name string, args []Value) (Value, bool)
 
 // handleBufioCall models bufio.* functions (#78).
 func (interp *Interpreter) handleBufioCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	case "NewReader", "NewReaderSize":
 		return opaque, true
@@ -2954,7 +3426,7 @@ func (interp *Interpreter) handleNetCall(name string, args []Value) (Value, bool
 		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
 
 	case "Pipe":
-		opaque := Value{Raw: struct{}{}}
+		opaque := stdlibOpaque
 		return Value{Raw: []Value{opaque, opaque}}, true
 
 	case "IPv4", "IPv4Mask":
@@ -2970,7 +3442,7 @@ func (interp *Interpreter) handleNetCall(name string, args []Value) (Value, bool
 // Both packages share the same API; html/template escapes output but the
 // interpreter models both identically.
 func (interp *Interpreter) handleTemplateCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	case "New":
 		// template.New(name string) *Template
@@ -3043,7 +3515,7 @@ func (interp *Interpreter) handleTemplateCall(name string, args []Value) (Value,
 
 // handleXMLCall models encoding/xml.* functions (#87).
 func (interp *Interpreter) handleXMLCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	case "Marshal":
 		// xml.Marshal(v interface{}) ([]byte, error)
@@ -3114,7 +3586,7 @@ func (interp *Interpreter) handleXMLCall(name string, args []Value) (Value, bool
 
 // handleCSVCall models encoding/csv.* functions (#87).
 func (interp *Interpreter) handleCSVCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	case "NewReader":
 		return opaque, true
@@ -3384,7 +3856,7 @@ func (interp *Interpreter) handleReflectCall(name string, args []Value) (Value, 
 // Flag-defined values return opaque non-nil pointers so nil-checks on them pass.
 // Parse is a noop; command-line arguments cannot be modeled at analysis time.
 func (interp *Interpreter) handleFlagCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	// Flag definition functions — return a non-nil pointer to the flag value.
 	case "String", "StringVar":
@@ -3627,7 +4099,7 @@ func (interp *Interpreter) handleRuntimeCall(name string, args []Value) (Value, 
 
 // handleNetURLCall models net/url.* functions (#89).
 func (interp *Interpreter) handleNetURLCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 
 	switch name {
 	case "Parse", "ParseRequestURI":
@@ -3856,7 +4328,7 @@ func (interp *Interpreter) handleNetURLCall(name string, args []Value) (Value, b
 
 // handleExecCall models os/exec.* functions (#90).
 func (interp *Interpreter) handleExecCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	case "Command", "CommandContext":
 		// exec.Command(name string, arg ...string) *Cmd
@@ -3915,7 +4387,7 @@ func (interp *Interpreter) handleExecCall(name string, args []Value) (Value, boo
 
 // handleGzipCall models compress/gzip.* functions (#91).
 func (interp *Interpreter) handleGzipCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	case "NewReader":
 		// gzip.NewReader(r io.Reader) (*Reader, error)
@@ -3974,7 +4446,7 @@ func (interp *Interpreter) handleGzipCall(name string, args []Value) (Value, boo
 // Field accesses on *http.Response go through SSA FieldAddr on the opaque value
 // and cannot be resolved; tests should avoid direct field reads.
 func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	// Package-level client functions:
 	case "Get", "Post", "Head", "PostForm":
@@ -4062,7 +4534,7 @@ func (interp *Interpreter) handleSignalCall(gid int64, name string, args []Value
 		return Value{}, true
 	case "NotifyContext":
 		// Returns (context.Context, context.CancelFunc) — both opaque.
-		opaque := Value{Raw: struct{}{}}
+		opaque := stdlibOpaque
 		return Value{Raw: []Value{opaque, opaque}}, true
 	}
 	return Value{}, false
@@ -4070,7 +4542,7 @@ func (interp *Interpreter) handleSignalCall(gid int64, name string, args []Value
 
 // handleZlibCall models compress/zlib.* functions (#91).
 func (interp *Interpreter) handleZlibCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	case "NewReader":
 		// zlib.NewReader(r io.Reader) (io.ReadCloser, error)
@@ -4175,7 +4647,7 @@ func (interp *Interpreter) handleBinaryCall(name string, args []Value) (Value, b
 // All three packages expose the same hash.Hash32/Hash64 interface so method
 // calls are handled uniformly regardless of pkgPath.
 func (interp *Interpreter) handleHashExtCall(pkgPath, name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	// Constructors:
 	case "New", "NewIEEE", "NewCastagnoli", "NewKoopman",
@@ -4225,7 +4697,7 @@ func (interp *Interpreter) handleHashExtCall(pkgPath, name string, args []Value)
 
 // handleContainerCall models container/list, container/heap, and container/ring (#99).
 func (interp *Interpreter) handleContainerCall(gid int64, pkgPath, name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch pkgPath {
 	case "container/list":
 		switch name {
@@ -4296,7 +4768,7 @@ func (interp *Interpreter) handleContainerCall(gid int64, pkgPath, name string, 
 // (big.Int methods like Add update and return the receiver); comparison methods
 // return pessimistic values.
 func (interp *Interpreter) handleMathBigCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	// Constructors:
 	case "NewInt":
@@ -4391,7 +4863,7 @@ func (interp *Interpreter) handleMathBigCall(name string, args []Value) (Value, 
 // handleTLSCall models crypto/tls.* functions (#101).
 // All constructors return opaque values; *Conn methods model the net.Conn interface.
 func (interp *Interpreter) handleTLSCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	// Constructors returning (*Conn, error):
 	case "Dial", "DialWithDialer":
@@ -4467,7 +4939,7 @@ func (interp *Interpreter) handleTLSCall(name string, args []Value) (Value, bool
 // the scan loop body is never entered — this is conservative but prevents
 // false violations from unterminated loops.
 func (interp *Interpreter) handleSQLCall(name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	// Constructors:
 	case "Open":
@@ -4638,7 +5110,7 @@ func (interp *Interpreter) handleTestingCall(gid int64, name string, args []Valu
 // handleFsCall models io/fs and embed package functions (#109).
 // io/fs provides the file-system abstraction; embed.FS implements fs.FS.
 func (interp *Interpreter) handleFsCall(pkgPath, name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch name {
 	case "ReadFile":
 		// ReadFile(fsys FS, name string) ([]byte, error) or embed.FS.ReadFile(name).
@@ -4710,7 +5182,7 @@ func (interp *Interpreter) handleFsCall(pkgPath, name string, args []Value) (Val
 
 // handleArchiveCall models archive/zip and archive/tar functions (#110).
 func (interp *Interpreter) handleArchiveCall(pkgPath, name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch pkgPath {
 	case "archive/zip":
 		switch name {
@@ -4800,7 +5272,7 @@ func (interp *Interpreter) handleArchiveCall(pkgPath, name string, args []Value)
 
 // handleMimeCall models mime and mime/multipart functions (#111).
 func (interp *Interpreter) handleMimeCall(pkgPath, name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch pkgPath {
 	case "mime":
 		switch name {
@@ -4910,7 +5382,7 @@ func (interp *Interpreter) handleMimeCall(pkgPath, name string, args []Value) (V
 
 // handleSymCryptoCall models crypto/cipher, crypto/aes, and crypto/hmac (#112).
 func (interp *Interpreter) handleSymCryptoCall(pkgPath, name string, args []Value) (Value, bool) {
-	opaque := Value{Raw: struct{}{}}
+	opaque := stdlibOpaque
 	switch pkgPath {
 	case "crypto/aes":
 		switch name {
@@ -5443,4 +5915,4901 @@ func (interp *Interpreter) handleSlogCall(name string, args []Value) (Value, boo
 		return Value{}, true
 	}
 	return Value{}, true // safe noop for unknown slog functions
+}
+
+// handleIterCall models iter.* functions (Go 1.23, #153).
+//
+// iter.Pull converts a push-based iterator (iter.Seq[V]) into a pull-based
+// iterator returning (next func() (V, bool), stop func()). iter.Pull2 is the
+// two-value variant returning (next func() (K, V, bool), stop func()).
+//
+// In the interpreter, the sequence function argument is opaque (returned by
+// slices.All, maps.Keys, etc. as struct{}{}). We return a conservative pair:
+// an exhausted next function (immediately returns zero, false) and a noop stop.
+// This prevents false positives while providing safe values for any code that
+// calls next() or stop().
+func (interp *Interpreter) handleIterCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Pull":
+		// (seq iter.Seq[V]) → (next func() (V, bool), stop func())
+		// Return a pair: opaque non-nil for both next and stop.
+		next := Value{Raw: struct{}{}}
+		stop := Value{Raw: struct{}{}}
+		return Value{Raw: []Value{next, stop}}, true
+
+	case "Pull2":
+		// (seq iter.Seq2[K, V]) → (next func() (K, V, bool), stop func())
+		next := Value{Raw: struct{}{}}
+		stop := Value{Raw: struct{}{}}
+		return Value{Raw: []Value{next, stop}}, true
+	}
+	return Value{}, true // safe noop
+}
+
+// handleMathBitsCall models math/bits.* functions (#155).
+// All functions operate on concrete uint values; concrete arguments use real
+// stdlib calls for accuracy. Non-concrete arguments return a non-zero sentinel.
+func (interp *Interpreter) handleMathBitsCall(name string, args []Value) (Value, bool) {
+	u0, u0ok := stdlibArgUint(args, 0)
+	u1, u1ok := stdlibArgUint(args, 1)
+
+	switch name {
+	case "LeadingZeros", "LeadingZeros8", "LeadingZeros16", "LeadingZeros32", "LeadingZeros64":
+		if u0ok {
+			return Value{Raw: int64(bits.LeadingZeros64(u0))}, true
+		}
+		return Value{Raw: int64(1)}, true
+	case "TrailingZeros", "TrailingZeros8", "TrailingZeros16", "TrailingZeros32", "TrailingZeros64":
+		if u0ok {
+			return Value{Raw: int64(bits.TrailingZeros64(u0))}, true
+		}
+		return Value{Raw: int64(1)}, true
+	case "OnesCount", "OnesCount8", "OnesCount16", "OnesCount32", "OnesCount64":
+		if u0ok {
+			return Value{Raw: int64(bits.OnesCount64(u0))}, true
+		}
+		return Value{Raw: int64(1)}, true
+	case "RotateLeft", "RotateLeft8", "RotateLeft16", "RotateLeft32", "RotateLeft64":
+		if u0ok && u1ok {
+			return Value{Raw: int64(bits.RotateLeft64(u0, int(u1)))}, true
+		}
+		return Value{Raw: int64(1)}, true
+	case "Reverse", "Reverse8", "Reverse16", "Reverse32", "Reverse64":
+		if u0ok {
+			return Value{Raw: int64(bits.Reverse64(u0))}, true
+		}
+		return Value{Raw: int64(1)}, true
+	case "ReverseBytes", "ReverseBytes16", "ReverseBytes32", "ReverseBytes64":
+		if u0ok {
+			return Value{Raw: int64(bits.ReverseBytes64(u0))}, true
+		}
+		return Value{Raw: int64(1)}, true
+	case "Len", "Len8", "Len16", "Len32", "Len64":
+		if u0ok {
+			return Value{Raw: int64(bits.Len64(u0))}, true
+		}
+		return Value{Raw: int64(1)}, true
+	case "UintSize":
+		return Value{Raw: int64(bits.UintSize)}, true
+	case "Add", "Add32", "Add64":
+		// (x, y, carry) → (sum, carryOut)
+		if u0ok && u1ok {
+			c := uint64(0)
+			if len(args) >= 3 {
+				if cv, ok := toUint64(args[2]); ok {
+					c = cv
+				}
+			}
+			sum, co := bits.Add64(u0, u1, c)
+			return Value{Raw: []Value{{Raw: int64(sum)}, {Raw: int64(co)}}}, true
+		}
+		return Value{Raw: []Value{{Raw: int64(1)}, {Raw: int64(0)}}}, true
+	case "Sub", "Sub32", "Sub64":
+		if u0ok && u1ok {
+			b := uint64(0)
+			if len(args) >= 3 {
+				if bv, ok := toUint64(args[2]); ok {
+					b = bv
+				}
+			}
+			diff, bo := bits.Sub64(u0, u1, b)
+			return Value{Raw: []Value{{Raw: int64(diff)}, {Raw: int64(bo)}}}, true
+		}
+		return Value{Raw: []Value{{Raw: int64(1)}, {Raw: int64(0)}}}, true
+	case "Mul", "Mul32", "Mul64":
+		if u0ok && u1ok {
+			hi, lo := bits.Mul64(u0, u1)
+			return Value{Raw: []Value{{Raw: int64(hi)}, {Raw: int64(lo)}}}, true
+		}
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(1)}}}, true
+	case "Div", "Div32", "Div64":
+		// (hi, lo, y) → (quo, rem)
+		if len(args) >= 3 {
+			if hi, hiok := toUint64(args[0]); hiok {
+				if lo, lok := toUint64(args[1]); lok {
+					if y, yok := toUint64(args[2]); yok && y != 0 {
+						q, r := bits.Div64(hi, lo, y)
+						return Value{Raw: []Value{{Raw: int64(q)}, {Raw: int64(r)}}}, true
+					}
+				}
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(1)}, {Raw: int64(0)}}}, true
+	}
+	return Value{}, true
+}
+
+// toUint64 converts a Value to uint64, returns (val, ok).
+func toUint64(v Value) (uint64, bool) {
+	switch x := v.Raw.(type) {
+	case int64:
+		return uint64(x), true
+	case uint64:
+		return x, true
+	case int:
+		return uint64(x), true
+	}
+	return 0, false
+}
+
+// stdlibArgUint extracts the i-th argument as uint64.
+func stdlibArgUint(args []Value, i int) (uint64, bool) {
+	if i >= len(args) {
+		return 0, false
+	}
+	return toUint64(args[i])
+}
+
+// handleMathCmplxCall models math/cmplx.* functions (#155).
+// Concrete complex128 arguments use real stdlib calls. Non-concrete args
+// return a non-zero opaque complex.
+func (interp *Interpreter) handleMathCmplxCall(name string, args []Value) (Value, bool) {
+	asComplex := func(i int) (complex128, bool) {
+		if i >= len(args) {
+			return 0, false
+		}
+		c, ok := args[i].Raw.(complex128)
+		return c, ok
+	}
+	asFloat := func(i int) (float64, bool) {
+		if i >= len(args) {
+			return 0, false
+		}
+		switch x := args[i].Raw.(type) {
+		case float64:
+			return x, true
+		case int64:
+			return float64(x), true
+		}
+		return 0, false
+	}
+
+	c0, c0ok := asComplex(0)
+	c1, c1ok := asComplex(1)
+	f0, f0ok := asFloat(0)
+	f1, f1ok := asFloat(1)
+
+	switch name {
+	case "Abs":
+		if c0ok {
+			return Value{Raw: cmplx.Abs(c0)}, true
+		}
+		return Value{Raw: float64(1)}, true
+	case "Phase":
+		if c0ok {
+			return Value{Raw: cmplx.Phase(c0)}, true
+		}
+		return Value{Raw: float64(1)}, true
+	case "Polar":
+		if c0ok {
+			r, θ := cmplx.Polar(c0)
+			return Value{Raw: []Value{{Raw: r}, {Raw: θ}}}, true
+		}
+		return Value{Raw: []Value{{Raw: float64(1)}, {Raw: float64(0)}}}, true
+	case "Rect":
+		if f0ok && f1ok {
+			return Value{Raw: cmplx.Rect(f0, f1)}, true
+		}
+		return Value{Raw: complex(float64(1), float64(0))}, true
+	case "Conj":
+		if c0ok {
+			return Value{Raw: cmplx.Conj(c0)}, true
+		}
+		return Value{Raw: complex(float64(1), float64(0))}, true
+	case "Exp":
+		if c0ok {
+			return Value{Raw: cmplx.Exp(c0)}, true
+		}
+		return Value{Raw: complex(float64(1), float64(0))}, true
+	case "Log", "Log10":
+		if c0ok {
+			if name == "Log10" {
+				return Value{Raw: cmplx.Log10(c0)}, true
+			}
+			return Value{Raw: cmplx.Log(c0)}, true
+		}
+		return Value{Raw: complex(float64(1), float64(0))}, true
+	case "Sqrt":
+		if c0ok {
+			return Value{Raw: cmplx.Sqrt(c0)}, true
+		}
+		return Value{Raw: complex(float64(1), float64(0))}, true
+	case "Pow":
+		if c0ok && c1ok {
+			return Value{Raw: cmplx.Pow(c0, c1)}, true
+		}
+		return Value{Raw: complex(float64(1), float64(0))}, true
+	case "Sin", "Cos", "Tan":
+		if c0ok {
+			switch name {
+			case "Sin":
+				return Value{Raw: cmplx.Sin(c0)}, true
+			case "Cos":
+				return Value{Raw: cmplx.Cos(c0)}, true
+			case "Tan":
+				return Value{Raw: cmplx.Tan(c0)}, true
+			}
+		}
+		return Value{Raw: complex(float64(1), float64(0))}, true
+	case "Sinh", "Cosh", "Tanh":
+		if c0ok {
+			switch name {
+			case "Sinh":
+				return Value{Raw: cmplx.Sinh(c0)}, true
+			case "Cosh":
+				return Value{Raw: cmplx.Cosh(c0)}, true
+			case "Tanh":
+				return Value{Raw: cmplx.Tanh(c0)}, true
+			}
+		}
+		return Value{Raw: complex(float64(1), float64(0))}, true
+	case "Asin", "Acos", "Atan", "Asinh", "Acosh", "Atanh":
+		if c0ok {
+			switch name {
+			case "Asin":
+				return Value{Raw: cmplx.Asin(c0)}, true
+			case "Acos":
+				return Value{Raw: cmplx.Acos(c0)}, true
+			case "Atan":
+				return Value{Raw: cmplx.Atan(c0)}, true
+			case "Asinh":
+				return Value{Raw: cmplx.Asinh(c0)}, true
+			case "Acosh":
+				return Value{Raw: cmplx.Acosh(c0)}, true
+			case "Atanh":
+				return Value{Raw: cmplx.Atanh(c0)}, true
+			}
+		}
+		return Value{Raw: complex(float64(1), float64(0))}, true
+	case "IsNaN":
+		if c0ok {
+			return Value{Raw: cmplx.IsNaN(c0)}, true
+		}
+		return Value{Raw: false}, true
+	case "IsInf":
+		if c0ok {
+			return Value{Raw: cmplx.IsInf(c0)}, true
+		}
+		return Value{Raw: false}, true
+	case "NaN":
+		return Value{Raw: cmplx.NaN()}, true
+	case "Inf":
+		return Value{Raw: cmplx.Inf()}, true
+	}
+	return Value{}, true
+}
+
+// handleHTMLCall models html.* functions (#156).
+// EscapeString and UnescapeString use real stdlib for concrete string args.
+func (interp *Interpreter) handleHTMLCall(name string, args []Value) (Value, bool) {
+	s0, s0ok := stdlibArgString(args, 0)
+	switch name {
+	case "EscapeString":
+		if s0ok {
+			return Value{Raw: html.EscapeString(s0)}, true
+		}
+		return Value{Raw: "&amp;sentinel"}, true
+	case "UnescapeString":
+		if s0ok {
+			return Value{Raw: html.UnescapeString(s0)}, true
+		}
+		return Value{Raw: "sentinel"}, true
+	}
+	return Value{}, true
+}
+
+// handleUTF16Call models unicode/utf16.* functions (#156).
+// Encode/Decode convert between rune slices and UTF-16 uint16 slices.
+func (interp *Interpreter) handleUTF16Call(name string, args []Value) (Value, bool) {
+	switch name {
+	case "IsSurrogate":
+		// IsSurrogate(r rune) bool
+		if len(args) >= 1 {
+			if r, ok := args[0].Raw.(int64); ok {
+				return Value{Raw: utf16.IsSurrogate(rune(r))}, true
+			}
+		}
+		return Value{Raw: false}, true
+
+	case "EncodeRune":
+		// EncodeRune(r rune) (r1, r2 rune)
+		if len(args) >= 1 {
+			if r, ok := args[0].Raw.(int64); ok {
+				r1, r2 := utf16.EncodeRune(rune(r))
+				return Value{Raw: []Value{{Raw: int64(r1)}, {Raw: int64(r2)}}}, true
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(0xD800)}, {Raw: int64(0xDC00)}}}, true
+
+	case "DecodeRune":
+		// DecodeRune(r1, r2 rune) rune
+		if len(args) >= 2 {
+			r1, r1ok := args[0].Raw.(int64)
+			r2, r2ok := args[1].Raw.(int64)
+			if r1ok && r2ok {
+				return Value{Raw: int64(utf16.DecodeRune(rune(r1), rune(r2)))}, true
+			}
+		}
+		return Value{Raw: int64(0x10000)}, true
+
+	case "Encode":
+		// Encode(s []rune) []uint16 — return opaque non-nil slice.
+		return Value{Raw: []Value{}}, true
+
+	case "Decode":
+		// Decode(s []uint16) []rune — return opaque non-nil slice.
+		return Value{Raw: []Value{}}, true
+
+	case "AppendRune":
+		// AppendRune(a []uint16, r rune) []uint16
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, true
+}
+
+// handleOSUserCall models os/user.* functions (#157).
+// All lookup functions return (opaque-User, nil) or (opaque-Group, nil) since
+// the actual user database is not available during interpretation.
+func (interp *Interpreter) handleOSUserCall(name string, args []Value) (Value, bool) {
+	opaqueUser := Value{Raw: struct{}{}}
+	opaqueGroup := Value{Raw: struct{}{}}
+	switch name {
+	case "Current":
+		// () → (*User, error)
+		return Value{Raw: []Value{opaqueUser, {}}}, true
+	case "Lookup", "LookupId":
+		// (string) → (*User, error)
+		return Value{Raw: []Value{opaqueUser, {}}}, true
+	case "LookupGroup", "LookupGroupId":
+		// (string) → (*Group, error)
+		return Value{Raw: []Value{opaqueGroup, {}}}, true
+	}
+	// Method calls on *User or *Group — return opaque non-nil strings.
+	return Value{Raw: struct{}{}}, true
+}
+
+// handleRuntimeDebugCall models runtime/debug.* functions (#157).
+// Heap-profiling and GC functions are noops; Stack returns a non-empty byte slice.
+func (interp *Interpreter) handleRuntimeDebugCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Stack":
+		// Stack() []byte — return non-empty sentinel.
+		return Value{Raw: []Value{{Raw: int64('g')}}}, true
+
+	case "PrintStack":
+		// PrintStack() — noop.
+		return Value{}, true
+
+	case "SetGCPercent":
+		// SetGCPercent(percent int) int — return previous value (100 = default).
+		return Value{Raw: int64(100)}, true
+
+	case "SetMemoryLimit":
+		// SetMemoryLimit(limit int64) int64
+		return Value{Raw: int64(math.MaxInt64)}, true
+
+	case "FreeOSMemory":
+		return Value{}, true
+
+	case "ReadGCStats":
+		// ReadGCStats(*GCStats) — noop (stats struct remains zero).
+		return Value{}, true
+
+	case "ReadMemStats":
+		// runtime.ReadMemStats — noop.
+		return Value{}, true
+
+	case "SetMaxStack":
+		// SetMaxStack(bytes int) int — return previous (1 GiB default).
+		return Value{Raw: int64(1 << 30)}, true
+
+	case "SetMaxThreads":
+		return Value{Raw: int64(10000)}, true
+
+	case "SetPanicOnFault":
+		// SetPanicOnFault(enabled bool) bool
+		return Value{Raw: false}, true
+
+	case "WriteHeapDump":
+		return Value{}, true
+
+	case "SetTraceback":
+		return Value{}, true
+
+	case "ParseBuildInfo":
+		// () → (*BuildInfo, error)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
+
+	case "ReadBuildInfo":
+		// () → (*BuildInfo, bool)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {Raw: true}}}, true
+
+	case "GCStats", "ClearMutexProfile", "SetCPUProfileRate",
+		"StartCPUProfile", "StopCPUProfile":
+		return Value{}, true
+	}
+	return Value{}, true // safe noop
+}
+
+// handleNetNetipCall models net/netip.* functions (Go 1.18+, #158).
+// Constructors return opaque non-nil address values; predicate/accessor methods
+// return conservative defaults (IsValid=true, IsUnspecified/IsLoopback=false).
+func (interp *Interpreter) handleNetNetipCall(name string, args []Value) (Value, bool) {
+	opaqueAddr := Value{Raw: struct{}{}}
+	opaqueAddrPort := Value{Raw: struct{}{}}
+	opaquePrefix := Value{Raw: struct{}{}}
+
+	switch name {
+	// ---- Addr constructors ----
+	case "ParseAddr", "MustParseAddr":
+		if name == "ParseAddr" {
+			return Value{Raw: []Value{opaqueAddr, {}}}, true
+		}
+		return opaqueAddr, true
+	case "AddrFrom4":
+		return opaqueAddr, true
+	case "AddrFrom16":
+		return opaqueAddr, true
+	case "AddrFromSlice":
+		return Value{Raw: []Value{opaqueAddr, {Raw: true}}}, true
+	case "IPv4Unspecified", "IPv6Unspecified", "IPv6LinkLocalAllNodes",
+		"IPv6LinkLocalAllRouters", "IPv6Loopback":
+		return opaqueAddr, true
+
+	// ---- Addr methods ----
+	case "IsValid":
+		return Value{Raw: true}, true
+	case "IsUnspecified", "IsLoopback", "IsMulticast", "IsLinkLocalUnicast",
+		"IsLinkLocalMulticast", "IsInterfaceLocalMulticast", "IsPrivate",
+		"Is4", "Is4In6", "Is6", "IsGlobalUnicast":
+		return Value{Raw: false}, true
+	case "Unmap":
+		return opaqueAddr, true
+	case "As4":
+		return Value{Raw: []Value{{}, {}, {}, {}}}, true
+	case "As16":
+		return Value{Raw: []Value{{}, {}, {}, {}, {}, {}, {}, {},
+			{}, {}, {}, {}, {}, {}, {}, {}}}, true
+	case "AsSlice":
+		return Value{Raw: []Value{}}, true
+	case "BitLen":
+		return Value{Raw: int64(32)}, true
+	case "Zone":
+		return Value{Raw: ""}, true
+	case "WithZone":
+		return opaqueAddr, true
+	case "Compare":
+		return Value{Raw: int64(0)}, true
+	case "Less":
+		return Value{Raw: false}, true
+	case "MarshalText", "MarshalBinary":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "UnmarshalText", "UnmarshalBinary":
+		return Value{Raw: []Value{{}}}, true
+	case "String":
+		return Value{Raw: "0.0.0.0"}, true
+	case "AppendTo":
+		return Value{Raw: []Value{}}, true
+
+	// ---- AddrPort constructors ----
+	case "AddrPortFrom":
+		return opaqueAddrPort, true
+	case "ParseAddrPort", "MustParseAddrPort":
+		if name == "ParseAddrPort" {
+			return Value{Raw: []Value{opaqueAddrPort, {}}}, true
+		}
+		return opaqueAddrPort, true
+	case "Addr":
+		return opaqueAddr, true
+	case "Port":
+		return Value{Raw: int64(0)}, true
+
+	// ---- Prefix constructors ----
+	case "PrefixFrom":
+		return opaquePrefix, true
+	case "ParsePrefix", "MustParsePrefix":
+		if name == "ParsePrefix" {
+			return Value{Raw: []Value{opaquePrefix, {}}}, true
+		}
+		return opaquePrefix, true
+	case "Bits":
+		return Value{Raw: int64(32)}, true
+	case "Masked":
+		return opaquePrefix, true
+	case "Contains":
+		return Value{Raw: false}, true
+	case "Overlaps":
+		return Value{Raw: false}, true
+	case "IsSingleIP":
+		return Value{Raw: false}, true
+	}
+	return Value{}, true
+}
+
+// handleMathRandV2Call models math/rand/v2.* functions (Go 1.22+, #153).
+// The v2 API eliminates the global source and uses generic N[T] helpers.
+// Concrete integer/float arguments use real stdlib calls via math/rand for
+// compatibility; non-concrete args return non-zero sentinels.
+func (interp *Interpreter) handleMathRandV2Call(name string, args []Value) (Value, bool) {
+	switch name {
+	// Constructors — return opaque non-nil *Rand equivalent.
+	case "New", "NewChaCha8", "NewPCG":
+		return Value{Raw: struct{}{}}, true
+
+	// Scalar generators — delegate to interp.rng (seeded from config).
+	case "Int", "Int32", "Int64", "Uint", "Uint32", "Uint64":
+		return Value{Raw: interp.rng.Int63()}, true
+	case "Float32":
+		return Value{Raw: interp.rng.Float64()}, true
+	case "Float64":
+		return Value{Raw: interp.rng.Float64()}, true
+
+	// Bounded generators: Intn / IntN / Int32N / Int64N / UintN / Uint32N / Uint64N / N.
+	case "Intn", "IntN", "Int32N", "Int64N", "UintN", "Uint32N", "Uint64N", "N":
+		if len(args) >= 1 {
+			if n, ok := args[0].Raw.(int64); ok && n > 0 {
+				return Value{Raw: interp.rng.Int63n(n)}, true
+			}
+		}
+		return Value{Raw: int64(1)}, true
+
+	// Shuffle: no-op (we don't model slice contents).
+	case "Shuffle":
+		return Value{}, true
+
+	// Perm: return opaque non-nil slice.
+	case "Perm":
+		return Value{Raw: []Value{}}, true
+
+	// Source/global reads.
+	case "Read":
+		return Value{Raw: []Value{{Raw: int64(1)}, {}}}, true
+
+	// *Rand method calls — same returns as package-level functions.
+	case "Rand.Int", "Rand.Int64", "Rand.Uint64", "Rand.Float64", "Rand.Float32":
+		return Value{Raw: interp.rng.Float64()}, true
+	}
+	return Value{}, true
+}
+
+// handleEncodingPEMCall models encoding/pem.* functions (#154).
+// Decode returns the first PEM block parsed from concrete input; Encode/
+// EncodeToMemory return non-empty byte slices.
+func (interp *Interpreter) handleEncodingPEMCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Decode":
+		// Decode(data []byte) (p *Block, rest []byte)
+		// Try real decode on concrete bytes; otherwise return opaque block + nil rest.
+		if len(args) >= 1 {
+			var data []byte
+			switch v := args[0].Raw.(type) {
+			case []byte:
+				data = v
+			case string:
+				data = []byte(v)
+			case []Value:
+				for _, b := range v {
+					if bv, ok := b.Raw.(int64); ok {
+						data = append(data, byte(bv))
+					}
+				}
+			}
+			if len(data) > 0 {
+				block, rest := pem.Decode(data)
+				if block != nil {
+					return Value{Raw: []Value{
+						{Raw: struct{}{}}, // opaque *Block
+						{Raw: rest},
+					}}, true
+				}
+			}
+		}
+		// No concrete data or not valid PEM — return (opaque, nil).
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
+
+	case "Encode":
+		// Encode(out io.Writer, b *Block) error — noop.
+		return Value{}, true
+
+	case "EncodeToMemory":
+		// EncodeToMemory(b *Block) []byte — return non-empty sentinel.
+		return Value{Raw: []byte("-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n")}, true
+	}
+	return Value{}, true
+}
+
+// handleEncodingASN1Call models encoding/asn1.* functions (#154).
+func (interp *Interpreter) handleEncodingASN1Call(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Unmarshal":
+		// Unmarshal(b []byte, v interface{}) (rest []byte, err error)
+		if len(args) >= 2 {
+			var data []byte
+			switch v := args[0].Raw.(type) {
+			case []byte:
+				data = v
+			case []Value:
+				for _, b := range v {
+					if bv, ok := b.Raw.(int64); ok {
+						data = append(data, byte(bv))
+					}
+				}
+			}
+			if len(data) > 0 {
+				// Attempt real unmarshal into a RawValue to get rest bytes.
+				var raw asn1.RawValue
+				rest, err := asn1.Unmarshal(data, &raw)
+				var errVal Value
+				if err != nil {
+					errVal = Value{Raw: err}
+				}
+				return Value{Raw: []Value{{Raw: rest}, errVal}}, true
+			}
+		}
+		return Value{Raw: []Value{{Raw: []byte{}}, {}}}, true
+
+	case "UnmarshalWithParams":
+		return Value{Raw: []Value{{Raw: []byte{}}, {}}}, true
+
+	case "Marshal":
+		// Marshal(val interface{}) ([]byte, error)
+		return Value{Raw: []Value{{Raw: []byte{0x30, 0x00}}, {}}}, true
+
+	case "MarshalWithParams":
+		return Value{Raw: []Value{{Raw: []byte{0x30, 0x00}}, {}}}, true
+
+	case "ObjectIdentifier":
+		return Value{Raw: struct{}{}}, true
+	}
+	return Value{}, true
+}
+
+// handleCryptoRSACall models crypto/rsa.* functions (#155).
+// Key generation and cryptographic operations return opaque values with nil
+// errors so programs that check err == nil proceed normally.
+func (interp *Interpreter) handleCryptoRSACall(name string, args []Value) (Value, bool) {
+	opaqueKey := Value{Raw: struct{}{}}
+	switch name {
+	case "GenerateKey", "GenerateMultiPrimeKey":
+		// (rand io.Reader, bits int) → (*PrivateKey, error)
+		return Value{Raw: []Value{opaqueKey, {}}}, true
+
+	case "SignPSS", "SignPKCS1v15":
+		// (...) → ([]byte, error)
+		return Value{Raw: []Value{{Raw: []byte{0x30, 0x44}}, {}}}, true
+
+	case "VerifyPSS", "VerifyPKCS1v15":
+		// (...) → error — return nil (conservative: assume valid)
+		return Value{}, true
+
+	case "EncryptOAEP", "EncryptPKCS1v15":
+		return Value{Raw: []Value{{Raw: []byte{0x00}}, {}}}, true
+
+	case "DecryptOAEP", "DecryptPKCS1v15", "DecryptPKCS1v15SessionKey":
+		return Value{Raw: []Value{{Raw: []byte{0x00}}, {}}}, true
+
+	case "SignPSS_SaltLength", "PSSSaltLength":
+		return Value{Raw: int64(32)}, true
+	}
+	return Value{Raw: struct{}{}}, true
+}
+
+// handleCryptoECDSACall models crypto/ecdsa.* functions (#155).
+func (interp *Interpreter) handleCryptoECDSACall(name string, args []Value) (Value, bool) {
+	opaqueKey := Value{Raw: struct{}{}}
+	switch name {
+	case "GenerateKey":
+		// (c elliptic.Curve, rand io.Reader) → (*PrivateKey, error)
+		return Value{Raw: []Value{opaqueKey, {}}}, true
+
+	case "Sign":
+		// (rand io.Reader, priv *PrivateKey, hash []byte) → (r, s *big.Int, error)
+		bigInt := Value{Raw: struct{}{}}
+		return Value{Raw: []Value{bigInt, bigInt, {}}}, true
+
+	case "SignASN1":
+		// (rand io.Reader, priv *PrivateKey, hash []byte) → ([]byte, error)
+		return Value{Raw: []Value{{Raw: []byte{0x30, 0x44}}, {}}}, true
+
+	case "Verify":
+		// (pub *PublicKey, hash []byte, r, s *big.Int) → bool
+		// Conservative: return false to avoid false "verification passed" paths.
+		return Value{Raw: false}, true
+
+	case "VerifyASN1":
+		return Value{Raw: false}, true
+	}
+	return Value{Raw: struct{}{}}, true
+}
+
+// handleCryptoEd25519Call models crypto/ed25519.* functions (#155).
+func (interp *Interpreter) handleCryptoEd25519Call(name string, args []Value) (Value, bool) {
+	opaqueKey := Value{Raw: struct{}{}}
+	switch name {
+	case "GenerateKey":
+		// (rand io.Reader) → (PublicKey, PrivateKey, error)
+		return Value{Raw: []Value{opaqueKey, opaqueKey, {}}}, true
+
+	case "NewKeyFromSeed":
+		// (seed []byte) → PrivateKey
+		return opaqueKey, true
+
+	case "Sign":
+		// (priv PrivateKey, message []byte) → []byte
+		return Value{Raw: []byte{0x00, 0x01}}, true
+
+	case "Verify", "VerifyWithOptions":
+		// (pub PublicKey, message, sig []byte) → bool / error
+		if name == "Verify" {
+			return Value{Raw: false}, true
+		}
+		return Value{}, true // nil error (no panic)
+	}
+	return Value{Raw: struct{}{}}, true
+}
+
+// handleCryptoECDHCall models crypto/ecdh.* functions (Go 1.20+, #155).
+func (interp *Interpreter) handleCryptoECDHCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// Curve constructors.
+	case "P256", "P384", "P521", "X25519":
+		return opaque, true
+
+	// Key generation / parsing.
+	case "GenerateKey":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewPrivateKey", "NewPublicKey":
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	// Key methods.
+	case "ECDH":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "PublicKey", "Bytes", "Equal":
+		return opaque, true
+	}
+	return opaque, true
+}
+
+// handleCryptoX509Call models crypto/x509.* functions (#156 proxy — #155 group).
+// Certificate parsing returns an opaque non-nil *Certificate with nil error.
+func (interp *Interpreter) handleCryptoX509Call(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	opaqueSlice := Value{Raw: []Value{}}
+	switch name {
+	// Certificate parsing.
+	case "ParseCertificate", "ParseCertificateRequest":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ParseCertificates":
+		return Value{Raw: []Value{opaqueSlice, {}}}, true
+
+	// Key parsing.
+	case "ParsePKCS1PrivateKey", "ParsePKCS8PrivateKey",
+		"ParseECPrivateKey", "ParsePKCS1PublicKey", "ParsePKIXPublicKey":
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	// Key marshaling.
+	case "MarshalPKCS1PrivateKey", "MarshalPKCS8PrivateKey",
+		"MarshalECPrivateKey", "MarshalPKCS1PublicKey", "MarshalPKIXPublicKey":
+		return Value{Raw: []Value{{Raw: []byte{0x30, 0x00}}, {}}}, true
+
+	// Certificate pool.
+	case "NewCertPool", "SystemCertPool":
+		if name == "SystemCertPool" {
+			return Value{Raw: []Value{opaque, {}}}, true
+		}
+		return opaque, true
+	case "AddCert", "AppendCertsFromPEM":
+		return Value{Raw: false}, true
+
+	// Verify.
+	case "Verify", "VerifyHostname":
+		return Value{}, true // nil error
+
+	// Create certificate.
+	case "CreateCertificate", "CreateCertificateRequest":
+		return Value{Raw: []Value{{Raw: []byte{0x30, 0x00}}, {}}}, true
+
+	// OID / misc.
+	case "OIDFromInts", "ParseOID":
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	// Certificate methods.
+	case "IsCA", "CheckSignatureFrom", "Leaf":
+		return Value{Raw: false}, true
+	}
+	return opaque, true
+}
+
+// handleRuntimePprofCall models runtime/pprof.* functions (#156).
+// All profiling operations are noops; Lookup returns an opaque non-nil Profile.
+func (interp *Interpreter) handleRuntimePprofCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Lookup":
+		// Lookup(name string) *Profile — return opaque non-nil.
+		return Value{Raw: struct{}{}}, true
+	case "Profiles":
+		return Value{Raw: []Value{}}, true
+	case "StartCPUProfile":
+		return Value{}, true // nil error
+	case "StopCPUProfile", "WriteHeapProfile":
+		return Value{}, true
+	case "Do":
+		// Do(ctx, Labels, f) — invoke f with ctx.
+		return Value{}, true
+	case "NewProfile":
+		return Value{Raw: struct{}{}}, true
+	case "Profile.WriteTo", "Profile.Name", "Profile.Count":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleRuntimeTraceCall models runtime/trace.* functions (#156).
+// All tracing operations are noops; Task/Region constructors return opaque values.
+func (interp *Interpreter) handleRuntimeTraceCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Start":
+		return Value{}, true // nil error
+	case "Stop":
+		return Value{}, true
+	case "NewTask":
+		// NewTask(ctx, taskType) (context.Context, *Task)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {Raw: struct{}{}}}}, true
+	case "NewRegion":
+		// NewRegion(ctx, regionType) *Region
+		return Value{Raw: struct{}{}}, true
+	case "Log", "Logf":
+		return Value{}, true
+	case "IsEnabled":
+		return Value{Raw: false}, true
+	case "WithRegion":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleErrgroupCall models golang.org/x/sync/errgroup.* functions (#157).
+// Group.Go probes the callback once synchronously (like sort.Slice) so that
+// violations inside goroutine bodies are still detected. Group.Wait returns nil.
+func (interp *Interpreter) handleErrgroupCall(gid int64, name string, args []Value, site string) (Value, bool) {
+	// probeCallback invokes the function-value at args[argIdx] once with callArgs.
+	probe := func(argIdx int, callArgs []Value) {
+		if argIdx >= len(args) {
+			return
+		}
+		switch fn := args[argIdx].Raw.(type) {
+		case *ssa.Function:
+			if fn.Blocks != nil {
+				interp.execFunction(gid, fn, callArgs)
+			}
+		case *ClosureValue:
+			all := append(callArgs, fn.FreeVars...)
+			interp.execFunction(gid, fn.Fn, all)
+		}
+	}
+
+	switch name {
+	case "WithContext":
+		// WithContext(ctx) → (*Group, context.Context)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {Raw: struct{}{}}}}, true
+
+	case "Go", "TryGo":
+		// Go(fn func()) — probe fn once with no args (fn takes no params).
+		probe(len(args)-1, nil)
+		if name == "TryGo" {
+			return Value{Raw: true}, true
+		}
+		return Value{}, true
+
+	case "Wait":
+		return Value{}, true // nil error
+
+	case "SetLimit", "GOMAXPROCS":
+		return Value{}, true
+	}
+	return Value{Raw: struct{}{}}, true
+}
+
+// handleSingleflightCall models golang.org/x/sync/singleflight.* (#157).
+// Group.Do probes the function once and returns (opaque, nil, false).
+func (interp *Interpreter) handleSingleflightCall(gid int64, name string, args []Value, site string) (Value, bool) {
+	probe := func(argIdx int, callArgs []Value) {
+		if argIdx >= len(args) {
+			return
+		}
+		switch fn := args[argIdx].Raw.(type) {
+		case *ssa.Function:
+			if fn.Blocks != nil {
+				interp.execFunction(gid, fn, callArgs)
+			}
+		case *ClosureValue:
+			all := append(callArgs, fn.FreeVars...)
+			interp.execFunction(gid, fn.Fn, all)
+		}
+	}
+
+	switch name {
+	case "Do":
+		// Do(key string, fn func() (interface{}, error)) — fn takes no params.
+		probe(len(args)-1, nil)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}, {Raw: false}}}, true
+
+	case "DoChan":
+		probe(len(args)-1, nil)
+		return Value{Raw: struct{}{}}, true
+
+	case "Forget":
+		return Value{}, true
+	}
+	return Value{Raw: struct{}{}}, true
+}
+
+// handleEncodingGobCall models encoding/gob.* functions (#158).
+// The gob format is Go-specific binary serialization; Encode/Decode are noops
+// since we cannot model the binary wire format during interpretation.
+func (interp *Interpreter) handleEncodingGobCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewEncoder":
+		return opaque, true
+	case "NewDecoder":
+		return opaque, true
+	case "Register", "RegisterName":
+		return Value{}, true
+	// Encoder/Decoder methods:
+	case "Encode", "EncodeValue":
+		return Value{}, true // nil error
+	case "Decode", "DecodeValue":
+		return Value{}, true // nil error
+	}
+	return Value{}, true
+}
+
+// handleEncodingBase32Call models encoding/base32.* functions (#158).
+// StdEncoding and HexEncoding are opaque; concrete string args use real stdlib.
+func (interp *Interpreter) handleEncodingBase32Call(name string, args []Value) (Value, bool) {
+	// Encoding constants — return opaque Encoding object.
+	switch name {
+	case "StdEncoding", "HexEncoding":
+		return Value{Raw: struct{}{}}, true
+	case "NewEncoding":
+		return Value{Raw: struct{}{}}, true
+
+	// Encoding methods:
+	case "EncodeToString":
+		if len(args) >= 1 {
+			var data []byte
+			switch v := args[len(args)-1].Raw.(type) {
+			case []byte:
+				data = v
+			case string:
+				data = []byte(v)
+			}
+			if len(data) > 0 {
+				return Value{Raw: base32.StdEncoding.EncodeToString(data)}, true
+			}
+		}
+		return Value{Raw: "AAAA"}, true // non-empty sentinel
+
+	case "DecodeString":
+		if len(args) >= 1 {
+			if s, ok := args[len(args)-1].Raw.(string); ok && s != "" {
+				b, err := base32.StdEncoding.DecodeString(s)
+				if err == nil {
+					return Value{Raw: []Value{{Raw: b}, {}}}, true
+				}
+			}
+		}
+		return Value{Raw: []Value{{Raw: []byte{0x00}}, {}}}, true
+
+	case "EncodedLen", "DecodedLen":
+		return Value{Raw: int64(8)}, true
+
+	case "Encode", "Decode", "AppendEncode", "AppendDecode":
+		return Value{}, true
+
+	case "WithPadding":
+		return Value{Raw: struct{}{}}, true
+	}
+	return Value{}, true
+}
+
+// handleImageCall models image.*, image/color.*, and image/draw.* (#159).
+// Image constructors return opaque non-nil *Image values; geometry functions
+// return concrete results.
+func (interp *Interpreter) handleImageCall(pkgPath, name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch pkgPath {
+	case "image":
+		switch name {
+		case "NewRGBA", "NewNRGBA", "NewRGBA64", "NewNRGBA64",
+			"NewAlpha", "NewAlpha16", "NewGray", "NewGray16",
+			"NewCMYK", "NewPaletted", "NewUniform":
+			return opaque, true
+		case "Decode", "DecodeConfig":
+			return Value{Raw: []Value{opaque, {}}}, true
+		case "Rect":
+			// Rect(x0, y0, x1, y1 int) Rectangle
+			return opaque, true
+		case "Pt":
+			// Pt(x, y int) Point
+			return opaque, true
+		case "RegisterFormat":
+			return Value{}, true
+		// Image method calls:
+		case "Bounds", "ColorModel", "At", "Set", "SubImage", "Opaque",
+			"PixOffset", "RGBAAt", "NRGBAAt", "GrayAt":
+			return opaque, true
+		}
+	case "image/color":
+		switch name {
+		case "RGBAModel", "RGBA64Model", "NRGBAModel", "NRGBA64Model",
+			"AlphaModel", "Alpha16Model", "GrayModel", "Gray16Model",
+			"CMYKModel", "NYCbCrAModel":
+			return opaque, true
+		case "ModelFunc":
+			return opaque, true
+		case "RGBToYCbCr", "YCbCrToRGB", "RGBToCMYK", "CMYKToRGB":
+			return opaque, true
+		// Color method calls:
+		case "RGBA":
+			return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(0)}, {Raw: int64(0)}, {Raw: int64(0xFFFF)}}}, true
+		case "Convert":
+			return opaque, true
+		}
+	case "image/draw":
+		switch name {
+		case "Draw", "DrawMask":
+			return Value{}, true
+		case "FloydSteinberg":
+			return opaque, true
+		}
+	}
+	return opaque, true
+}
+
+// handleImageCodecCall models image/png, image/jpeg, image/gif (#159).
+func (interp *Interpreter) handleImageCodecCall(pkgPath, name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Decode", "DecodeConfig":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Encode":
+		return Value{}, true // nil error
+	case "EncodeAll": // gif
+		return Value{}, true
+	case "DecodeAll": // gif
+		return Value{Raw: []Value{opaque, {}}}, true
+	}
+	return opaque, true
+}
+
+// handleExpvarCall models expvar.* functions (#160).
+// All published variables are opaque; Int/Float/String/Map add accessors.
+func (interp *Interpreter) handleExpvarCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewInt", "NewFloat", "NewString", "NewMap":
+		return opaque, true
+	case "Get":
+		return opaque, true
+	case "Publish":
+		return Value{}, true
+	case "Do":
+		return Value{}, true
+	// *Int / *Float / *String / *Map methods:
+	case "Add", "Set", "Value", "String":
+		return Value{Raw: int64(0)}, true
+	case "Init", "AddFloat":
+		return opaque, true
+	case "Delete", "Each":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleTabwriterCall models text/tabwriter.* functions (#160).
+// Writer is opaque; Write/Flush are noops.
+func (interp *Interpreter) handleTabwriterCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewWriter":
+		return opaque, true
+	case "Init":
+		return opaque, true
+	case "Write":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Flush":
+		return Value{}, true // nil error
+	}
+	return Value{}, true
+}
+
+// handleTextScannerCall models text/scanner.* functions (#160).
+// Scanner is stateful but opaque; Scan returns a non-zero token type sentinel.
+func (interp *Interpreter) handleTextScannerCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Init":
+		return Value{Raw: struct{}{}}, true
+	case "Scan":
+		// Returns rune (token type); use EOF sentinel (-1) so loops terminate.
+		return Value{Raw: int64(-1)}, true
+	case "Peek":
+		return Value{Raw: int64(-1)}, true
+	case "TokenText":
+		return Value{Raw: ""}, true
+	case "Pos", "Position":
+		return Value{Raw: struct{}{}}, true
+	case "IsIdentRune":
+		return Value{Raw: false}, true
+	}
+	return Value{}, true
+}
+
+// handleNetSMTPCall models net/smtp.* functions (#162).
+func (interp *Interpreter) handleNetSMTPCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Dial", "NewClient":
+		// Returns (*Client, error) — opaque client, nil error.
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "SendMail":
+		// Returns error — nil (sent successfully).
+		return Value{}, true
+	case "PlainAuth", "CRAMMD5Auth":
+		// Returns Auth interface — opaque.
+		return opaque, true
+	// *Client methods
+	case "Auth", "Mail", "Rcpt", "Data", "Quit", "Close", "Reset",
+		"Noop", "Verify", "Hello", "StartTLS":
+		return Value{}, true // nil error
+	case "Extension":
+		return Value{Raw: []Value{{Raw: false}, {Raw: ""}}}, true
+	}
+	return Value{}, true
+}
+
+// handleNetMailCall models net/mail.* functions (#162).
+func (interp *Interpreter) handleNetMailCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "ParseAddress":
+		// Returns (*Address, error) — opaque address, nil error.
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ParseAddressList":
+		// Returns ([]*Address, error) — empty list, nil error.
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "NewReader":
+		return opaque, true
+	case "ReadMessage":
+		// Returns (*Message, error) — opaque message, nil error.
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Address methods
+	case "String":
+		return Value{Raw: "<mail.Address>"}, true
+	}
+	return Value{}, true
+}
+
+// handleNetTextprotoCall models net/textproto.* functions (#162).
+func (interp *Interpreter) handleNetTextprotoCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewConn":
+		return opaque, true
+	case "NewReader":
+		return opaque, true
+	case "NewWriter":
+		return opaque, true
+	case "CanonicalMIMEHeaderKey":
+		// Return concrete passthrough for string args.
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				return Value{Raw: strings.ToTitle(s[:1]) + strings.ToLower(s[1:])}, true
+			}
+		}
+		return Value{Raw: "<textproto.Key>"}, true
+	case "TrimString":
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				return Value{Raw: strings.TrimSpace(s)}, true
+			}
+		}
+		return Value{Raw: ""}, true
+	// *Conn / *Reader / *Writer methods
+	case "Close", "PrintfLine", "ReadLine", "ReadLineBytes",
+		"ReadContinuedLine", "ReadContinuedLineBytes",
+		"ReadMIMEHeader", "ReadDotLines", "ReadDotBytes":
+		return Value{}, true
+	case "ReadResponse":
+		return Value{Raw: []Value{{Raw: int64(200)}, {Raw: ""}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleGoTokenCall models go/token.* functions (#163).
+func (interp *Interpreter) handleGoTokenCall(gid int64, name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewFileSet":
+		return opaque, true
+	case "NewFile":
+		return opaque, true
+	// FileSet methods
+	case "AddFile":
+		return opaque, true
+	case "File":
+		return opaque, true
+	case "Base", "Size":
+		return Value{Raw: int64(1)}, true
+	case "Iterate":
+		// Calls callback with each *File — probe callback if provided.
+		if len(args) >= 2 {
+			probe := func(argIdx int, callArgs []Value) {
+				if argIdx >= len(args) {
+					return
+				}
+				switch fn := args[argIdx].Raw.(type) {
+				case *ssa.Function:
+					if fn.Blocks != nil {
+						interp.execFunction(gid, fn, callArgs)
+					}
+				case *ClosureValue:
+					all := append(callArgs, fn.FreeVars...)
+					interp.execFunction(gid, fn.Fn, all)
+				}
+			}
+			probe(1, []Value{opaque})
+		}
+		return Value{}, true
+	// File methods
+	case "Pos", "End", "LineCount":
+		return Value{Raw: int64(1)}, true
+	case "Name":
+		return Value{Raw: "<go/token.File>"}, true
+	case "SetLinesForContent":
+		return Value{}, true
+	case "Line", "Offset", "Position":
+		return opaque, true
+	// Pos methods (Pos is just int32, but method calls on token.Pos)
+	case "IsValid":
+		return Value{Raw: true}, true
+	// Token methods
+	case "String":
+		return Value{Raw: "<token>"}, true
+	case "IsLiteral", "IsOperator", "IsKeyword":
+		return Value{Raw: false}, true
+	case "Lookup":
+		// token.Lookup(ident string) Token — returns IDENT (5).
+		return Value{Raw: int64(5)}, true
+	}
+	return Value{}, true
+}
+
+// handleGoASTCall models go/ast.* functions (#163).
+// gid/site are needed for callback probing in ast.Inspect/ast.Walk.
+func (interp *Interpreter) handleGoASTCall(gid int64, site, name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	probe := func(argIdx int, callArgs []Value) {
+		if argIdx >= len(args) {
+			return
+		}
+		switch fn := args[argIdx].Raw.(type) {
+		case *ssa.Function:
+			if fn.Blocks != nil {
+				interp.execFunction(gid, fn, callArgs)
+			}
+		case *ClosureValue:
+			all := append(callArgs, fn.FreeVars...)
+			interp.execFunction(gid, fn.Fn, all)
+		}
+	}
+	switch name {
+	case "Inspect":
+		// ast.Inspect(node Node, f func(Node) bool) — probe f with opaque node.
+		probe(1, []Value{opaque})
+		return Value{}, true
+	case "Walk":
+		// ast.Walk(v Visitor, node Node) — probe Visit with opaque node.
+		probe(0, []Value{opaque})
+		return Value{}, true
+	case "Print":
+		return Value{}, true
+	case "Fprint":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "NewIdent":
+		return opaque, true
+	case "NewScope":
+		return opaque, true
+	case "IsExported":
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				return Value{Raw: len(s) > 0 && s[0] >= 'A' && s[0] <= 'Z'}, true
+			}
+		}
+		return Value{Raw: false}, true
+	case "FileExports", "FilterDecl", "FilterFile", "FilterPackage":
+		return Value{Raw: false}, true
+	case "PackageExports":
+		return Value{Raw: false}, true
+	case "SortImports":
+		return Value{}, true
+	case "MergePackageFiles":
+		return opaque, true
+	}
+	return Value{}, true
+}
+
+// handleGoParserCall models go/parser.* functions (#163).
+func (interp *Interpreter) handleGoParserCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "ParseFile":
+		// Returns (*ast.File, error) — opaque file, nil error.
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ParseDir":
+		// Returns (map[string]*ast.Package, error) — empty map, nil error.
+		return Value{Raw: []Value{{Raw: map[interface{}]Value{}}, {}}}, true
+	case "ParseExpr":
+		// Returns (ast.Expr, error) — opaque expr, nil error.
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ParseExprFrom":
+		return Value{Raw: []Value{opaque, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleGoFormatCall models go/format.* functions (#163).
+func (interp *Interpreter) handleGoFormatCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Source":
+		// Returns ([]byte, error) — empty byte slice, nil error.
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Node":
+		// Returns ([]byte, error) — empty byte slice, nil error.
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleSyscallCall models syscall.* functions (#164).
+// These are low-level OS calls; return safe concrete values where possible.
+func (interp *Interpreter) handleSyscallCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Getpid", "Getppid":
+		return Value{Raw: int64(os.Getpid())}, true
+	case "Getuid", "Geteuid":
+		return Value{Raw: int64(os.Getuid())}, true
+	case "Getgid", "Getegid":
+		return Value{Raw: int64(os.Getgid())}, true
+	case "Getenv":
+		// syscall.Getenv returns (string, bool) unlike os.Getenv.
+		val := ""
+		found := false
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				val = os.Getenv(s)
+				found = val != ""
+			}
+		}
+		return Value{Raw: []Value{{Raw: val}, {Raw: found}}}, true
+	case "Getcwd":
+		wd, _ := os.Getwd()
+		return Value{Raw: []Value{{Raw: wd}, {}}}, true
+	case "Open", "OpenAt":
+		// Returns (fd int, err error) — opaque fd, nil error.
+		return Value{Raw: []Value{{Raw: int64(3)}, {}}}, true
+	case "Close":
+		return Value{}, true // nil error
+	case "Read", "Write", "Pread", "Pwrite":
+		// Returns (n int, err error).
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Stat", "Lstat", "Fstat":
+		// Returns (Stat_t, error) — opaque stat, nil error.
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Mkdir", "MkdirAll", "Remove", "RemoveAll", "Rename", "Symlink", "Link":
+		return Value{}, true // nil error
+	case "Chdir", "Chmod", "Chown", "Lchown":
+		return Value{}, true // nil error
+	case "Kill":
+		return Value{}, true // nil error
+	case "Getpagesize":
+		return Value{Raw: int64(4096)}, true
+	case "Exit":
+		for _, g := range interp.goroutines {
+			g.Panicked = true
+		}
+		return Value{}, true
+	case "Mmap":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Munmap":
+		return Value{}, true // nil error
+	case "ForkExec", "StartProcess":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Wait4", "WaitPid":
+		return Value{Raw: []Value{opaque, opaque, {}}}, true
+	case "Sysctl", "SysctlUint32":
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "Socket", "Bind", "Connect", "Listen", "Accept",
+		"Shutdown", "Setsockopt", "Getsockopt":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Sendto", "Recvfrom":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Pipe":
+		return Value{}, true // nil error
+	case "Dup", "Dup2":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Seek", "Fsync", "Ftruncate", "Fallocate":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Setenv", "Unsetenv", "Clearenv":
+		return Value{}, true // nil error
+	case "Umask":
+		return Value{Raw: int64(0022)}, true
+	case "ENOENT", "EACCES", "EPERM", "EEXIST", "EINVAL":
+		// Errno constants returned as int64.
+		return Value{Raw: int64(0)}, true
+	case "StringByteSlice", "StringBytePtr", "StringSlicePtrGroups":
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, true
+}
+
+// handleTestingIotestCall models testing/iotest.* functions (#164).
+func (interp *Interpreter) handleTestingIotestCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "ErrReader":
+		return opaque, true
+	case "NewReadLogger", "NewWriteLogger":
+		return opaque, true
+	case "OneByteReader", "HalfReader", "DataErrReader", "TimeoutReader":
+		return opaque, true
+	case "TruncateWriter":
+		return opaque, true
+	case "TestReader":
+		// Returns error — nil (success).
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleTestingFstestCall models testing/fstest.* functions (#164).
+func (interp *Interpreter) handleTestingFstestCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "TestFS":
+		// Returns error — nil (success).
+		return Value{}, true
+	// MapFS is just a map — creation and operations are handled by ssa.MakeMap.
+	// Method calls on MapFS:
+	case "Open":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ReadDir":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ReadFile":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Stat":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Sub":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Glob":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleHTTPTestCall models net/http/httptest.* functions (#165).
+func (interp *Interpreter) handleHTTPTestCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewRecorder":
+		// Returns *ResponseRecorder.
+		return opaque, true
+	case "NewServer", "NewTLSServer", "NewUnstartedServer":
+		// Returns *Server.
+		return opaque, true
+	// *ResponseRecorder methods.
+	case "Code":
+		return Value{Raw: int64(200)}, true
+	case "Header":
+		// Returns http.Header (a map).
+		return Value{Raw: map[interface{}]Value{}}, true
+	case "Body":
+		return opaque, true
+	case "Result":
+		return opaque, true
+	case "Flush":
+		return Value{}, true
+	case "WriteHeader":
+		return Value{}, true
+	case "Write":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "WriteString":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	// *Server methods.
+	case "Close", "CloseClientConnections":
+		return Value{}, true
+	case "Start", "StartTLS":
+		return Value{}, true
+	case "URL", "Listener", "Config", "Certificate":
+		return opaque, true
+	case "Client":
+		return opaque, true
+	}
+	return Value{}, true
+}
+
+// handleHTTPUtilCall models net/http/httputil.* functions (#165).
+func (interp *Interpreter) handleHTTPUtilCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewReverseProxy", "NewSingleHostReverseProxy":
+		return opaque, true
+	case "DumpRequest", "DumpRequestOut":
+		// Returns ([]byte, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "DumpResponse":
+		// Returns ([]byte, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "NewChunkedReader", "NewChunkedWriter":
+		return opaque, true
+	// *ReverseProxy methods.
+	case "ServeHTTP":
+		return Value{}, true
+	case "ModifyResponse":
+		return Value{}, true
+	// BufferPool interface — opaque.
+	case "Get", "Put":
+		return Value{Raw: []byte(nil)}, true
+	}
+	return Value{}, true
+}
+
+// handleNetRPCCall models net/rpc.* functions (#166).
+func (interp *Interpreter) handleNetRPCCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Dial", "DialHTTP", "DialHTTPPath":
+		// Returns (*Client, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewClient", "NewClientWithCodec":
+		return opaque, true
+	// *Client methods.
+	case "Call":
+		// Returns error.
+		return Value{}, true
+	case "Go":
+		// Returns *Call.
+		return opaque, true
+	case "Close":
+		return Value{}, true
+	// Server-side.
+	case "Register", "RegisterName":
+		return Value{}, true
+	case "ServeConn", "Accept", "HandleHTTP", "ServeHTTP":
+		return Value{}, true
+	case "NewServer":
+		return opaque, true
+	}
+	return Value{}, true
+}
+
+// handleDebugPprofCall models debug/pprof.* functions (#167).
+func (interp *Interpreter) handleDebugPprofCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Lookup":
+		// Returns *Profile (opaque, non-nil).
+		return opaque, true
+	case "Profiles":
+		// Returns []*Profile.
+		return Value{Raw: []Value{opaque}}, true
+	case "NewProfile":
+		return opaque, true
+	case "Handler":
+		// Returns http.Handler.
+		return opaque, true
+	// *Profile methods.
+	case "Name":
+		return Value{Raw: "<pprof.Profile>"}, true
+	case "Count":
+		return Value{Raw: int64(0)}, true
+	case "Add":
+		return Value{}, true
+	case "Remove":
+		return Value{}, true
+	case "WriteTo":
+		// (error)
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleNetHTTPPprofCall models net/http/pprof.* functions (#167).
+// All functions are http.HandlerFunc wrappers — model as noops.
+func (interp *Interpreter) handleNetHTTPPprofCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Index", "Cmdline", "Profile", "Symbol", "Trace", "Handler":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handlePluginCall models plugin.* functions (#168).
+func (interp *Interpreter) handlePluginCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Open":
+		// Returns (*Plugin, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Plugin methods.
+	case "Lookup":
+		// Returns (Symbol, error) — Symbol is interface{}.
+		return Value{Raw: []Value{opaque, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleSemaphoreCall models golang.org/x/sync/semaphore.* functions (#168).
+func (interp *Interpreter) handleSemaphoreCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewWeighted":
+		// Returns *Weighted.
+		return opaque, true
+	// *Weighted methods.
+	case "Acquire":
+		// Returns error — model as success (nil), not blocking.
+		return Value{}, true
+	case "Release":
+		return Value{}, true
+	case "TryAcquire":
+		// Returns bool — true (acquired successfully).
+		return Value{Raw: true}, true
+	}
+	return Value{}, true
+}
+
+// ── v0.57.0 new handlers (#169-172) ──────────────────────────────────────────
+
+// handleIOIoutilCall models io/ioutil.* functions (#169).
+// io/ioutil is deprecated since Go 1.16 but widely used in older code.
+func (interp *Interpreter) handleIOIoutilCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "ReadAll":
+		// Returns ([]byte, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ReadFile":
+		// Returns ([]byte, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "WriteFile":
+		// Returns error.
+		return Value{}, true
+	case "TempFile":
+		// Returns (*os.File, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "TempDir":
+		// Returns (string, error).
+		return Value{Raw: []Value{{Raw: "/tmp/giri-tmpdir"}, {}}}, true
+	case "NopCloser":
+		// Returns io.ReadCloser (opaque).
+		return opaque, true
+	case "ReadDir":
+		// Returns ([]os.FileInfo, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	}
+	// Discard is a variable (not a function), handled via globals.
+	return Value{}, true
+}
+
+// handleCompressBzip2Call models compress/bzip2.* functions (#170).
+func (interp *Interpreter) handleCompressBzip2Call(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewReader":
+		// Returns io.Reader.
+		return opaque, true
+	}
+	return Value{}, true
+}
+
+// handleCompressFlateCall models compress/flate.* functions (#170).
+func (interp *Interpreter) handleCompressFlateCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewReader", "NewReaderDict":
+		// Returns (io.ReadCloser, error) for NewReaderDict; io.ReadCloser for NewReader.
+		if name == "NewReaderDict" {
+			return Value{Raw: []Value{opaque, {}}}, true
+		}
+		return opaque, true
+	case "NewWriter", "NewWriterDict":
+		// Returns (*Writer, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Reader / *Writer / *Resetter methods.
+	case "Read":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Close":
+		return Value{}, true
+	case "Reset":
+		return Value{}, true
+	case "Write":
+		n := 0
+		if len(args) > 1 {
+			if sv, ok := args[1].Raw.([]Value); ok {
+				n = len(sv)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+	case "Flush":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleCompressLZWCall models compress/lzw.* functions (#170).
+func (interp *Interpreter) handleCompressLZWCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewReader":
+		// Returns io.ReadCloser.
+		return opaque, true
+	case "NewWriter":
+		// Returns io.WriteCloser.
+		return opaque, true
+	// io.ReadCloser / io.WriteCloser methods.
+	case "Read":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Write":
+		n := 0
+		if len(args) > 1 {
+			if sv, ok := args[1].Raw.([]Value); ok {
+				n = len(sv)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+	case "Close":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleGoTypesCall models go/types.* functions (#171).
+func (interp *Interpreter) handleGoTypesCall(gid int64, site, name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// Constructors.
+	case "NewPackage":
+		return opaque, true
+	case "NewScope":
+		return opaque, true
+	case "NewNamed":
+		return opaque, true
+	case "NewStruct":
+		return opaque, true
+	case "NewInterface", "NewInterfaceType":
+		return opaque, true
+	case "NewSignature", "NewSignatureType":
+		return opaque, true
+	case "NewFunc":
+		return opaque, true
+	case "NewVar":
+		return opaque, true
+	case "NewConst":
+		return opaque, true
+	case "NewTypeName":
+		return opaque, true
+	case "NewLabel":
+		return opaque, true
+	case "NewPkgName":
+		return opaque, true
+	case "NewArray":
+		return opaque, true
+	case "NewSlice":
+		return opaque, true
+	case "NewMap":
+		return opaque, true
+	case "NewChan":
+		return opaque, true
+	case "NewPointer":
+		return opaque, true
+	case "NewTuple":
+		return opaque, true
+	case "NewParam":
+		return opaque, true
+	// Checker.
+	case "NewChecker":
+		return opaque, true
+	// Config.
+	case "Check":
+		// (*Config).Check returns (*Package, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	// Predicate functions.
+	case "Implements":
+		return Value{Raw: false}, true
+	case "AssignableTo":
+		return Value{Raw: false}, true
+	case "ConvertibleTo":
+		return Value{Raw: false}, true
+	case "Identical":
+		return Value{Raw: false}, true
+	case "IsInterface":
+		return Value{Raw: false}, true
+	case "TypeString":
+		return Value{Raw: "<type>"}, true
+	case "ObjectString":
+		return Value{Raw: "<object>"}, true
+	case "SelectionString":
+		return Value{Raw: "<selection>"}, true
+	case "WriteType", "WriteSignature":
+		return Value{}, true
+	case "Eval":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Universe":
+		return opaque, true
+	case "NewMethodSet":
+		return opaque, true
+	case "LookupFieldOrMethod":
+		return Value{Raw: []Value{opaque, {Raw: []Value{}}, {Raw: false}}}, true
+	case "MissingMethod":
+		return Value{Raw: []Value{opaque, {Raw: false}}}, true
+	case "Default":
+		return opaque, true
+	case "Unalias":
+		return opaque, true
+	// Scope methods.
+	case "Lookup":
+		return opaque, true
+	case "Insert":
+		return opaque, true
+	case "Names":
+		return Value{Raw: []Value{}}, true
+	case "Len":
+		return Value{Raw: int64(0)}, true
+	case "Parent":
+		return opaque, true
+	case "Contains":
+		return Value{Raw: false}, true
+	// Named type methods.
+	case "AddMethod":
+		return Value{}, true
+	case "SetUnderlying":
+		return Value{}, true
+	case "Underlying":
+		return opaque, true
+	case "NumMethods":
+		return Value{Raw: int64(0)}, true
+	case "Method":
+		return opaque, true
+	case "Obj":
+		return opaque, true
+	case "String":
+		return Value{Raw: "<types.Type>"}, true
+	// Object methods.
+	case "Name":
+		return Value{Raw: "<name>"}, true
+	case "Pkg":
+		return opaque, true
+	case "Type":
+		return opaque, true
+	case "Exported":
+		return Value{Raw: false}, true
+	case "Id":
+		return Value{Raw: "<id>"}, true
+	case "Pos":
+		return Value{Raw: int64(0)}, true
+	// Interface methods.
+	case "Complete":
+		return opaque, true
+	case "NumEmbeddeds", "NumExplicitMethods":
+		return Value{Raw: int64(0)}, true
+	// Struct methods.
+	case "NumFields":
+		return Value{Raw: int64(0)}, true
+	case "Field":
+		return opaque, true
+	case "Tag":
+		return Value{Raw: ""}, true
+	// Signature methods.
+	case "Params", "Results":
+		return opaque, true
+	case "Recv":
+		return opaque, true
+	case "Variadic":
+		return Value{Raw: false}, true
+	}
+	return Value{}, true
+}
+
+// handleGoImporterCall models go/importer.* functions (#171).
+func (interp *Interpreter) handleGoImporterCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Default":
+		return opaque, true
+	case "For":
+		return opaque, true
+	case "ForCompiler":
+		return opaque, true
+	// Importer interface method.
+	case "Import":
+		return Value{Raw: []Value{opaque, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleGoBuildCall models go/build.* functions (#171).
+func (interp *Interpreter) handleGoBuildCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Default":
+		// build.Default is a Context variable, not a function;
+		// method calls on it come through as name == method name.
+		return opaque, true
+	case "Import":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ImportDir":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "IsDir":
+		return Value{Raw: false}, true
+	case "IsLocalImport":
+		return Value{Raw: false}, true
+	case "ArchChar":
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	// (*Context) methods.
+	case "MatchFile":
+		return Value{Raw: []Value{{Raw: false}, {}}}, true
+	case "SrcDirs":
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, true
+}
+
+// handleGoDocCall models go/doc.* functions (#171).
+func (interp *Interpreter) handleGoDocCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New", "NewFromFiles":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Examples":
+		return Value{Raw: []Value{}}, true
+	case "Synopsis":
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				// Return first sentence-ish.
+				if len(s) > 80 {
+					s = s[:80]
+				}
+				return Value{Raw: s}, true
+			}
+		}
+		return Value{Raw: ""}, true
+	case "ToHTML", "ToText", "ToMarkdown":
+		return Value{}, true
+	case "IsPredeclared":
+		return Value{Raw: false}, true
+	}
+	return Value{}, true
+}
+
+// handleCookiejarCall models net/http/cookiejar.* functions (#172).
+func (interp *Interpreter) handleCookiejarCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New":
+		// Returns (*Jar, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	// http.CookieJar interface methods.
+	case "SetCookies":
+		return Value{}, true
+	case "Cookies":
+		// Returns []*http.Cookie.
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, true
+}
+
+// ── v0.58.0 new handlers (#173-176) ──────────────────────────────────────────
+
+// handleCryptoSubtleCall models crypto/subtle.* functions (#173).
+func (interp *Interpreter) handleCryptoSubtleCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "ConstantTimeCompare":
+		// ([]byte, []byte) → int (1 if equal, 0 otherwise).
+		return Value{Raw: int64(0)}, true
+	case "ConstantTimeByteEq":
+		return Value{Raw: int64(0)}, true
+	case "ConstantTimeLessOrEq":
+		return Value{Raw: int64(0)}, true
+	case "ConstantTimeSelect":
+		// (v, x, y int) → int: returns x if v==1, else y.
+		return Value{Raw: int64(0)}, true
+	case "ConstantTimeCopy":
+		// (v int, x, y []byte): noop.
+		return Value{}, true
+	case "XORBytes":
+		// (dst, x, y []byte) → int.
+		n := 0
+		if len(args) > 1 {
+			if sv, ok := args[1].Raw.([]Value); ok {
+				n = len(sv)
+			}
+		}
+		return Value{Raw: int64(n)}, true
+	case "WithDataIndependentTiming":
+		// (f func()) — call f.
+		if len(args) > 0 {
+			switch fn := args[0].Raw.(type) {
+			case *ssa.Function:
+				if fn.Blocks != nil {
+					interp.execFunction(0, fn, nil)
+				}
+			case *ClosureValue:
+				interp.execFunction(0, fn.Fn, append([]Value{}, fn.FreeVars...))
+			}
+		}
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleMapHashCall models hash/maphash.* functions (#173).
+func (interp *Interpreter) handleMapHashCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// Package-level funcs (Go 1.19+).
+	case "Bytes":
+		return Value{Raw: uint64(0)}, true
+	case "String":
+		return Value{Raw: uint64(0)}, true
+	case "MakeSeed":
+		return opaque, true
+	// *Hash methods.
+	case "New":
+		return opaque, true
+	case "Write", "WriteByte", "WriteString":
+		n := 0
+		if len(args) > 1 {
+			switch v := args[1].Raw.(type) {
+			case []Value:
+				n = len(v)
+			case string:
+				n = len(v)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+	case "Sum64":
+		return Value{Raw: uint64(0)}, true
+	case "Sum32":
+		return Value{Raw: uint32(0)}, true
+	case "Sum":
+		return Value{Raw: []Value{}}, true
+	case "Reset":
+		return Value{}, true
+	case "SetSeed":
+		return Value{}, true
+	case "Seed":
+		return opaque, true
+	case "BlockSize", "Size":
+		return Value{Raw: int64(8)}, true
+	}
+	return Value{}, true
+}
+
+// handleRegexpSyntaxCall models regexp/syntax.* functions (#173).
+func (interp *Interpreter) handleRegexpSyntaxCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Parse":
+		// Returns (*Regexp, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "MustParse":
+		return opaque, true
+	case "Compile":
+		// Returns (*Prog, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "SimplifyRegexp":
+		return opaque, true
+	case "IsWordChar":
+		return Value{Raw: false}, true
+	case "Flags":
+		return Value{Raw: int64(0)}, true
+	// *Regexp / *Prog methods.
+	case "String":
+		return Value{Raw: "<regexp>"}, true
+	case "Equal":
+		return Value{Raw: false}, true
+	case "Simplify":
+		return opaque, true
+	case "CapNames":
+		return Value{Raw: []Value{}}, true
+	case "MaxCap":
+		return Value{Raw: int64(0)}, true
+	case "Prefix":
+		return Value{Raw: []Value{{Raw: ""}, {Raw: false}}}, true
+	}
+	return Value{}, true
+}
+
+// handleUniqueCall models unique.* functions (#173).
+// unique.Make is a generic function (Go 1.23+).
+func (interp *Interpreter) handleUniqueCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Make":
+		// Make[T comparable](v T) Handle[T] — return opaque Handle.
+		return opaque, true
+	// Handle[T] methods.
+	case "Value":
+		// Returns the stored T — return zero Value.
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleGoPrinterCall models go/printer.* functions (#174).
+func (interp *Interpreter) handleGoPrinterCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Fprint", "Fprintf":
+		// (io.Writer, *token.FileSet, node interface{}) (int, error).
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Sprint":
+		// (*token.FileSet, node interface{}) (string, error).
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleGoConstantCall models go/constant.* functions (#174).
+func (interp *Interpreter) handleGoConstantCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// Constructors.
+	case "MakeInt64":
+		if len(args) > 0 {
+			return Value{Raw: toInt64(args[0])}, true
+		}
+		return Value{Raw: int64(0)}, true
+	case "MakeUint64":
+		if len(args) > 0 {
+			return Value{Raw: toInt64(args[0])}, true
+		}
+		return Value{Raw: int64(0)}, true
+	case "MakeFloat64":
+		if len(args) > 0 {
+			if f, ok := args[0].Raw.(float64); ok {
+				return Value{Raw: f}, true
+			}
+		}
+		return Value{Raw: float64(0)}, true
+	case "MakeString":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: s}, true
+		}
+		return Value{Raw: ""}, true
+	case "MakeBool":
+		if len(args) > 0 {
+			if b, ok := args[0].Raw.(bool); ok {
+				return Value{Raw: b}, true
+			}
+		}
+		return Value{Raw: false}, true
+	case "MakeFromLiteral":
+		// (lit string, tok token.Token, zero uint) → Value.
+		// Return a string representation as opaque.
+		return opaque, true
+	case "MakeImag":
+		return opaque, true
+	// Operations.
+	case "BinaryOp":
+		return opaque, true
+	case "UnaryOp":
+		return opaque, true
+	case "Compare":
+		return Value{Raw: false}, true
+	case "Shift":
+		return opaque, true
+	case "ToComplex":
+		return opaque, true
+	case "Real", "Imag":
+		return opaque, true
+	// Extractors.
+	case "StringVal":
+		return Value{Raw: ""}, true
+	case "Int64Val":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: true}}}, true
+	case "Uint64Val":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: true}}}, true
+	case "Float64Val":
+		return Value{Raw: []Value{{Raw: float64(0)}, {Raw: true}}}, true
+	case "Float32Val":
+		return Value{Raw: []Value{{Raw: float64(0)}, {Raw: true}}}, true
+	case "BoolVal":
+		return Value{Raw: false}, true
+	// Value methods.
+	case "Kind":
+		return Value{Raw: int64(0)}, true
+	case "Sign":
+		return Value{Raw: int64(0)}, true
+	case "BitLen":
+		return Value{Raw: int64(0)}, true
+	case "String":
+		return Value{Raw: "<constant>"}, true
+	case "ExactString":
+		return Value{Raw: "<constant>"}, true
+	}
+	return Value{}, true
+}
+
+// handleGoScannerCall models go/scanner.* functions (#174).
+func (interp *Interpreter) handleGoScannerCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// Scanner methods (receiver = args[0]).
+	case "Init":
+		return Value{}, true
+	case "Scan":
+		// Returns (token.Pos, token.Token, string).
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(0)}, {Raw: ""}}}, true
+	case "Peek":
+		return Value{Raw: int64(0)}, true
+	// ErrorList.
+	case "Add":
+		return Value{}, true
+	case "Sort":
+		return Value{}, true
+	case "Error":
+		return Value{Raw: ""}, true
+	case "Err":
+		return Value{}, true
+	case "Reset":
+		return Value{}, true
+	case "Len":
+		return Value{Raw: int64(0)}, true
+	// PrintError.
+	case "PrintError":
+		return Value{}, true
+	case "Mode":
+		return opaque, true
+	}
+	return Value{}, true
+}
+
+// handleGoVersionCall models go/version.* functions (#174).
+// Available since Go 1.22.
+func (interp *Interpreter) handleGoVersionCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Compare":
+		// (x, y string) → int.
+		if len(args) >= 2 {
+			sx, sxok := args[0].Raw.(string)
+			sy, syok := args[1].Raw.(string)
+			if sxok && syok {
+				if sx < sy {
+					return Value{Raw: int64(-1)}, true
+				} else if sx > sy {
+					return Value{Raw: int64(1)}, true
+				}
+				return Value{Raw: int64(0)}, true
+			}
+		}
+		return Value{Raw: int64(0)}, true
+	case "IsValid":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: len(s) >= 2 && s[0] == 'g' && s[1] == 'o'}, true
+		}
+		return Value{Raw: false}, true
+	case "Lang":
+		// ("go1.21.4") → "go1.21".
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: s}, true
+		}
+		return Value{Raw: ""}, true
+	case "Max":
+		if len(args) >= 2 {
+			sx, sxok := args[0].Raw.(string)
+			sy, syok := args[1].Raw.(string)
+			if sxok && syok {
+				if sx >= sy {
+					return Value{Raw: sx}, true
+				}
+				return Value{Raw: sy}, true
+			}
+		}
+		return Value{Raw: ""}, true
+	}
+	return Value{}, true
+}
+
+// handleDebugBuildinfoCall models debug/buildinfo.* functions (#175).
+func (interp *Interpreter) handleDebugBuildinfoCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "ReadFile":
+		// Returns (*BuildInfo, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Read":
+		// Returns (*BuildInfo, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	// BuildInfo methods.
+	case "String":
+		return Value{Raw: "<buildinfo>"}, true
+	case "MarshalText":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "UnmarshalText":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleDebugDWARFCall models debug/dwarf.* functions (#175).
+func (interp *Interpreter) handleDebugDWARFCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Data methods.
+	case "Reader":
+		return opaque, true
+	case "Type":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Ranges":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "LineReader":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Reader methods.
+	case "Next":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "SeekPC":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "SkipChildren":
+		return Value{}, true
+	case "Seek":
+		return Value{}, true
+	case "AddressSize":
+		return Value{Raw: int64(8)}, true
+	case "ByteOrder":
+		return opaque, true
+	// *LineReader methods.
+	case "Tell":
+		return Value{}, true
+	// *Entry methods.
+	case "Val":
+		return opaque, true
+	case "AttrField":
+		return opaque, true
+	}
+	return Value{}, true
+}
+
+// handleDebugELFCall models debug/elf.* functions (#175).
+func (interp *Interpreter) handleDebugELFCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Open":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewFile":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *File methods.
+	case "Close":
+		return Value{}, true
+	case "Section":
+		return opaque, true
+	case "SectionByType":
+		return opaque, true
+	case "Symbols":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "DynamicSymbols":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ImportedSymbols":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ImportedLibraries":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "DWARF":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Segments":
+		return Value{Raw: []Value{}}, true
+	case "Sections":
+		return Value{Raw: []Value{}}, true
+	// Section methods (Open handled above — returns opaque io.ReadSeeker for sections too).
+	case "Data":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ReadAt":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	// ST_* constants etc.
+	case "R_INFO", "R_SYM", "R_TYPE", "ST_INFO", "ST_BIND", "ST_TYPE", "ST_VISIBILITY":
+		return Value{Raw: int64(0)}, true
+	}
+	return Value{}, true
+}
+
+// handleDebugMachoCall models debug/macho.* functions (#175).
+func (interp *Interpreter) handleDebugMachoCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Open":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewFile":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *File methods.
+	case "Close":
+		return Value{}, true
+	case "Section":
+		return opaque, true
+	case "Segment":
+		return opaque, true
+	case "Symtab":
+		return opaque, true
+	case "Dysymtab":
+		return opaque, true
+	case "DWARF":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ImportedSymbols":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ImportedLibraries":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	// Section methods (Open shared with file-level Open above).
+	case "Data":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ReadAt":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleDebugPECall models debug/pe.* functions (#175).
+func (interp *Interpreter) handleDebugPECall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Open":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewFile":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *File methods.
+	case "Close":
+		return Value{}, true
+	case "Section":
+		return opaque, true
+	case "DWARF":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ImportedSymbols":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ImportedLibraries":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	// Section methods (Open shared with file-level Open above).
+	case "Data":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ReadAt":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleTestingQuickCall models testing/quick.* functions (#176).
+func (interp *Interpreter) handleTestingQuickCall(gid int64, site, name string, args []Value) (Value, bool) {
+	switch name {
+	case "Check", "CheckCustom":
+		// Check(f interface{}, rand *rand.Rand) error — probe f with zero args.
+		if len(args) > 0 {
+			switch fn := args[0].Raw.(type) {
+			case *ssa.Function:
+				if fn.Blocks != nil {
+					// Build zero-value args for each param.
+					zeroArgs := make([]Value, len(fn.Params))
+					interp.execFunction(gid, fn, zeroArgs)
+				}
+			case *ClosureValue:
+				zeroArgs := make([]Value, len(fn.Fn.Params))
+				all := append(zeroArgs, fn.FreeVars...)
+				interp.execFunction(gid, fn.Fn, all)
+			}
+		}
+		// Return nil error (test passes).
+		return Value{}, true
+	case "Value":
+		// Value(t reflect.Type, rand *rand.Rand) (reflect.Value, bool).
+		return Value{Raw: []Value{{Raw: struct{}{}}, {Raw: false}}}, true
+	}
+	return Value{}, true
+}
+
+// handleQuotedPrintableCall models mime/quotedprintable.* functions (#176).
+func (interp *Interpreter) handleQuotedPrintableCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewReader":
+		return opaque, true
+	case "NewWriter":
+		return opaque, true
+	// *Reader methods.
+	case "Read":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	// *Writer methods.
+	case "Write":
+		n := 0
+		if len(args) > 1 {
+			if sv, ok := args[1].Raw.([]Value); ok {
+				n = len(sv)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+	case "Close":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleHTTPTraceCall models net/http/httptrace.* functions (#176).
+func (interp *Interpreter) handleHTTPTraceCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "WithClientTrace":
+		// (ctx context.Context, trace *ClientTrace) → context.Context.
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return opaque, true
+	case "ContextClientTrace":
+		// (ctx context.Context) → *ClientTrace (opaque).
+		return opaque, true
+	}
+	return Value{}, true
+}
+
+// handleJSONRPCCall models net/rpc/jsonrpc.* functions (#176).
+func (interp *Interpreter) handleJSONRPCCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewClient":
+		// Returns *rpc.Client.
+		return opaque, true
+	case "Dial":
+		// Returns (*rpc.Client, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewServerCodec":
+		// Returns rpc.ServerCodec.
+		return opaque, true
+	case "NewClientCodec":
+		// Returns rpc.ClientCodec.
+		return opaque, true
+	case "ServeConn":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// ── v0.59.0 new handlers (#177-180) ──────────────────────────────────────────
+
+// handleGoBuildConstraintCall models go/build/constraint.* functions (#177).
+func (interp *Interpreter) handleGoBuildConstraintCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "IsGoBuild", "IsPlusBuild":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: len(s) > 0}, true
+		}
+		return Value{Raw: false}, true
+	case "GoVersion":
+		// GoVersion(x Expr) string.
+		return Value{Raw: "go1.21"}, true
+	case "Parse", "ParseLine":
+		// Returns (Expr, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Check":
+		// Returns bool.
+		return Value{Raw: true}, true
+	case "Eval":
+		// (x Expr, ok func(tag string) bool) bool.
+		return Value{Raw: true}, true
+	case "PlusBuildLines":
+		// Returns ([]string, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "AndExpr", "OrExpr", "NotExpr", "TagExpr", "IsSatisfied":
+		return opaque, true
+	// Expr.String — shares "String" case above (no separate entry needed).
+	}
+	return Value{}, true
+}
+
+// handleGoDocCommentCall models go/doc/comment.* functions (#177).
+func (interp *Interpreter) handleGoDocCommentCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// (*Parser).Parse.
+	case "Parse":
+		return opaque, true
+	// (*Printer) output methods.
+	case "HTML", "Markdown", "Text", "Comment":
+		return Value{Raw: []Value{}}, true
+	// DefaultLookupPackage.
+	case "DefaultLookupPackage":
+		return Value{Raw: []Value{{Raw: ""}, {Raw: false}}}, true
+	}
+	return Value{}, true
+}
+
+// handleTemplateParseCall models text/template/parse.* functions (#177).
+func (interp *Interpreter) handleTemplateParseCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New":
+		return opaque, true
+	case "Parse":
+		// Returns (map[string]*Tree, error).
+		return Value{Raw: []Value{{Raw: map[interface{}]Value{}}, {}}}, true
+	// *Tree methods.
+	case "Copy":
+		return opaque, true
+	case "ErrorContext":
+		return Value{Raw: []Value{{Raw: ""}, {Raw: ""}}}, true
+	// Node interface methods.
+	case "String", "Type":
+		return Value{Raw: ""}, true
+	case "Position":
+		return Value{Raw: int64(0)}, true
+	}
+	return Value{}, true
+}
+
+// handleDebugGosymCall models debug/gosym.* functions (#178).
+func (interp *Interpreter) handleDebugGosymCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewLineTable":
+		return opaque, true
+	case "NewTable":
+		// Returns (*Table, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Table methods.
+	case "PCToFunc":
+		return opaque, true
+	case "PCToLine":
+		return Value{Raw: []Value{{Raw: ""}, {Raw: int64(0)}, {Raw: ""}}}, true
+	case "LineToPC":
+		return Value{Raw: []Value{{Raw: uint64(0)}, {}}}, true
+	case "LookupFunc":
+		return opaque, true
+	case "LookupSym":
+		return opaque, true
+	case "Syms":
+		return Value{Raw: []Value{}}, true
+	// *LineTable methods share PCToLine/LineToPC cases above.
+	}
+	return Value{}, true
+}
+
+// handleDebugPlan9Call models debug/plan9obj.* functions (#178).
+func (interp *Interpreter) handleDebugPlan9Call(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Open":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewFile":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *File methods.
+	case "Close":
+		return Value{}, true
+	case "Symbols":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Section":
+		return opaque, true
+	case "DWARF":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Section methods.
+	case "Data":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleRuntimeMetricsCall models runtime/metrics.* functions (#178).
+func (interp *Interpreter) handleRuntimeMetricsCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "All":
+		// Returns []Description.
+		return Value{Raw: []Value{}}, true
+	case "Read":
+		// Read([]Sample) — fills in-place; noop since samples are opaque.
+		return Value{}, true
+	// Sample and Description are struct types — method calls are opaque.
+	case "String":
+		return Value{Raw: "<metric>"}, true
+	case "Descriptions":
+		return Value{Raw: map[interface{}]Value{}}, true
+	// Value constructors.
+	case "Float64Histogram":
+		return opaque, true
+	// Kind constants.
+	case "KindBad", "KindUint64", "KindFloat64", "KindFloat64Histogram":
+		return Value{Raw: int64(0)}, true
+	}
+	return Value{}, true
+}
+
+// handleRuntimeCoverageCall models runtime/coverage.* functions (#178).
+func (interp *Interpreter) handleRuntimeCoverageCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "ClearCounters":
+		return Value{}, true
+	case "WriteCounters":
+		return Value{}, true
+	case "WriteCountersDir":
+		return Value{}, true
+	case "WriteMetaDir":
+		return Value{}, true
+	case "WriteMeta":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleHTTPCGICall models net/http/cgi.* functions (#179).
+func (interp *Interpreter) handleHTTPCGICall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Serve":
+		return Value{}, true
+	case "Request":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "RequestFromMap":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Handler.ServeHTTP.
+	case "ServeHTTP":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleHTTPFCGICall models net/http/fcgi.* functions (#179).
+func (interp *Interpreter) handleHTTPFCGICall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Serve":
+		return Value{}, true
+	case "ProcessEnv":
+		return Value{Raw: map[interface{}]Value{}}, true
+	}
+	return Value{}, true
+}
+
+// handleASCII85Call models encoding/ascii85.* functions (#179).
+func (interp *Interpreter) handleASCII85Call(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Encode":
+		// (dst, src []byte) → int.
+		n := 0
+		if len(args) > 1 {
+			if sv, ok := args[1].Raw.([]Value); ok {
+				n = len(sv)
+			}
+		}
+		return Value{Raw: int64(n)}, true
+	case "Decode":
+		// (dst, src []byte, flush bool) → (ndst, nsrc int, err error).
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(0)}, {}}}, true
+	case "MaxEncodedLen":
+		if len(args) > 0 {
+			n := toInt64(args[0])
+			return Value{Raw: int64(n/4*5 + 5)}, true
+		}
+		return Value{Raw: int64(0)}, true
+	case "NewEncoder":
+		return opaque, true
+	case "NewDecoder":
+		return opaque, true
+	// io.WriteCloser / io.Reader methods.
+	case "Write":
+		n := 0
+		if len(args) > 1 {
+			if sv, ok := args[1].Raw.([]Value); ok {
+				n = len(sv)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+	case "Close":
+		return Value{}, true
+	case "Read":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleSuffixArrayCall models index/suffixarray.* functions (#179).
+func (interp *Interpreter) handleSuffixArrayCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New":
+		return opaque, true
+	// *Index methods.
+	case "Bytes":
+		return Value{Raw: []Value{}}, true
+	case "Lookup":
+		// (s []byte, n int) → []int.
+		return Value{Raw: []Value{}}, true
+	case "FindAllIndex":
+		// (r *regexp.Regexp, n int) → [][]int.
+		return Value{Raw: []Value{}}, true
+	case "Read":
+		return Value{}, true
+	case "Write":
+		return Value{}, true
+	case "Len":
+		return Value{Raw: int64(0)}, true
+	}
+	return Value{}, true
+}
+
+// handleSyslogCall models log/syslog.* functions (#179).
+// syslog is unix-only; return safe values to avoid false positives.
+func (interp *Interpreter) handleSyslogCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New":
+		// Returns (*Writer, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Dial":
+		// Returns (*Writer, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewLogger":
+		// Returns (*log.Logger, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Writer methods.
+	case "Write":
+		n := 0
+		if len(args) > 1 {
+			if sv, ok := args[1].Raw.([]Value); ok {
+				n = len(sv)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+	case "Close":
+		return Value{}, true
+	case "Emerg", "Alert", "Crit", "Err", "Warning", "Notice", "Info", "Debug":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleCryptoDSACall models crypto/dsa.* functions (#180).
+func (interp *Interpreter) handleCryptoDSACall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "GenerateParameters":
+		// (params *Parameters, rand io.Reader, sizes ParameterSizes) error.
+		return Value{}, true
+	case "GenerateKey":
+		// (priv *PrivateKey, rand io.Reader) error.
+		return Value{}, true
+	case "Sign":
+		// Returns (*big.Int, *big.Int, error).
+		return Value{Raw: []Value{opaque, opaque, {}}}, true
+	case "Verify":
+		return Value{Raw: false}, true
+	// L1024N160, L2048N224, L2048N256, L3072N256 constants.
+	case "L1024N160", "L2048N224", "L2048N256", "L3072N256":
+		return Value{Raw: int64(0)}, true
+	}
+	return Value{}, true
+}
+
+// handleCryptoEllipticCall models crypto/elliptic.* functions (#180).
+func (interp *Interpreter) handleCryptoEllipticCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// Curve constructors.
+	case "P224", "P256", "P384", "P521":
+		return opaque, true
+	// Operations on curves.
+	case "GenerateKey":
+		// (curve Curve, rand io.Reader) (priv []byte, x, y *big.Int, err error).
+		return Value{Raw: []Value{{Raw: []Value{}}, opaque, opaque, {}}}, true
+	case "Marshal":
+		// (curve Curve, x, y *big.Int) []byte.
+		return Value{Raw: []Value{}}, true
+	case "MarshalCompressed":
+		return Value{Raw: []Value{}}, true
+	case "Unmarshal":
+		// (curve Curve, data []byte) (x, y *big.Int).
+		return Value{Raw: []Value{opaque, opaque}}, true
+	case "UnmarshalCompressed":
+		return Value{Raw: []Value{opaque, opaque}}, true
+	// Curve interface methods.
+	case "Params":
+		return opaque, true
+	case "IsOnCurve":
+		return Value{Raw: false}, true
+	case "Add", "Double":
+		return Value{Raw: []Value{opaque, opaque}}, true
+	case "ScalarMult", "ScalarBaseMult":
+		return Value{Raw: []Value{opaque, opaque}}, true
+	}
+	return Value{}, true
+}
+
+// handleHashCRC64Call models hash/crc64.* functions (#180).
+func (interp *Interpreter) handleHashCRC64Call(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "MakeTable":
+		return opaque, true
+	case "New":
+		return opaque, true
+	case "Checksum":
+		// (data []byte, tab *Table) uint64.
+		return Value{Raw: uint64(0)}, true
+	case "Update":
+		return Value{Raw: uint64(0)}, true
+	// hash.Hash64 methods.
+	case "Write":
+		n := 0
+		if len(args) > 1 {
+			if sv, ok := args[1].Raw.([]Value); ok {
+				n = len(sv)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+	case "Sum64":
+		return Value{Raw: uint64(0)}, true
+	case "Sum":
+		return Value{Raw: []Value{}}, true
+	case "Reset":
+		return Value{}, true
+	case "Size":
+		return Value{Raw: int64(8)}, true
+	case "BlockSize":
+		return Value{Raw: int64(8)}, true
+	}
+	return Value{}, true
+}
+
+// handleBcryptCall models golang.org/x/crypto/bcrypt.* functions (#180).
+func (interp *Interpreter) handleBcryptCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "GenerateFromPassword":
+		// (password []byte, cost int) ([]byte, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "CompareHashAndPassword":
+		// (hashedPassword, password []byte) error.
+		return Value{}, true
+	case "Cost":
+		// (hashedPassword []byte) (int, error).
+		return Value{Raw: []Value{{Raw: int64(10)}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleNetHTTP2Call models golang.org/x/net/http2.* functions (#180).
+func (interp *Interpreter) handleNetHTTP2Call(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "ConfigureServer":
+		return Value{}, true
+	case "ConfigureTransport":
+		return Value{}, true
+	case "ConfigureTransports":
+		return Value{}, true
+	case "NewFramer":
+		return opaque, true
+	// Framer methods.
+	case "ReadFrame":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "WriteData":
+		return Value{}, true
+	case "WriteHeaders":
+		return Value{}, true
+	case "WritePriority":
+		return Value{}, true
+	case "WriteRSTStream":
+		return Value{}, true
+	case "WriteSettings":
+		return Value{}, true
+	case "WritePing":
+		return Value{}, true
+	case "WriteGoAway":
+		return Value{}, true
+	case "WriteWindowUpdate":
+		return Value{}, true
+	case "WriteContinuation":
+		return Value{}, true
+	case "WriteDataPadded":
+		return Value{}, true
+	case "SetMaxReadFrameSize":
+		return Value{}, true
+	// Server/Transport helpers.
+	case "NewServer":
+		return opaque, true
+	case "VerboseLogs":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// ── v0.60.0 new handlers (#181-184) ──────────────────────────────────────────
+
+// handleCryptoDESCall models crypto/des.* functions (#181).
+func (interp *Interpreter) handleCryptoDESCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewCipher", "NewTripleDESCipher":
+		// Returns (cipher.Block, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleCryptoRC4Call models crypto/rc4.* functions (#181).
+func (interp *Interpreter) handleCryptoRC4Call(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewCipher":
+		// Returns (*Cipher, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Cipher methods.
+	case "XORKeyStream":
+		return Value{}, true
+	case "Reset":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleCryptoPBKDF2Call models crypto/pbkdf2.* functions (#181).
+// Generic: Key[Hash hash.Hash](h func() Hash, password string, salt []byte, iter, keyLength int) ([]byte, error).
+func (interp *Interpreter) handleCryptoPBKDF2Call(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Key":
+		// Returns ([]byte, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleCryptoHKDFCall models crypto/hkdf.* functions (#181).
+func (interp *Interpreter) handleCryptoHKDFCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Extract":
+		// (h, secret, salt) → ([]byte, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Expand":
+		// (h, prk, info, len) → ([]byte, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Key":
+		// Generic convenience wrapper → ([]byte, error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleCryptoSHA3Call models crypto/sha3.* functions (#182).
+func (interp *Interpreter) handleCryptoSHA3Call(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// Constructors.
+	case "New224", "New256", "New384", "New512":
+		return opaque, true
+	case "NewSHAKE128", "NewSHAKE256", "NewCSHAKE128", "NewCSHAKE256":
+		return opaque, true
+	// Convenience Sum functions return arrays — model as opaque []byte.
+	case "Sum224", "Sum256", "Sum384", "Sum512":
+		// Returns fixed-size array value; model as opaque.
+		return opaque, true
+	case "SumSHAKE128", "SumSHAKE256":
+		return Value{Raw: []Value{}}, true
+	// *SHA3 hash.Hash methods.
+	case "Write":
+		n := 0
+		if len(args) > 1 {
+			if sv, ok := args[1].Raw.([]Value); ok {
+				n = len(sv)
+			}
+		}
+		return Value{Raw: []Value{{Raw: int64(n)}, {}}}, true
+	case "Sum":
+		return Value{Raw: []Value{}}, true
+	case "Reset":
+		return Value{}, true
+	case "Size":
+		return Value{Raw: int64(32)}, true
+	case "BlockSize":
+		return Value{Raw: int64(136)}, true
+	// *SHAKE XOF methods.
+	case "Read":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Clone":
+		return opaque, true
+	}
+	return Value{}, true
+}
+
+// handleCryptoHPKECall models crypto/hpke.* functions (#182).
+func (interp *Interpreter) handleCryptoHPKECall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// KEM constructors.
+	case "DHKEM", "MLKEM768", "MLKEM1024", "MLKEM768P256", "MLKEM768X25519", "MLKEM1024P384":
+		return opaque, true
+	case "NewKEM":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// KDF constructors.
+	case "HKDFSHA256", "HKDFSHA384", "HKDFSHA512", "SHAKE128", "SHAKE256":
+		return opaque, true
+	case "NewKDF":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// AEAD constructors.
+	case "AES128GCM", "AES256GCM", "ChaCha20Poly1305", "ExportOnly":
+		return opaque, true
+	case "NewAEAD":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// Seal/Open.
+	case "Seal":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Open":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	}
+	return Value{}, true
+}
+
+// handleCryptoMLKEMCall models crypto/mlkem.* functions (#182).
+func (interp *Interpreter) handleCryptoMLKEMCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// Key generation.
+	case "GenerateKey768", "GenerateKey1024":
+		// Returns (*DecapsulationKey*, error).
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewDecapsulationKey768", "NewDecapsulationKey1024":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewEncapsulationKey768", "NewEncapsulationKey1024":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// Key methods.
+	case "EncapsulationKey":
+		return opaque, true
+	case "Encapsulate":
+		// (ciphertext []byte, sharedKey []byte, err error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {Raw: []Value{}}, {}}}, true
+	case "Decapsulate":
+		// (sharedKey []byte, err error).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Bytes":
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, true
+}
+
+// handleCryptoFIPS140Call models crypto/fips140.* functions (#182).
+func (interp *Interpreter) handleCryptoFIPS140Call(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Enabled":
+		return Value{Raw: false}, true
+	case "Enforced":
+		return Value{Raw: false}, true
+	case "Version":
+		return Value{Raw: ""}, true
+	case "WithoutEnforcement":
+		// (f func()) — call f.
+		if len(args) > 0 {
+			switch fn := args[0].Raw.(type) {
+			case *ssa.Function:
+				if fn.Blocks != nil {
+					interp.execFunction(0, fn, nil)
+				}
+			case *ClosureValue:
+				interp.execFunction(0, fn.Fn, append([]Value{}, fn.FreeVars...))
+			}
+		}
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleSQLDriverCall models database/sql/driver.* functions (#183).
+// The driver package defines only interfaces and a few helper functions/errors.
+func (interp *Interpreter) handleSQLDriverCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "IsValue":
+		// IsValue(v interface{}) bool — true if v is a valid driver.Value.
+		return Value{Raw: true}, true
+	case "IsScanValue":
+		return Value{Raw: true}, true
+	case "DefaultParameterConverter":
+		return Value{Raw: struct{}{}}, true
+	}
+	return Value{}, true
+}
+
+// handleX509PKIXCall models crypto/x509/pkix.* functions (#183).
+// pkix contains only struct types; most "calls" are method calls on those structs.
+func (interp *Interpreter) handleX509PKIXCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// Name methods.
+	case "String":
+		return Value{Raw: "<pkix.Name>"}, true
+	case "ToRDNSequence":
+		return opaque, true
+	case "FillFromRDNSequence":
+		return Value{}, true
+	case "AppendPKCS7":
+		return Value{Raw: []Value{}}, true
+	// RDNSequence.String shares the "String" case above.
+	}
+	return Value{}, true
+}
+
+// handleColorPaletteCall models image/color/palette.* functions (#183).
+// palette only has package-level variables Plan9 and WebSafe — no callable functions.
+// This handler is a no-op since variables are accessed via globals, not function calls.
+func (interp *Interpreter) handleColorPaletteCall(name string, args []Value) (Value, bool) {
+	return Value{}, true
+}
+
+// handleTZDataCall models time/tzdata.* functions (#183).
+// tzdata is an import-side-effect-only package (embeds timezone data).
+// It has no exported functions.
+func (interp *Interpreter) handleTZDataCall(name string, args []Value) (Value, bool) {
+	return Value{}, true
+}
+
+// handleStructsCall models structs.* functions (#184).
+// structs only contains the HostLayout marker type — no callable functions.
+func (interp *Interpreter) handleStructsCall(name string, args []Value) (Value, bool) {
+	return Value{}, true
+}
+
+// handleWeakCall models weak.* functions (#184).
+func (interp *Interpreter) handleWeakCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Make":
+		// Make[T any](ptr *T) Pointer[T] — return opaque handle.
+		return opaque, true
+	// Pointer[T] methods.
+	case "Value":
+		// Returns *T — conservatively return nil.
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleSlogTestCall models testing/slogtest.* functions (#184).
+func (interp *Interpreter) handleSlogTestCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "TestHandler":
+		// (h slog.Handler, results func() []map[string]any) error — return nil.
+		return Value{}, true
+	case "Run":
+		// (t *testing.T, newHandler func(*testing.T) slog.Handler, ...) — noop.
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleSyncTestCall models testing/synctest.* functions (#184).
+func (interp *Interpreter) handleSyncTestCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Test":
+		// Test(t *testing.T, f func(*testing.T)) — probe f with opaque t.
+		if len(args) > 1 {
+			opaque := stdlibOpaque
+			switch fn := args[1].Raw.(type) {
+			case *ssa.Function:
+				if fn.Blocks != nil {
+					interp.execFunction(0, fn, []Value{opaque})
+				}
+			case *ClosureValue:
+				all := append([]Value{opaque}, fn.FreeVars...)
+				interp.execFunction(0, fn.Fn, all)
+			}
+		}
+		return Value{}, true
+	case "Wait":
+		return Value{}, true
+	}
+	return Value{}, true
+}
+
+// handleSysUnixCall intercepts golang.org/x/sys/unix calls (issue #185).
+// Returns safe zero/opaque values so programs using low-level Unix wrappers
+// don't cause false panics or false-positive violations.
+func (interp *Interpreter) handleSysUnixCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// Process / identity
+	case "Getpid":
+		return Value{Raw: int64(1)}, true
+	case "Getppid":
+		return Value{Raw: int64(1)}, true
+	case "Getuid", "Geteuid", "Getgid", "Getegid":
+		return Value{Raw: int64(0)}, true
+	// Environment / working dir
+	case "Getenv":
+		return Value{Raw: []Value{{Raw: ""}, {Raw: false}}}, true
+	case "Setenv", "Unsetenv", "Clearenv":
+		return Value{}, true
+	case "Getwd":
+		return Value{Raw: []Value{{Raw: "/tmp"}, {}}}, true
+	case "Chdir", "Chmod", "Chown", "Lchown", "Chroot":
+		return Value{}, true
+	// File operations — return (fd/n/err) tuples
+	case "Open":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Close":
+		return Value{}, true
+	case "Read", "Write", "Pread", "Pwrite":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Stat", "Lstat", "Fstat":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Mkdir", "MkdirAll", "Mkdirat", "Mkfifo":
+		return Value{}, true
+	case "Remove", "Unlink", "Rmdir":
+		return Value{}, true
+	case "Rename", "Symlink", "Link":
+		return Value{}, true
+	case "Readlink":
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "Dup", "Dup2", "Dup3":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Pipe", "Pipe2":
+		return Value{}, true
+	// Network
+	case "Socket":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Connect", "Bind", "Listen":
+		return Value{}, true
+	case "Accept", "Accept4":
+		return Value{Raw: []Value{{Raw: int64(0)}, opaque, {}}}, true
+	case "Getsockname", "Getpeername":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Setsockopt", "Getsockopt":
+		return Value{}, true
+	// Signals / process
+	case "Kill":
+		return Value{}, true
+	case "Getpgrp", "Getpgid":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Setpgid", "Setsid":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	// Memory
+	case "Mmap":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Munmap":
+		return Value{}, true
+	// Byte helpers
+	case "ByteSliceFromString":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "BytePtrFromString":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ByteSliceToString":
+		return Value{Raw: ""}, true
+	case "BytePtrToString":
+		return Value{Raw: ""}, true
+	// Time
+	case "ClockGettime", "Gettimeofday":
+		return Value{}, true
+	// Misc
+	case "Access", "Faccessat":
+		return Value{}, true
+	case "Truncate", "Ftruncate":
+		return Value{}, true
+	case "Fsync":
+		return Value{}, true
+	case "Seek":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Utime", "Utimes", "UtimesNano":
+		return Value{}, true
+	case "CloseOnExec", "SetNonblock":
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleNetHTMLCall intercepts golang.org/x/net/html calls (issue #186).
+func (interp *Interpreter) handleNetHTMLCall(gid int64, site, name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Parse":
+		// Parse(r io.Reader) (*Node, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ParseFragment":
+		// ParseFragment(r io.Reader, context *Node) ([]*Node, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ParseWithOptions":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewTokenizer":
+		return opaque, true
+	case "Render":
+		// Render(w io.Writer, n *Node) error
+		return Value{}, true
+	case "EscapeString":
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				return Value{Raw: s}, true
+			}
+		}
+		return Value{Raw: ""}, true
+	case "UnescapeString":
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				return Value{Raw: s}, true
+			}
+		}
+		return Value{Raw: ""}, true
+	// *Tokenizer methods
+	case "Next":
+		return Value{Raw: int64(0)}, true // ErrorToken = 0
+	case "Token":
+		return opaque, true
+	case "Raw":
+		return Value{Raw: []Value{}}, true
+	case "Text":
+		return Value{Raw: []Value{}}, true
+	case "TagName":
+		return Value{Raw: []Value{{Raw: []Value{}}, {Raw: false}}}, true
+	case "TagAttr":
+		return Value{Raw: []Value{{Raw: []Value{}}, {Raw: []Value{}}, {Raw: false}}}, true
+	case "SetMaxBuf":
+		return Value{}, true
+	// *Node methods/fields
+	case "FirstChild", "LastChild", "NextSibling", "PrevSibling", "Parent":
+		return opaque, true
+	case "AppendChild", "InsertBefore", "RemoveChild":
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleNetHTMLCharsetCall intercepts golang.org/x/net/html/charset calls (issue #188).
+func (interp *Interpreter) handleNetHTMLCharsetCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "DetermineEncoding":
+		// (encoding.Encoding, string, bool)
+		return Value{Raw: []Value{opaque, {Raw: "utf-8"}, {Raw: false}}}, true
+	case "NewReader":
+		return opaque, true
+	case "NewReaderLabel":
+		return Value{Raw: []Value{opaque, {}}}, true
+	}
+	return Value{}, false
+}
+
+// handleNetPublicSuffixCall intercepts golang.org/x/net/publicsuffix calls (issue #186).
+func (interp *Interpreter) handleNetPublicSuffixCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "PublicSuffix":
+		// (suffix string, icann bool)
+		return Value{Raw: []Value{{Raw: "com"}, {Raw: true}}}, true
+	case "EffectiveTLDPlusOne":
+		// (result string, err error)
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				return Value{Raw: []Value{{Raw: s}, {}}}, true
+			}
+		}
+		return Value{Raw: []Value{{Raw: "example.com"}, {}}}, true
+	case "List":
+		return Value{Raw: struct{}{}}, true
+	}
+	return Value{}, false
+}
+
+// handleNetIDNACall intercepts golang.org/x/net/idna calls (issue #186).
+func (interp *Interpreter) handleNetIDNACall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "ToASCII":
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				return Value{Raw: []Value{{Raw: s}, {}}}, true
+			}
+		}
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "ToUnicode":
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				return Value{Raw: []Value{{Raw: s}, {}}}, true
+			}
+		}
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "Lookup":
+		return opaque, true
+	case "New":
+		return opaque, true
+	// *Profile methods — String only (ToASCII/ToUnicode handled above)
+	case "String":
+		return Value{Raw: ""}, true
+	}
+	return Value{}, false
+}
+
+// handleNetProxyCall intercepts golang.org/x/net/proxy calls (issue #186).
+func (interp *Interpreter) handleNetProxyCall(gid int64, site, name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "SOCKS5":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Dial":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "FromEnvironment", "FromURL":
+		return opaque, true
+	case "RegisterDialerType":
+		return Value{}, true
+	case "NewPerHost":
+		return opaque, true
+	// *PerHost methods
+	case "AddFromString", "AddNetwork", "AddZone", "AddHost":
+		return Value{}, true
+	case "DialContext":
+		return Value{Raw: []Value{opaque, {}}}, true
+	}
+	return Value{}, false
+}
+
+// handleNetNetUtilCall intercepts golang.org/x/net/netutil calls (issue #186).
+func (interp *Interpreter) handleNetNetUtilCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "LimitListener":
+		return opaque, true
+	}
+	return Value{}, false
+}
+
+// handleHTTPGutsCall intercepts golang.org/x/net/http/httpguts calls (issue #188).
+func (interp *Interpreter) handleHTTPGutsCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "HeaderValuesContainsToken":
+		return Value{Raw: false}, true
+	case "RequestWouldUseHTTP1":
+		return Value{Raw: true}, true
+	case "IsTokenRune":
+		return Value{Raw: false}, true
+	case "IsHTTPToken":
+		return Value{Raw: false}, true
+	case "ValidHeaderFieldName", "ValidHeaderFieldValue",
+		"ValidHostHeader", "ValidTrailerHeader":
+		return Value{Raw: true}, true
+	case "PunycodeHostPort":
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				return Value{Raw: []Value{{Raw: s}, {}}}, true
+			}
+		}
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	}
+	return Value{}, false
+}
+
+// handleModSemverCall intercepts golang.org/x/mod/semver calls (issue #187).
+func (interp *Interpreter) handleModSemverCall(name string, args []Value) (Value, bool) {
+	strArg := func(i int) string {
+		if i < len(args) {
+			if s, ok := args[i].Raw.(string); ok {
+				return s
+			}
+		}
+		return ""
+	}
+	switch name {
+	case "IsValid":
+		v := strArg(0)
+		ok := len(v) > 0 && v[0] == 'v'
+		return Value{Raw: ok}, true
+	case "Canonical":
+		return Value{Raw: strArg(0)}, true
+	case "Major":
+		v := strArg(0)
+		// Return "vX" portion
+		return Value{Raw: v}, true
+	case "MajorMinor":
+		return Value{Raw: strArg(0)}, true
+	case "Prerelease":
+		return Value{Raw: ""}, true
+	case "Build":
+		return Value{Raw: ""}, true
+	case "Compare":
+		// returns -1, 0, or 1
+		v, w := strArg(0), strArg(1)
+		if v < w {
+			return Value{Raw: int64(-1)}, true
+		} else if v > w {
+			return Value{Raw: int64(1)}, true
+		}
+		return Value{Raw: int64(0)}, true
+	case "Max":
+		v, w := strArg(0), strArg(1)
+		if v > w {
+			return Value{Raw: v}, true
+		}
+		return Value{Raw: w}, true
+	case "Sort":
+		return Value{}, true
+	case "Minor", "Patch":
+		return Value{Raw: strArg(0)}, true
+	}
+	return Value{}, false
+}
+
+// handleModModuleCall intercepts golang.org/x/mod/module calls (issue #187).
+func (interp *Interpreter) handleModModuleCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "CheckPath", "CheckImportPath", "CheckFilePath", "CheckPathMajor":
+		return Value{}, true // nil error
+	case "EscapePath":
+		escaped := ""
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				escaped = s
+			}
+		}
+		return Value{Raw: []Value{{Raw: escaped}, {}}}, true
+	case "EscapeVersion":
+		v := ""
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				v = s
+			}
+		}
+		return Value{Raw: []Value{{Raw: v}, {}}}, true
+	case "UnescapePath", "UnescapeVersion":
+		s := ""
+		if len(args) > 0 {
+			if sv, ok := args[0].Raw.(string); ok {
+				s = sv
+			}
+		}
+		return Value{Raw: []Value{{Raw: s}, {}}}, true
+	case "CanonicalVersion":
+		s := ""
+		if len(args) > 0 {
+			if sv, ok := args[0].Raw.(string); ok {
+				s = sv
+			}
+		}
+		return Value{Raw: s}, true
+	case "IsPseudoVersion", "IsZeroPseudoVersion":
+		return Value{Raw: false}, true
+	case "MatchPathMajor", "MatchPrefixPatterns":
+		return Value{Raw: false}, true
+	case "PathMajorPrefix":
+		return Value{Raw: ""}, true
+	case "PseudoVersion":
+		return Value{Raw: ""}, true
+	case "PseudoVersionBase", "PseudoVersionRev", "PseudoVersionTime":
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "SortVersions":
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleModModfileCall intercepts golang.org/x/mod/modfile calls (issue #187).
+func (interp *Interpreter) handleModModfileCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Parse", "ParseLax":
+		// (*File, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Format":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "AutoQuote":
+		s := ""
+		if len(args) > 0 {
+			if sv, ok := args[0].Raw.(string); ok {
+				s = sv
+			}
+		}
+		return Value{Raw: s}, true
+	case "ModulePath":
+		return Value{Raw: ""}, true
+	case "IsDirectoryPath":
+		return Value{Raw: false}, true
+	case "MustQuote":
+		return Value{Raw: false}, true
+	// *File methods
+	case "AddGoStmt", "AddModuleStmt", "AddRequire", "AddReplace",
+		"AddExclude", "DropRequire", "DropReplace", "DropExclude",
+		"SetRequire", "SetRequireSeparateIndirect", "Cleanup",
+		"AddRetract", "DropRetract", "AddToolchain", "DropToolchain",
+		"SortBlocks":
+		return Value{}, true
+	case "Module", "Go", "Require", "Replace", "Exclude":
+		return opaque, true
+	}
+	return Value{}, false
+}
+
+// handleCryptoTopCall intercepts crypto (top-level) package calls (issue #188).
+func (interp *Interpreter) handleCryptoTopCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "RegisterHash":
+		return Value{}, true
+	case "SignMessage":
+		// (signature []byte, err error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	// crypto.Hash method New() hash.Hash
+	case "New":
+		return Value{Raw: struct{}{}}, true
+	case "Available":
+		return Value{Raw: false}, true
+	case "Size":
+		return Value{Raw: int64(32)}, true
+	case "String":
+		return Value{Raw: ""}, true
+	}
+	return Value{}, false
+}
+
+// handleCryptoTestCall intercepts testing/cryptotest calls (issue #188).
+func (interp *Interpreter) handleCryptoTestCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "SetGlobalRandom":
+		// SetGlobalRandom(t *testing.T, seed uint64) — noop
+		return Value{}, true
+	case "TestAEAD", "TestHash", "TestStream", "TestBlock":
+		// TestXxx(t *testing.T, ...) — these probe the implementation but we
+		// can noop safely since they're testing-only helpers.
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// ── v0.63.0: golang.org/x/text, x/term, x/crypto extras ─────────────────────
+
+// handleTextCasesCall intercepts golang.org/x/text/cases calls (issue #193).
+func (interp *Interpreter) handleTextCasesCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Lower", "Upper", "Title", "Fold":
+		// Returns a Caser — opaque transformer object.
+		return opaque, true
+	// Caser methods: String(s) string, Bytes(b []byte) []byte
+	case "String":
+		if len(args) > 1 {
+			if s, ok := args[1].Raw.(string); ok {
+				return Value{Raw: s}, true
+			}
+		}
+		return Value{Raw: ""}, true
+	case "Bytes":
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				return Value{Raw: bv}, true
+			}
+		}
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, false
+}
+
+// handleTextLanguageCall intercepts golang.org/x/text/language calls (issue #193).
+func (interp *Interpreter) handleTextLanguageCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Parse", "Make":
+		// (Tag, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "MustParse":
+		return opaque, true
+	case "ParseAcceptLanguage":
+		// ([]Tag, []float32, error)
+		return Value{Raw: []Value{{Raw: []Value{opaque}}, {Raw: []Value{{Raw: float64(1.0)}}}, {}}}, true
+	case "NewMatcher":
+		return opaque, true
+	case "Match":
+		// (Tag, []language.Confidence)
+		return Value{Raw: []Value{opaque, {Raw: []Value{}}}}, true
+	// Tag methods
+	case "String":
+		return Value{Raw: "en"}, true
+	case "Base":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Region":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Script":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "IsRoot":
+		return Value{Raw: false}, true
+	case "Parent":
+		return opaque, true
+	case "Compose":
+		return Value{Raw: []Value{opaque, {}}}, true
+	}
+	return Value{}, false
+}
+
+// handleTextTransformCall intercepts golang.org/x/text/transform calls (issue #193).
+func (interp *Interpreter) handleTextTransformCall(gid int64, site, name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "String":
+		// (string, n int, err error) — passthrough src
+		src := ""
+		if len(args) > 1 {
+			if s, ok := args[1].Raw.(string); ok {
+				src = s
+			}
+		}
+		return Value{Raw: []Value{{Raw: src}, {Raw: int64(len(src))}, {}}}, true
+	case "Bytes":
+		// ([]byte, n int, err error)
+		var b []Value
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				b = bv
+			}
+		}
+		return Value{Raw: []Value{{Raw: b}, {Raw: int64(len(b))}, {}}}, true
+	case "Append":
+		// ([]byte, n int, err error)
+		var dst []Value
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				dst = bv
+			}
+		}
+		return Value{Raw: []Value{{Raw: dst}, {Raw: int64(0)}, {}}}, true
+	case "NewReader":
+		return opaque, true
+	case "NewWriter":
+		return opaque, true
+	case "Chain":
+		return opaque, true
+	case "RemoveFunc":
+		return opaque, true
+	// Reader/Writer methods
+	case "Read":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Write":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Reset":
+		return Value{}, true
+	case "Close":
+		return Value{Raw: struct{}{}}, true
+	}
+	return Value{}, false
+}
+
+// handleTextNormCall intercepts golang.org/x/text/unicode/norm calls (issue #194).
+func (interp *Interpreter) handleTextNormCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "String":
+		// Form.String(s string) string — passthrough
+		if len(args) > 1 {
+			if s, ok := args[1].Raw.(string); ok {
+				return Value{Raw: s}, true
+			}
+		}
+		return Value{Raw: ""}, true
+	case "Bytes":
+		// Form.Bytes(b []byte) []byte — passthrough
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				return Value{Raw: bv}, true
+			}
+		}
+		return Value{Raw: []Value{}}, true
+	case "IsNormal", "IsNormalString":
+		// conservative: return false (assume not normalized)
+		return Value{Raw: false}, true
+	case "Append", "AppendString":
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				return Value{Raw: bv}, true
+			}
+		}
+		return Value{Raw: []Value{}}, true
+	case "Reader":
+		return Value{Raw: struct{}{}}, true
+	case "Writer":
+		return Value{Raw: struct{}{}}, true
+	}
+	return Value{}, false
+}
+
+// handleTextWidthCall intercepts golang.org/x/text/width calls (issue #194).
+func (interp *Interpreter) handleTextWidthCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Fold", "Narrow", "Widen":
+		// These are package-level Transformer vars accessed as func-like — opaque
+		return opaque, true
+	case "Lookup":
+		// (Properties, size int)
+		return Value{Raw: []Value{opaque, {Raw: int64(1)}}}, true
+	case "LookupRune":
+		return opaque, true
+	case "LookupString":
+		// (Properties, size int)
+		return Value{Raw: []Value{opaque, {Raw: int64(1)}}}, true
+	// Properties methods
+	case "Kind":
+		return Value{Raw: int64(0)}, true
+	case "IsWide", "IsNarrow", "IsAmbiguous", "IsNeutral":
+		return Value{Raw: false}, true
+	// Transformer methods (Fold/Narrow/Widen are Transformer structs)
+	case "Transform":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(0)}, {Raw: false}, {}}}, true
+	case "Reset":
+		return Value{}, true
+	case "String":
+		if len(args) > 1 {
+			if s, ok := args[1].Raw.(string); ok {
+				return Value{Raw: s}, true
+			}
+		}
+		return Value{Raw: ""}, true
+	case "Bytes":
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				return Value{Raw: bv}, true
+			}
+		}
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, false
+}
+
+// handleTextRunesCall intercepts golang.org/x/text/runes calls (issue #194).
+func (interp *Interpreter) handleTextRunesCall(gid int64, site, name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Map", "Remove", "If", "ReplaceIllFormed":
+		return opaque, true
+	case "In", "NotIn", "Predicate":
+		return opaque, true
+	// Transformer methods
+	case "Transform":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(0)}, {Raw: false}, {}}}, true
+	case "Reset":
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleTermCall intercepts golang.org/x/term calls (issue #195).
+func (interp *Interpreter) handleTermCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "IsTerminal":
+		return Value{Raw: false}, true
+	case "GetSize":
+		// (width, height int, err error)
+		return Value{Raw: []Value{{Raw: int64(80)}, {Raw: int64(24)}, {}}}, true
+	case "ReadPassword":
+		// ([]byte, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "MakeRaw":
+		// (*State, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Restore":
+		return Value{Raw: struct{}{}}, true
+	case "GetState":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// Terminal methods (for *Terminal type)
+	case "NewTerminal":
+		return opaque, true
+	case "ReadLine":
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "Write":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "SetPrompt":
+		return Value{}, true
+	case "SetSize":
+		return Value{Raw: struct{}{}}, true
+	case "AutoCompleteCallback":
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleChacha20Call intercepts golang.org/x/crypto/chacha20poly1305 calls (issue #195).
+func (interp *Interpreter) handleChacha20Call(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New", "NewX":
+		// (cipher.AEAD, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	// AEAD interface methods on opaque cipher
+	case "NonceSize", "Overhead":
+		return Value{Raw: int64(12)}, true
+	case "Seal":
+		// (dst []byte)
+		var dst []Value
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				dst = bv
+			}
+		}
+		return Value{Raw: dst}, true
+	case "Open":
+		// ([]byte, error)
+		var plain []Value
+		if len(args) > 2 {
+			if bv, ok := args[2].Raw.([]Value); ok {
+				plain = bv
+			}
+		}
+		return Value{Raw: []Value{{Raw: plain}, {}}}, true
+	}
+	return Value{}, false
+}
+
+// handleArgon2Call intercepts golang.org/x/crypto/argon2 calls (issue #195).
+func (interp *Interpreter) handleArgon2Call(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Key", "IDKey":
+		// Key(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte
+		// Return opaque byte slice (no actual KDF computation in interpreter).
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, false
+}
+
+// handleSSHCall intercepts golang.org/x/crypto/ssh calls (issue #196).
+func (interp *Interpreter) handleSSHCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Dial":
+		// (client *Client, err error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewClientConn":
+		// (Conn, <-chan NewChannel, <-chan *Request, error)
+		return Value{Raw: []Value{opaque, opaque, opaque, {}}}, true
+	case "NewServerConn":
+		// (*ServerConn, <-chan NewChannel, <-chan *Request, error)
+		return Value{Raw: []Value{opaque, opaque, opaque, {}}}, true
+	case "NewSignerFromKey", "NewPublicKey":
+		// (interface{}/PublicKey, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ParsePrivateKey", "ParseRawPrivateKey":
+		// (Signer, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ParseAuthorizedKey":
+		// (out PublicKey, comment string, options []string, rest []byte, err error)
+		return Value{Raw: []Value{opaque, {Raw: ""}, {Raw: []Value{}}, {Raw: []Value{}}, {}}}, true
+	case "ParseKnownHosts":
+		// returns a func — opaque
+		return opaque, true
+	case "ParsePublicKey":
+		// (PublicKey, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "MarshalAuthorizedKey":
+		return Value{Raw: []Value{}}, true
+	case "FingerprintSHA256", "FingerprintLegacyMD5":
+		return Value{Raw: ""}, true
+	case "InsecureIgnoreHostKey", "FixedHostKey":
+		// HostKeyCallback functions — opaque func
+		return opaque, true
+	// *Client methods
+	case "NewSession":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Close":
+		return Value{Raw: struct{}{}}, true
+	case "Listen":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "OpenChannel":
+		return Value{Raw: []Value{opaque, opaque, {}}}, true
+	case "SendRequest":
+		return Value{Raw: []Value{{Raw: false}, {Raw: []Value{}}, {}}}, true
+	// *Session methods
+	case "Run", "Start", "Shell":
+		return Value{Raw: struct{}{}}, true
+	case "Output", "CombinedOutput":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Wait":
+		return Value{Raw: struct{}{}}, true
+	case "RequestPty":
+		return Value{Raw: struct{}{}}, true
+	case "StdinPipe":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "StdoutPipe", "StderrPipe":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Setenv":
+		return Value{Raw: struct{}{}}, true
+	// Key exchange / cipher names noop
+	case "NewCertSigner":
+		return Value{Raw: []Value{opaque, {}}}, true
+	}
+	return Value{}, false
+}
+
+// ── v0.64.0: x/crypto NaCl + Blake2 + ed25519; x/text encoding + collate + search ──
+
+// handleNaclBoxCall intercepts golang.org/x/crypto/nacl/box calls (issue #197).
+func (interp *Interpreter) handleNaclBoxCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "GenerateKey":
+		// (publicKey *[32]byte, privateKey *[32]byte, err error)
+		return Value{Raw: []Value{opaque, opaque, {}}}, true
+	case "Precompute":
+		// func Precompute(sharedKey, peersPublicKey, privateKey *[32]byte) — noop
+		return Value{}, true
+	case "Seal", "SealAfterPrecomputation":
+		// ([]byte)
+		var out []Value
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				out = bv
+			}
+		}
+		return Value{Raw: out}, true
+	case "SealAnonymous":
+		// ([]byte, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Open", "OpenAfterPrecomputation", "OpenAnonymous":
+		// ([]byte, bool)
+		return Value{Raw: []Value{{Raw: []Value{}}, {Raw: true}}}, true
+	}
+	return Value{}, false
+}
+
+// handleNaclSecretboxCall intercepts golang.org/x/crypto/nacl/secretbox calls (issue #197).
+func (interp *Interpreter) handleNaclSecretboxCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Seal":
+		var out []Value
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				out = bv
+			}
+		}
+		return Value{Raw: out}, true
+	case "Open":
+		// ([]byte, bool)
+		return Value{Raw: []Value{{Raw: []Value{}}, {Raw: true}}}, true
+	}
+	return Value{}, false
+}
+
+// handleCurve25519Call intercepts golang.org/x/crypto/curve25519 calls (issue #197).
+func (interp *Interpreter) handleCurve25519Call(name string, args []Value) (Value, bool) {
+	switch name {
+	case "X25519":
+		// ([]byte, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ScalarBaseMult", "ScalarMult":
+		// func ScalarBaseMult(dst, scalar *[32]byte) — noop
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handlePoly1305Call intercepts golang.org/x/crypto/poly1305 calls (issue #197).
+func (interp *Interpreter) handlePoly1305Call(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New":
+		// *MAC
+		return opaque, true
+	case "Sum":
+		// func Sum(out *[16]byte, m []byte, key *[32]byte) — noop (modifies out in place)
+		return Value{}, true
+	case "Verify":
+		// func Verify(mac *[16]byte, m []byte, key *[32]byte) bool
+		return Value{Raw: false}, true
+	// *MAC methods
+	case "Write":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Size":
+		return Value{Raw: int64(16)}, true
+	case "Sum_":
+		// Sum(b []byte) []byte — disambiguated from package-level Sum
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, false
+}
+
+// handleBlake2bCall intercepts golang.org/x/crypto/blake2b calls (issue #198).
+func (interp *Interpreter) handleBlake2bCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New", "New256", "New384", "New512":
+		// (hash.Hash, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NewXOF":
+		// (XOF, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Sum256":
+		// [Size256]byte — return opaque
+		return opaque, true
+	case "Sum384":
+		return opaque, true
+	case "Sum512":
+		return opaque, true
+	// hash.Hash / XOF methods on opaque
+	case "Write":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Sum":
+		var b []Value
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				b = bv
+			}
+		}
+		return Value{Raw: b}, true
+	case "Reset":
+		return Value{}, true
+	case "Size":
+		return Value{Raw: int64(64)}, true
+	case "BlockSize":
+		return Value{Raw: int64(128)}, true
+	case "Read":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Clone":
+		return opaque, true
+	}
+	return Value{}, false
+}
+
+// handleBlake2sCall intercepts golang.org/x/crypto/blake2s calls (issue #198).
+func (interp *Interpreter) handleBlake2sCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New128", "New256":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Sum256":
+		return opaque, true
+	case "NewXOF":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// hash.Hash methods
+	case "Write":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Sum":
+		var b []Value
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				b = bv
+			}
+		}
+		return Value{Raw: b}, true
+	case "Reset":
+		return Value{}, true
+	case "Size":
+		return Value{Raw: int64(32)}, true
+	case "BlockSize":
+		return Value{Raw: int64(64)}, true
+	}
+	return Value{}, false
+}
+
+// handleXEd25519Call intercepts golang.org/x/crypto/ed25519 calls (issue #198).
+// This package is a thin alias for crypto/ed25519; intercept all its functions.
+func (interp *Interpreter) handleXEd25519Call(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "GenerateKey":
+		// (PublicKey, PrivateKey, error)
+		return Value{Raw: []Value{opaque, opaque, {}}}, true
+	case "NewKeyFromSeed":
+		// PrivateKey
+		return opaque, true
+	case "Sign":
+		// []byte
+		return Value{Raw: []Value{}}, true
+	case "Verify":
+		return Value{Raw: false}, true
+	// PrivateKey/PublicKey methods
+	case "Public":
+		return opaque, true
+	case "Equal":
+		return Value{Raw: false}, true
+	case "Seed":
+		return Value{Raw: []Value{}}, true
+	case "Sign_":
+		// PrivateKey.Sign(rand, msg, opts) ([]byte, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	}
+	return Value{}, false
+}
+
+// handleTextEncodingCall intercepts golang.org/x/text/encoding calls (issue #199).
+func (interp *Interpreter) handleTextEncodingCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "HTMLEscapeUnsupported", "ReplaceUnsupported":
+		// (*Encoder) — wraps an existing encoder
+		return opaque, true
+	// Decoder/Encoder methods
+	case "NewDecoder":
+		return opaque, true
+	case "NewEncoder":
+		return opaque, true
+	case "Transform":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(0)}, {Raw: false}, {}}}, true
+	case "Reset":
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleTextCharmapCall intercepts golang.org/x/text/encoding/charmap calls (issue #199).
+func (interp *Interpreter) handleTextCharmapCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewDecoder":
+		return opaque, true
+	case "NewEncoder":
+		return opaque, true
+	case "String":
+		return Value{Raw: ""}, true
+	case "ID":
+		// (identifier.MIB, string)
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: ""}}}, true
+	case "DecodeByte":
+		return Value{Raw: int64(0)}, true // rune
+	case "EncodeRune":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true // (byte, bool)
+	}
+	return Value{}, false
+}
+
+// handleTextEncodingUnicodeCall intercepts golang.org/x/text/encoding/unicode calls (issue #199).
+func (interp *Interpreter) handleTextEncodingUnicodeCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "UTF16":
+		// encoding.Encoding
+		return opaque, true
+	case "BOMOverride":
+		// transform.Transformer
+		return opaque, true
+	// Encoding methods
+	case "NewDecoder":
+		return opaque, true
+	case "NewEncoder":
+		return opaque, true
+	case "String":
+		return Value{Raw: "UTF-16"}, true
+	case "ID":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: ""}}}, true
+	}
+	return Value{}, false
+}
+
+// handleTextCollateCall intercepts golang.org/x/text/collate calls (issue #200).
+func (interp *Interpreter) handleTextCollateCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New", "NewFromTable":
+		return opaque, true
+	case "Supported":
+		// []language.Tag — return empty slice
+		return Value{Raw: []Value{}}, true
+	case "OptionsFromTag":
+		return opaque, true
+	case "Reorder":
+		return opaque, true
+	// *Collator methods
+	case "Compare", "CompareString":
+		// 0 = equal (conservative)
+		return Value{Raw: int64(0)}, true
+	case "Key", "KeyFromString":
+		// []byte — empty
+		return Value{Raw: []Value{}}, true
+	case "Sort", "SortStrings":
+		// noop
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleTextSearchCall intercepts golang.org/x/text/search calls (issue #200).
+func (interp *Interpreter) handleTextSearchCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New":
+		return opaque, true
+	// *Matcher methods
+	case "Index", "IndexString":
+		// (start, end int) — -1,-1 means not found (conservative)
+		return Value{Raw: []Value{{Raw: int64(-1)}, {Raw: int64(-1)}}}, true
+	case "Equal", "EqualString":
+		return Value{Raw: false}, true
+	case "Compile", "CompileString":
+		return opaque, true
+	// *Pattern methods
+	case "FindAllIndex":
+		return Value{Raw: []Value{}}, true
+	}
+	return Value{}, false
+}
+
+// ── v0.65.0: x/crypto stream ciphers + KDF; x/text message/number/currency/bidi/precis ──
+
+// handleScryptCall intercepts golang.org/x/crypto/scrypt calls (issue #201).
+func (interp *Interpreter) handleScryptCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Key":
+		// Key(password, salt []byte, N, r, p, keyLen int) ([]byte, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	}
+	return Value{}, false
+}
+
+// handleChacha20PrimCall intercepts golang.org/x/crypto/chacha20 calls (issue #201).
+func (interp *Interpreter) handleChacha20PrimCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewUnauthenticatedCipher":
+		// (*Cipher, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "HChaCha20":
+		// ([]byte, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	// *Cipher methods
+	case "XORKeyStream":
+		// noop (modifies dst in place)
+		return Value{}, true
+	case "SetCounter":
+		return Value{}, true
+	case "Advance":
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleXTSCall intercepts golang.org/x/crypto/xts calls (issue #201).
+func (interp *Interpreter) handleXTSCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewCipher":
+		// (*Cipher, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Cipher methods
+	case "Encrypt", "Decrypt":
+		// noop (modifies dst in place)
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleSalsa20Call intercepts golang.org/x/crypto/salsa20 calls (issue #201).
+func (interp *Interpreter) handleSalsa20Call(name string, args []Value) (Value, bool) {
+	switch name {
+	case "XORKeyStream":
+		// func XORKeyStream(out, in []byte, nonce []byte, key *[32]byte) — noop
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleTextMessageCall intercepts golang.org/x/text/message calls (issue #202).
+func (interp *Interpreter) handleTextMessageCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewPrinter":
+		return opaque, true
+	case "MatchLanguage":
+		return opaque, true
+	case "SetString", "Set":
+		return Value{Raw: struct{}{}}, true
+	// *Printer methods
+	case "Print", "Println":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Printf":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Fprint", "Fprintln", "Fprintf":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Sprint", "Sprintln":
+		return Value{Raw: ""}, true
+	case "Sprintf":
+		return Value{Raw: ""}, true
+	}
+	return Value{}, false
+}
+
+// handleTextNumberCall intercepts golang.org/x/text/number calls (issue #202).
+func (interp *Interpreter) handleTextNumberCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Decimal", "Scientific", "Engineering", "Percent":
+		// FormatFunc(x) — return opaque
+		return opaque, true
+	case "Scale", "MaxIntegerDigits", "MaxFractionDigits", "MinIntegerDigits",
+		"MinFractionDigits", "IncrementString", "Increment":
+		return opaque, true
+	}
+	return Value{}, false
+}
+
+// handleTextCurrencyCall intercepts golang.org/x/text/currency calls (issue #202).
+func (interp *Interpreter) handleTextCurrencyCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "MustParseISO":
+		return opaque, true
+	case "ParseISO":
+		// (Unit, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "NarrowSymbol", "Symbol", "ISO":
+		return opaque, true
+	case "String":
+		return Value{Raw: ""}, true
+	// Unit methods
+	case "Amount":
+		return opaque, true
+	}
+	return Value{}, false
+}
+
+// handleTextBidiCall intercepts golang.org/x/text/unicode/bidi calls (issue #203).
+func (interp *Interpreter) handleTextBidiCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "AppendReverse":
+		// func AppendReverse(out, in []byte) []byte — passthrough in
+		var in []Value
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				in = bv
+			}
+		}
+		return Value{Raw: in}, true
+	case "ReverseString":
+		// func ReverseString(s string) string — passthrough
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				return Value{Raw: s}, true
+			}
+		}
+		return Value{Raw: ""}, true
+	// *Paragraph methods
+	case "SetBytes", "SetString":
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Order":
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Ordering methods
+	case "NumRuns":
+		return Value{Raw: int64(1)}, true
+	case "Run":
+		return opaque, true
+	case "Direction":
+		return Value{Raw: int64(0)}, true // LeftToRight
+	// Package-level property lookups
+	case "LookupRune", "Lookup":
+		// Returns (Properties, size int) — return opaque properties + 1
+		return Value{Raw: []Value{stdlibOpaque, {Raw: int64(1)}}}, true
+	case "LookupString":
+		// Returns (Properties, size int)
+		return Value{Raw: []Value{stdlibOpaque, {Raw: int64(1)}}}, true
+	// Properties methods
+	case "Class", "IsBracket", "IsOpeningBracket", "HasStrongType", "IsMirror":
+		return Value{Raw: int64(0)}, true
+	}
+	return Value{}, false
+}
+
+// handleRuneNamesCall intercepts golang.org/x/text/unicode/runenames calls (issue #203).
+func (interp *Interpreter) handleRuneNamesCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Name":
+		// func Name(r rune) string — return empty (no UCD data)
+		return Value{Raw: ""}, true
+	}
+	return Value{}, false
+}
+
+// handleBidiRuleCall intercepts golang.org/x/text/secure/bidirule calls (issue #203).
+func (interp *Interpreter) handleBidiRuleCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Direction":
+		// func Direction(b []byte) bidi.Direction — conservative: LeftToRight (0)
+		return Value{Raw: int64(0)}, true
+	case "DirectionString":
+		return Value{Raw: int64(0)}, true
+	case "Valid", "ValidString":
+		// conservative: assume valid
+		return Value{Raw: true}, true
+	}
+	return Value{}, false
+}
+
+// handlePrecisCall intercepts golang.org/x/text/secure/precis calls (issue #204).
+func (interp *Interpreter) handlePrecisCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewFreeform", "NewIdentifier", "NewRestrictedProfile":
+		return opaque, true
+	// *Profile methods
+	case "String":
+		// *Profile.String(s string) (string, error)
+		src := ""
+		if len(args) > 1 {
+			if s, ok := args[1].Raw.(string); ok {
+				src = s
+			}
+		}
+		return Value{Raw: []Value{{Raw: src}, {}}}, true
+	case "Bytes":
+		// *Profile.Bytes(b []byte) ([]byte, error)
+		var b []Value
+		if len(args) > 1 {
+			if bv, ok := args[1].Raw.([]Value); ok {
+				b = bv
+			}
+		}
+		return Value{Raw: []Value{{Raw: b}, {}}}, true
+	case "Append", "AppendCompareKey":
+		// ([]byte, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Compare":
+		return Value{Raw: false}, true
+	case "CompareKey":
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "NewTransformer":
+		return opaque, true
+	case "Allowed":
+		return opaque, true
+	}
+	return Value{}, false
+}
+
+// handleTextEncodingJapaneseCall intercepts golang.org/x/text/encoding/japanese calls (issue #204).
+func (interp *Interpreter) handleTextEncodingJapaneseCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewDecoder":
+		return opaque, true
+	case "NewEncoder":
+		return opaque, true
+	case "String":
+		return Value{Raw: ""}, true
+	case "ID":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: ""}}}, true
+	}
+	return Value{}, false
+}
+
+// handleTextHTMLIndexCall intercepts golang.org/x/text/encoding/htmlindex calls (issue #204).
+func (interp *Interpreter) handleTextHTMLIndexCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Get":
+		// (encoding.Encoding, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Name":
+		// (string, error)
+		return Value{Raw: []Value{{Raw: "utf-8"}, {}}}, true
+	case "LanguageDefault":
+		// string
+		return Value{Raw: "utf-8"}, true
+	}
+	return Value{}, false
+}
+
+// handleTextEncodingKoreanCall intercepts golang.org/x/text/encoding/korean calls (issue #205).
+func (interp *Interpreter) handleTextEncodingKoreanCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewDecoder", "NewEncoder":
+		return opaque, true
+	case "String":
+		return Value{Raw: ""}, true
+	case "ID":
+		// (identifier.MIB, string)
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: ""}}}, true
+	}
+	return Value{}, false
+}
+
+// handleTextEncodingSimplifiedChineseCall intercepts golang.org/x/text/encoding/simplifiedchinese calls (issue #205).
+func (interp *Interpreter) handleTextEncodingSimplifiedChineseCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewDecoder", "NewEncoder":
+		return opaque, true
+	case "String":
+		return Value{Raw: ""}, true
+	case "ID":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: ""}}}, true
+	}
+	return Value{}, false
+}
+
+// handleTextEncodingTraditionalChineseCall intercepts golang.org/x/text/encoding/traditionalchinese calls (issue #205).
+func (interp *Interpreter) handleTextEncodingTraditionalChineseCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "NewDecoder", "NewEncoder":
+		return opaque, true
+	case "String":
+		return Value{Raw: ""}, true
+	case "ID":
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: ""}}}, true
+	}
+	return Value{}, false
+}
+
+// handleTextIANAIndexCall intercepts golang.org/x/text/encoding/ianaindex calls (issue #206).
+func (interp *Interpreter) handleTextIANAIndexCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "Encoding":
+		// (*Index).Encoding(name string) (encoding.Encoding, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Name":
+		// (*Index).Name(e encoding.Encoding) (string, error)
+		return Value{Raw: []Value{{Raw: "utf-8"}, {}}}, true
+	}
+	return Value{}, false
+}
+
+// handleNetTraceCall intercepts golang.org/x/net/trace calls (issue #206).
+func (interp *Interpreter) handleNetTraceCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "New":
+		// func New(family, title string) Trace — opaque interface
+		return opaque, true
+	case "NewContext":
+		// func NewContext(ctx context.Context, tr Trace) context.Context — passthrough ctx
+		if len(args) > 0 {
+			return args[0], true
+		}
+		return opaque, true
+	case "FromContext":
+		// func FromContext(ctx) (Trace, bool)
+		return Value{Raw: []Value{opaque, {Raw: false}}}, true
+	case "NewEventLog":
+		// func NewEventLog(family, title string) EventLog
+		return opaque, true
+	// Trace interface methods
+	case "LazyLog", "LazyPrintf", "SetError", "SetRecycler", "SetTraceInfo", "Finish":
+		return Value{}, true
+	// EventLog interface methods
+	case "Printf", "Errorf":
+		return Value{}, true
+	// HTTP handlers
+	case "Events", "Render", "RenderEvents", "Traces":
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleDNSMessageCall intercepts golang.org/x/net/dns/dnsmessage calls (issue #207).
+func (interp *Interpreter) handleDNSMessageCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	// Constructors
+	case "MustNewName":
+		return opaque, true
+	case "NewName":
+		// (Name, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	// *Message methods
+	case "Pack", "AppendPack":
+		// ([]byte, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "Unpack":
+		return Value{}, true
+	case "GoString":
+		return Value{Raw: ""}, true
+	// *Parser methods
+	case "Start":
+		// (Header, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "Question", "Answer", "Authority", "Additional":
+		// (Resource/Question, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "AllQuestions", "AllAnswers", "AllAuthorities", "AllAdditionals":
+		// ([]T, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "SkipQuestion", "SkipAnswer", "SkipAuthority", "SkipAdditional",
+		"SkipAllQuestions", "SkipAllAnswers", "SkipAllAuthorities", "SkipAllAdditionals",
+		"PopQuestion", "PopAnswer", "PopAuthority", "PopAdditional":
+		return Value{}, true
+	// *Builder methods
+	case "StartQuestions", "StartAnswers", "StartAuthorities", "StartAdditionals":
+		return Value{}, true
+	case "Finish":
+		// ([]byte, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	// Value type methods
+	case "String":
+		return Value{Raw: ""}, true
+	case "Pack_":
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	}
+	return Value{}, false
+}
+
+// handleHPACKCall intercepts golang.org/x/net/http2/hpack calls (issue #208).
+func (interp *Interpreter) handleHPACKCall(name string, args []Value) (Value, bool) {
+	opaque := stdlibOpaque
+	switch name {
+	case "AppendHuffmanString":
+		// func AppendHuffmanString(dst []byte, s string) []byte — passthrough dst
+		if len(args) > 0 {
+			if bv, ok := args[0].Raw.([]Value); ok {
+				return Value{Raw: bv}, true
+			}
+		}
+		return Value{Raw: []Value{}}, true
+	case "HuffmanDecode":
+		// func HuffmanDecode(w io.Writer, v []byte) (int, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "HuffmanDecodeToString":
+		// func HuffmanDecodeToString(v []byte) (string, error)
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "HuffmanEncodeLength":
+		// func HuffmanEncodeLength(s string) uint64
+		return Value{Raw: uint64(0)}, true
+	case "NewDecoder":
+		// func NewDecoder(maxDynamicTableSize uint32, emit func(HeaderField)) *Decoder
+		return opaque, true
+	case "NewEncoder":
+		// func NewEncoder(w io.Writer) *Encoder
+		return opaque, true
+	// *Decoder methods
+	case "Write":
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Close":
+		return Value{}, true
+	case "SetMaxDynamicTableSize", "SetMaxStringLength", "SetEmitEnabled", "SetEmitFunc":
+		return Value{}, true
+	// *Encoder methods
+	case "WriteField":
+		return Value{}, true
+	case "SetMaxDynamicTableSizeLimit":
+		return Value{}, true
+	}
+	return Value{}, false
+}
+
+// handleSyncMapCall intercepts golang.org/x/sync/syncmap calls (issue #208).
+// syncmap.Map is a type alias for sync.Map; intercept its methods here.
+func (interp *Interpreter) handleSyncMapCall(name string, args []Value) (Value, bool) {
+	switch name {
+	case "Store", "Delete", "Swap":
+		return Value{}, true
+	case "Load", "LoadAndDelete":
+		// (value any, loaded bool)
+		return Value{Raw: []Value{{}, {Raw: false}}}, true
+	case "LoadOrStore":
+		// (actual any, loaded bool) — return second arg as actual
+		var actual Value
+		if len(args) > 1 {
+			actual = args[1]
+		}
+		return Value{Raw: []Value{actual, {Raw: false}}}, true
+	case "Range":
+		// Range(f func(key, value any) bool) — noop (no iteration model)
+		return Value{}, true
+	case "CompareAndSwap":
+		return Value{Raw: false}, true
+	case "CompareAndDelete":
+		return Value{Raw: false}, true
+	case "Clear":
+		return Value{}, true
+	}
+	return Value{}, false
 }

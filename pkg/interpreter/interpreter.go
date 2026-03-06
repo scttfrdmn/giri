@@ -276,6 +276,28 @@ func (vc *VectorClock) HappensBefore(other *VectorClock) bool {
 	return true
 }
 
+// snapshotClock returns a copy of g's current vector clock entries.
+// Used to capture the clock at synchronization points (Unlock, WaitGroup Done, etc.)
+// for later comparison when the lock is re-acquired or WaitGroup Wait returns.
+func snapshotClock(g *Goroutine) map[int64]uint64 {
+	snap := make(map[int64]uint64, len(g.VClock.Clocks))
+	for k, v := range g.VClock.Clocks {
+		snap[k] = v
+	}
+	return snap
+}
+
+// mergeClock merges the saved clock src into g's vector clock (element-wise max).
+// Used when a goroutine re-acquires a lock or returns from WaitGroup Wait to
+// establish happens-before with the last releaser/donator.
+func mergeClock(g *Goroutine, src map[int64]uint64) {
+	for id, t := range src {
+		if t > g.VClock.Clocks[id] {
+			g.VClock.Clocks[id] = t
+		}
+	}
+}
+
 // ChanID is a unique identifier for an interpreted channel.
 type ChanID uint64
 
@@ -402,6 +424,24 @@ type Interpreter struct {
 	// ContextCancelLeakError violations (#120).
 	cancelFuncs  map[cancelFuncID]cancelRecord
 	nextCancelID atomic.Uint64
+
+	// unmodeledCalls tracks external functions that had no stdlib intercept
+	// and no interpretable SSA body. Populated by execCall; surfaced via
+	// RunResult.UnmodeledCalls and the -v CLI flag. Nil until first entry.
+	unmodeledCalls map[string]struct{}
+}
+
+// recordUnmodeled records an external function with no model (no stdlib intercept
+// and no interpretable SSA body, or an assembly-backed method). Deduplicates by
+// "pkgPath.funcName" key.
+func (interp *Interpreter) recordUnmodeled(pkgPath, funcName string) {
+	if pkgPath == "" {
+		return
+	}
+	if interp.unmodeledCalls == nil {
+		interp.unmodeledCalls = make(map[string]struct{})
+	}
+	interp.unmodeledCalls[pkgPath+"."+funcName] = struct{}{}
 }
 
 // InterceptFunc is a callback that models the behavior of an external or
@@ -1573,11 +1613,7 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 		// Merge the last-unlock clock into the current goroutine's clock.
 		// This establishes that everything before the matching Unlock HB this Lock.
 		if ms.lastUnlockClock != nil {
-			for id, t := range ms.lastUnlockClock {
-				if t > g.VClock.Clocks[id] {
-					g.VClock.Clocks[id] = t
-				}
-			}
+			mergeClock(g, ms.lastUnlockClock)
 		}
 		ms.locked = true
 		ms.lockGoroutine = gid
@@ -1595,19 +1631,13 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 		// This establishes that this Unlock HB any subsequent Lock.
 		g.VClock.Tick(gid)
 		ms.locked = false
-		ms.lastUnlockClock = make(map[int64]uint64, len(g.VClock.Clocks))
-		for k, v := range g.VClock.Clocks {
-			ms.lastUnlockClock[k] = v
-		}
+		ms.lastUnlockClock = snapshotClock(g)
 
 	case "Done":
 		// WaitGroup.Done(): equivalent to Add(-1). Tick clock and snapshot it,
 		// then decrement the counter and check for negative (#57).
 		g.VClock.Tick(gid)
-		ms.lastUnlockClock = make(map[int64]uint64, len(g.VClock.Clocks))
-		for k, v := range g.VClock.Clocks {
-			ms.lastUnlockClock[k] = v
-		}
+		ms.lastUnlockClock = snapshotClock(g)
 		ms.wgCounter--
 		if ms.wgCounter < 0 {
 			interp.recordViolation(gid, &shadow.WaitGroupNegativeError{
@@ -1621,11 +1651,7 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 		// WaitGroup.Wait() and sync.Cond.Wait(): merge the last
 		// Done/Signal/Broadcast clock (mirrors Lock semantics).
 		if ms.lastUnlockClock != nil {
-			for id, t := range ms.lastUnlockClock {
-				if t > g.VClock.Clocks[id] {
-					g.VClock.Clocks[id] = t
-				}
-			}
+			mergeClock(g, ms.lastUnlockClock)
 		}
 
 	case "Add":
@@ -1712,18 +1738,12 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 	case "Signal":
 		// Cond.Signal: tick clock and snapshot (mirrors Mutex.Unlock).
 		g.VClock.Tick(gid)
-		ms.lastUnlockClock = make(map[int64]uint64, len(g.VClock.Clocks))
-		for k, v := range g.VClock.Clocks {
-			ms.lastUnlockClock[k] = v
-		}
+		ms.lastUnlockClock = snapshotClock(g)
 
 	case "Broadcast":
 		// Cond.Broadcast: same as Signal in our single-goroutine model.
 		g.VClock.Tick(gid)
-		ms.lastUnlockClock = make(map[int64]uint64, len(g.VClock.Clocks))
-		for k, v := range g.VClock.Clocks {
-			ms.lastUnlockClock[k] = v
-		}
+		ms.lastUnlockClock = snapshotClock(g)
 
 		// Note: Cond.Wait shares the "Wait" case above with WaitGroup.Wait —
 		// both merge the last clock snapshot, which is the correct HB semantics.

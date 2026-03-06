@@ -228,18 +228,29 @@ func main() {
 	var allViolations []error
 	var lastMemStats shadow.MemoryStats
 	for _, prog := range progs {
+		goVer := ""
+		if prog.GoVersion != "" {
+			goVer = " (" + prog.GoVersion + ")"
+		}
 		var result *interpreter.RunResult
 		if *flagRuns > 1 {
-			fmt.Fprintf(os.Stderr, "Interpreting %s with PCT scheduler (%d runs, seed=%d)...\n",
-				prog.Main.Pkg.Name(), *flagRuns, *flagSeed)
+			fmt.Fprintf(os.Stderr, "Interpreting %s%s with PCT scheduler (%d runs, seed=%d)...\n",
+				prog.Main.Pkg.Name(), goVer, *flagRuns, *flagSeed)
 			result = interpreter.RunN(prog, config, *flagRuns, *flagSeed)
 		} else {
-			fmt.Fprintf(os.Stderr, "Interpreting %s with %s scheduler (seed=%d)...\n",
-				prog.Main.Pkg.Name(), *flagStrategy, *flagSeed)
+			fmt.Fprintf(os.Stderr, "Interpreting %s%s with %s scheduler (seed=%d)...\n",
+				prog.Main.Pkg.Name(), goVer, *flagStrategy, *flagSeed)
 			result = interpreter.Run(prog, config)
 		}
 		allViolations = append(allViolations, result.Violations...)
 		lastMemStats = result.MemStats
+		if *flagVerbose && len(result.UnmodeledCalls) > 0 {
+			fmt.Fprintf(os.Stderr, "  Unmodeled external calls (%d, returned opaque zero value):\n",
+				len(result.UnmodeledCalls))
+			for _, c := range result.UnmodeledCalls {
+				fmt.Fprintf(os.Stderr, "    %s\n", c)
+			}
+		}
 	}
 
 	// Build report

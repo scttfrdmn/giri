@@ -16,6 +16,14 @@ import (
 	"github.com/scttfrdmn/giri/pkg/interpreter"
 )
 
+// buildSSAFrom builds an SSA program from a set of already-loaded packages.
+// This is the single canonical call-site for AllPackages+Build.
+func buildSSAFrom(initial []*packages.Package) (*ssa.Program, []*ssa.Package) {
+	prog, pkgs := ssautil.AllPackages(initial, ssa.InstantiateGenerics)
+	prog.Build()
+	return prog, pkgs
+}
+
 // LoadProgram loads a Go package (or packages) into SSA form.
 // patterns follows the same conventions as `go build` (e.g., "./...", "./cmd/foo").
 //
@@ -33,7 +41,8 @@ func LoadProgram(patterns ...string) (*interpreter.Program, error) {
 			packages.NeedDeps |
 			packages.NeedTypes |
 			packages.NeedSyntax |
-			packages.NeedTypesInfo,
+			packages.NeedTypesInfo |
+			packages.NeedModule,
 	}
 
 	initial, err := packages.Load(cfg, patterns...)
@@ -77,8 +86,7 @@ func LoadProgram(patterns ...string) (*interpreter.Program, error) {
 	}
 
 	// Build SSA
-	prog, pkgs := ssautil.AllPackages(initial, ssa.InstantiateGenerics)
-	prog.Build()
+	prog, pkgs := buildSSAFrom(initial)
 
 	// Find main package
 	var mainPkg *ssa.Package
@@ -104,6 +112,7 @@ func LoadProgram(patterns ...string) (*interpreter.Program, error) {
 		Main:         mainPkg,
 		Fset:         fset,
 		Suppressions: ParseSuppressions(fset, initial),
+		GoVersion:    extractGoVersion(initial),
 	}, nil
 }
 
@@ -118,7 +127,8 @@ func LoadTest(pattern string) (*interpreter.Program, []string, error) {
 			packages.NeedDeps |
 			packages.NeedTypes |
 			packages.NeedSyntax |
-			packages.NeedTypesInfo,
+			packages.NeedTypesInfo |
+			packages.NeedModule,
 		Tests: true,
 	}
 
@@ -136,8 +146,7 @@ func LoadTest(pattern string) (*interpreter.Program, []string, error) {
 		)
 	}
 
-	prog, pkgs := ssautil.AllPackages(initial, ssa.InstantiateGenerics)
-	prog.Build()
+	prog, pkgs := buildSSAFrom(initial)
 
 	// Find test functions
 	var testNames []string
@@ -165,9 +174,10 @@ func LoadTest(pattern string) (*interpreter.Program, []string, error) {
 	}
 
 	return &interpreter.Program{
-		SSA:  prog,
-		Main: testPkg,
-		Fset: fset,
+		SSA:       prog,
+		Main:      testPkg,
+		Fset:      fset,
+		GoVersion: extractGoVersion(initial),
 	}, testNames, nil
 }
 
@@ -221,7 +231,8 @@ func LoadAllPrograms(patterns []string) ([]*interpreter.Program, error) {
 			packages.NeedDeps |
 			packages.NeedTypes |
 			packages.NeedSyntax |
-			packages.NeedTypesInfo,
+			packages.NeedTypesInfo |
+			packages.NeedModule,
 	}
 
 	initial, err := packages.Load(cfg, patterns...)
@@ -244,8 +255,7 @@ func LoadAllPrograms(patterns []string) ([]*interpreter.Program, error) {
 		}
 	}
 
-	prog, pkgs := ssautil.AllPackages(initial, ssa.InstantiateGenerics)
-	prog.Build()
+	prog, pkgs := buildSSAFrom(initial)
 
 	fset := token.NewFileSet()
 	if len(initial) > 0 {
@@ -253,6 +263,7 @@ func LoadAllPrograms(patterns []string) ([]*interpreter.Program, error) {
 	}
 	suppressions := ParseSuppressions(fset, initial)
 
+	goVer := extractGoVersion(initial)
 	var programs []*interpreter.Program
 	for _, pkg := range pkgs {
 		if pkg != nil && pkg.Pkg.Name() == "main" {
@@ -261,6 +272,7 @@ func LoadAllPrograms(patterns []string) ([]*interpreter.Program, error) {
 				Main:         pkg,
 				Fset:         fset,
 				Suppressions: suppressions,
+				GoVersion:    goVer,
 			})
 		}
 	}
@@ -287,7 +299,8 @@ func LoadTestPrograms(patterns []string) ([]*interpreter.Program, error) {
 			packages.NeedDeps |
 			packages.NeedTypes |
 			packages.NeedSyntax |
-			packages.NeedTypesInfo,
+			packages.NeedTypesInfo |
+			packages.NeedModule,
 		Tests: true,
 	}
 
@@ -314,8 +327,7 @@ func LoadTestPrograms(patterns []string) ([]*interpreter.Program, error) {
 		return nil, fmt.Errorf("package errors: %v", loadErrs)
 	}
 
-	prog, pkgs := ssautil.AllPackages(initial, ssa.InstantiateGenerics)
-	prog.Build()
+	prog, pkgs := buildSSAFrom(initial)
 
 	fset := token.NewFileSet()
 	if len(initial) > 0 {
@@ -354,6 +366,7 @@ func LoadTestPrograms(patterns []string) ([]*interpreter.Program, error) {
 		}
 	}
 
+	goVer := extractGoVersion(initial)
 	var programs []*interpreter.Program
 	for _, ssaPkg := range pkgOrder {
 		entry := pkgTests[ssaPkg]
@@ -363,6 +376,7 @@ func LoadTestPrograms(patterns []string) ([]*interpreter.Program, error) {
 			Fset:         fset,
 			Suppressions: suppressions,
 			TestFuncs:    entry.tests,
+			GoVersion:    goVer,
 		})
 	}
 
@@ -413,6 +427,18 @@ func pkgsHaveArenaError(pkgs []*packages.Package) bool {
 		}
 	}
 	return false
+}
+
+// extractGoVersion returns the "goX.Y" version string from the first
+// package that has module information. Returns "" for non-module programs
+// or when NeedModule was not requested.
+func extractGoVersion(pkgs []*packages.Package) string {
+	for _, pkg := range pkgs {
+		if pkg.Module != nil && pkg.Module.GoVersion != "" {
+			return "go" + pkg.Module.GoVersion
+		}
+	}
+	return ""
 }
 
 // DumpSSA prints the SSA for a package (useful for debugging).

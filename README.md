@@ -297,7 +297,7 @@ giri/
 - [x] Deferred call handling (`defer arena.Free()`)
 - [x] Goroutine spawning, closures, multi-return
 - [x] Report generation (text, JSON, SARIF)
-- [x] Integration test suite (178+ tests)
+- [x] Integration test suite (256+ tests)
 
 ### Phase 2: unsafe.Pointer Rules ✓
 - [x] Rule 1: Alignment verification at conversion sites
@@ -354,6 +354,17 @@ giri/
 - [x] Package `init()` called before `main()`: synthesized init now runs before main(); dependency package inits suppressed; `flag.*` intercepts preserve default values; `handleLoad` dereferences native Go primitive pointers — v0.48.0
 - [x] `LoadAllPrograms`: unguarded `initial[0].Fset` before `len` check eliminated; Giri now reports 0 violations on its own source tree (`giri ./...`) — v0.49.0
 - [x] `slices`, `maps`, `cmp`, `log/slog` intercepts (Go 1.21+); generic instantiation fix: `callee.Origin()` used when `callee.Package()==nil` so all generic stdlib calls are intercepted — v0.50.0
+- [x] Go version awareness: `Program.GoVersion` from `go.mod` via `packages.NeedModule`; CLI shows `(go1.23)` in status line; `iter.Pull`/`iter.Pull2` intercepts (Go 1.23+) — v0.51.0
+- [x] `math/bits` (concrete passthrough for OnesCount/LeadingZeros/RotateLeft/Add64/Mul64/etc.), `math/cmplx` (full 20+ function complex-number API), `html` (EscapeString/UnescapeString), `unicode/utf16` (IsSurrogate/EncodeRune/DecodeRune), `os/user` (Current/Lookup), `runtime/debug` (Stack/SetGCPercent/ReadBuildInfo), `net/netip` (Go 1.18+, ParseAddr/MustParseAddr/AddrPortFrom/ParsePrefix) — v0.52.0
+- [x] `math/rand/v2` (Go 1.22+, IntN/N/Float64/Shuffle via interp.rng), `encoding/pem`+`encoding/asn1` (concrete PEM/ASN.1 decode passthrough), `crypto/rsa`+`crypto/ecdsa`+`crypto/ed25519`+`crypto/ecdh`+`crypto/x509` (asymmetric crypto key gen/sign return opaque+nil), `runtime/pprof`+`runtime/trace` (noops) — v0.53.0
+- [x] `golang.org/x/sync/errgroup`+`singleflight` (callback probing), `encoding/gob` (noop encode/decode), `encoding/base32` (concrete passthrough), `image`+`image/color`+`image/png`+`image/jpeg`+`image/gif` (opaque images), `expvar`, `text/tabwriter`, `text/scanner` — v0.54.0
+- [x] `fmt.Scan`/`Scanf`/`Scanln`/`Fscan`/`Fscanf`/`Fscanln` (stdin/reader scan variants), `net/smtp`+`net/mail`+`net/textproto`, `go/token`+`go/ast`+`go/parser`+`go/format` (Go tooling with callback probing), `syscall` (Getpid/Getuid/Open/Close/etc.), `testing/iotest`+`testing/fstest` — v0.55.0
+- [x] `net/http/httptest` (NewRecorder/NewServer), `net/http/httputil` (NewSingleHostReverseProxy/DumpRequest/DumpResponse), `net/rpc` (Dial/Call/Go), `runtime/pprof` extended (Profiles/NewProfile/*Profile methods), `net/http/pprof` (noop handlers), `plugin` (Open/Lookup), `golang.org/x/sync/semaphore` (NewWeighted/Acquire/TryAcquire/Release) — v0.56.0
+- [x] `io/ioutil` (ReadAll/ReadFile/WriteFile/TempFile/TempDir/NopCloser), `strings.NewReplacer` fix (opaque non-nil), `compress/bzip2`+`compress/flate`+`compress/lzw` (complete compress family), `go/types`+`go/importer`+`go/build`+`go/doc`, `net/http/cookiejar` — v0.57.0
+- [x] `crypto/subtle` (ConstantTimeCompare/XORBytes/etc.), `hash/maphash` (Sum64/MakeSeed/Bytes/String), `regexp/syntax` (Parse/Compile), `unique` (Make), `go/printer`+`go/constant`+`go/scanner`+`go/version`, `debug/buildinfo`+`debug/elf`+`debug/macho`+`debug/pe`+`debug/dwarf`, `testing/quick`+`mime/quotedprintable`+`net/http/httptrace`+`net/rpc/jsonrpc` — v0.58.0
+- [x] `go/build/constraint`+`go/doc/comment`+`text/template/parse`, `debug/gosym`+`debug/plan9obj`+`runtime/metrics`+`runtime/coverage`, `net/http/cgi`+`net/http/fcgi`+`encoding/ascii85`+`index/suffixarray`+`log/syslog`, `crypto/dsa`+`crypto/elliptic`+`hash/crc64`+`golang.org/x/crypto/bcrypt`+`golang.org/x/net/http2` — v0.59.0
+- [x] `crypto/des`+`crypto/rc4`+`crypto/pbkdf2`+`crypto/hkdf` (Go 1.24), `crypto/sha3`+`crypto/hpke`+`crypto/mlkem`+`crypto/fips140` (post-quantum, Go 1.24), `database/sql/driver`+`crypto/x509/pkix`+`image/color/palette`+`time/tzdata`, `structs`+`weak`+`testing/slogtest`+`testing/synctest` (Go 1.24) — v0.60.0
+- [x] `golang.org/x/sys/unix` (syscall wrappers), `golang.org/x/net/html`+`publicsuffix`+`idna`+`proxy`+`netutil` (HTML parsing/network utils), `golang.org/x/mod/semver`+`module`+`modfile` (module tooling), `crypto` top-level+`testing/cryptotest`+`golang.org/x/net/http/httpguts`+`html/charset` — v0.61.0
 
 ## Contributing
 

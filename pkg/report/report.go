@@ -759,12 +759,12 @@ h1{font-size:1.5rem;margin-bottom:.25rem}
 	return tw.err
 }
 
+// htmlReplacer replaces &, <, > with HTML entities in a single pass.
+var htmlReplacer = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
 // htmlEscape replaces &, <, > with HTML entities.
 func htmlEscape(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	return s
+	return htmlReplacer.Replace(s)
 }
 
 // ExitCode returns the appropriate process exit code.

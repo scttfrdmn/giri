@@ -20,6 +20,7 @@ import (
 	"go/token"
 	"go/types"
 	"math/rand"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -51,6 +52,11 @@ type Program struct {
 	// loaded in test mode (via ssautil.LoadTestPrograms). Nil for non-test
 	// programs loaded with LoadAllPrograms.
 	TestFuncs []TestFunc
+
+	// GoVersion is the minimum Go version declared in the module's go.mod
+	// (e.g. "go1.23"). Empty for non-module programs or when NeedModule is
+	// not available. Informational only — used in CLI output and reports.
+	GoVersion string
 }
 
 // RunResult holds the results of interpreting a program.
@@ -58,6 +64,11 @@ type RunResult struct {
 	Violations []error
 	Stats      ExecutionStats
 	MemStats   shadow.MemoryStats
+	// UnmodeledCalls is a sorted, deduplicated list of "pkg/path.FuncName"
+	// strings for external functions that had no stdlib intercept and no
+	// interpretable SSA body. Each such call returned an opaque zero value.
+	// Populated during interpretation; inspect with -v to see coverage gaps.
+	UnmodeledCalls []string
 }
 
 // ExecutionStats tracks execution metrics.
@@ -136,6 +147,7 @@ func Run(prog *Program, config Config) *RunResult {
 				}
 				if !g.Panicked {
 					g.Status = GoroutineFinished
+					interp.sched.OnFinish(mainGID)
 				}
 			}
 		}
@@ -149,7 +161,10 @@ func Run(prog *Program, config Config) *RunResult {
 			nextGID := interp.sched.Next(runnable)
 			for i, t := range interp.runQueue {
 				if t.gid == nextGID {
-					interp.runQueue = append(interp.runQueue[:i], interp.runQueue[i+1:]...)
+					// Swap-last-and-shrink: O(1) removal (order irrelevant; scheduler picks next).
+					last := len(interp.runQueue) - 1
+					interp.runQueue[i] = interp.runQueue[last]
+					interp.runQueue = interp.runQueue[:last]
 					interp.execFunction(t.gid, t.fn, t.args)
 					// Mark goroutine as finished if it completed normally (not blocked).
 					if g := interp.goroutines[t.gid]; g != nil && g.Status == GoroutineRunning {
@@ -159,6 +174,7 @@ func Run(prog *Program, config Config) *RunResult {
 						}
 						if !g.Panicked {
 							g.Status = GoroutineFinished
+							interp.sched.OnFinish(t.gid)
 						}
 					}
 					break
@@ -169,9 +185,17 @@ func Run(prog *Program, config Config) *RunResult {
 		// Run finalization checks
 		finalErrs := interp.Finish()
 
+		// Build sorted UnmodeledCalls list from the deduplicated map.
+		var unmodeledList []string
+		for k := range interp.unmodeledCalls {
+			unmodeledList = append(unmodeledList, k)
+		}
+		sort.Strings(unmodeledList)
+
 		return &RunResult{
-			Violations: finalErrs,
-			MemStats:   interp.Memory.Stats(),
+			Violations:     finalErrs,
+			MemStats:       interp.Memory.Stats(),
+			UnmodeledCalls: unmodeledList,
 		}
 	})
 }
@@ -190,6 +214,7 @@ func Run(prog *Program, config Config) *RunResult {
 func RunN(prog *Program, config Config, n int, seed int64) *RunResult {
 	rng := rand.New(rand.NewSource(seed))
 	seen := make(map[string]bool)
+	seenUnmodeled := make(map[string]struct{})
 	var all []error
 	for i := 0; i < n; i++ {
 		c := config
@@ -208,8 +233,16 @@ func RunN(prog *Program, config Config, n int, seed int64) *RunResult {
 				all = append(all, v)
 			}
 		}
+		for _, u := range r.UnmodeledCalls {
+			seenUnmodeled[u] = struct{}{}
+		}
 	}
-	return &RunResult{Violations: all}
+	unmodeledList := make([]string, 0, len(seenUnmodeled))
+	for k := range seenUnmodeled {
+		unmodeledList = append(unmodeledList, k)
+	}
+	sort.Strings(unmodeledList)
+	return &RunResult{Violations: all, UnmodeledCalls: unmodeledList}
 }
 
 // TestRunResult is the result of interpreting a single TestXxx function.
@@ -280,6 +313,7 @@ func runTestFn(prog *Program, tf TestFunc, config Config) *TestRunResult {
 			}
 			if !g.Panicked {
 				g.Status = GoroutineFinished
+				interp.sched.OnFinish(mainGID)
 			}
 		}
 
@@ -292,7 +326,10 @@ func runTestFn(prog *Program, tf TestFunc, config Config) *TestRunResult {
 			nextGID := interp.sched.Next(runnable)
 			for i, t := range interp.runQueue {
 				if t.gid == nextGID {
-					interp.runQueue = append(interp.runQueue[:i], interp.runQueue[i+1:]...)
+					// Swap-last-and-shrink: O(1) removal.
+					last := len(interp.runQueue) - 1
+					interp.runQueue[i] = interp.runQueue[last]
+					interp.runQueue = interp.runQueue[:last]
 					interp.execFunction(t.gid, t.fn, t.args)
 					if g := interp.goroutines[t.gid]; g != nil && g.Status == GoroutineRunning {
 						if g.Panicking {
@@ -301,6 +338,7 @@ func runTestFn(prog *Program, tf TestFunc, config Config) *TestRunResult {
 						}
 						if !g.Panicked {
 							g.Status = GoroutineFinished
+							interp.sched.OnFinish(t.gid)
 						}
 					}
 					break
@@ -1356,6 +1394,12 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 				allArgs := append([]Value{iv.Value}, args...)
 				return interp.execFunction(gid, fn, allArgs)
 			}
+			// Method resolved but assembly-backed (Blocks == nil): unmodeled.
+			if fn != nil {
+				if pkg := fn.Package(); pkg != nil && pkg.Pkg != nil {
+					interp.recordUnmodeled(pkg.Pkg.Path(), fn.Name())
+				}
+			}
 		}
 		return Value{} // Unknown concrete type; fall through as external call.
 	}
@@ -1469,10 +1513,49 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 	}
 
 	if callee != nil && callee.Blocks != nil {
+		// Record cross-package calls that had no stdlib intercept as "unmodeled".
+		// Intra-package calls (e.g., stdlib helpers within the same package) are
+		// excluded to avoid noise from recursively-interpreted stdlib internals.
+		// (We reach here only when execStdlibCall returned false above.)
+		calleePkg := ""
+		calleeFn := callee.Name()
+		if pkg := callee.Package(); pkg != nil && pkg.Pkg != nil {
+			calleePkg = pkg.Pkg.Path()
+		} else if origin := callee.Origin(); origin != nil {
+			if pkg := origin.Package(); pkg != nil && pkg.Pkg != nil {
+				calleePkg = pkg.Pkg.Path()
+				calleeFn = origin.Name()
+			}
+		}
+		if calleePkg != "" {
+			callerPkg := ""
+			if callerFn != nil {
+				if fp := callerFn.Package(); fp != nil && fp.Pkg != nil {
+					callerPkg = fp.Pkg.Path()
+				}
+			}
+			if calleePkg != callerPkg {
+				interp.recordUnmodeled(calleePkg, calleeFn)
+			}
+		}
 		return interp.execFunction(gid, callee, args)
 	}
 
-	// External function — can't interpret, return opaque value
+	// External function — no interpretable SSA body and no intercept handled it.
+	// Record the call so users can see coverage gaps via RunResult.UnmodeledCalls.
+	if callee != nil {
+		var pkgPath, funcName string
+		if pkg := callee.Package(); pkg != nil && pkg.Pkg != nil {
+			pkgPath = pkg.Pkg.Path()
+			funcName = callee.Name()
+		} else if origin := callee.Origin(); origin != nil {
+			if pkg := origin.Package(); pkg != nil && pkg.Pkg != nil {
+				pkgPath = pkg.Pkg.Path()
+				funcName = origin.Name()
+			}
+		}
+		interp.recordUnmodeled(pkgPath, funcName)
+	}
 	return Value{}
 }
 

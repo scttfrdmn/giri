@@ -7,6 +7,876 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-03-06
+
+### Added
+
+- **14 new `math.*` intercepts** (issue #210): `Sincos`, `Asinh`, `Acosh`, `Atanh`,
+  `Float64bits`, `Float64frombits`, `Float32bits`, `Float32frombits`,
+  `Nextafter`, `Nextafter32`, `Jn`, `Y0`, `Y1`, `Yn` — all added to
+  `handleMathCall` in `stdlib.go`. Concrete arguments produce real results;
+  unknown arguments return conservative zero values.
+
+- **Integration test** `testdata/integration/math_complete`: exercises all 14 new
+  functions, verifying 0 violations. Total: 245 integration + 12 showcase = 257 tests.
+
+- **Updated `unmodeled_demo`**: switched demo from `math.Sincos` (now modeled) to
+  `math.Erfinv` (remains unmodeled); `TestUnmodeledCallsReport` updated to match.
+
+### Closes
+
+- issue #210
+
+## [0.67.0] - 2026-03-06
+
+### Added
+
+- **`RunResult.UnmodeledCalls []string`** (issue #209): sorted, deduplicated list of
+  `"pkg/path.FuncName"` strings for functions called without a Giri model. Two
+  categories are tracked:
+  1. **No SSA body** (`callee.Blocks == nil`): assembly-backed functions with no
+     interpretable Go source — these return opaque zero values.
+  2. **Cross-package, no intercept**: functions where `execStdlibCall` had no case
+     AND the call crosses a package boundary — these are executed via pure SSA
+     interpretation without a dedicated model.
+  The cross-package filter suppresses intra-package helper calls to avoid noise from
+  recursively-interpreted stdlib internals.
+
+- **Assembly-backed invoke dispatch tracking**: when a method is resolved via interface
+  dispatch but `fn.Blocks == nil` (assembly implementation), the method is now recorded
+  in `UnmodeledCalls`.
+
+- **`-v` CLI flag now prints unmodeled calls**: when `-v` is set, any entries in
+  `RunResult.UnmodeledCalls` are printed to stderr with a count header.
+
+- **`RunN()` merges unmodeled calls** across multiple runs, deduplicating by name.
+
+- **Integration test**: `testdata/integration/unmodeled_demo` exercises `math.Erfinv`
+  (absent from `handleMathCall`) to verify `UnmodeledCalls` is populated (1 entry).
+  (Originally used `math.Sincos`; updated in v0.68.0 after `Sincos` was modeled.)
+
+### Fixed
+
+- `Interpreter.recordUnmodeled` helper added to deduplicate `unmodeledCalls` map
+  updates (replaces duplicated inline code at two sites).
+
+## [0.66.0] - 2026-03-06
+
+### Added
+
+- **`golang.org/x/text/encoding/korean` intercepts** (issue #205). `EUCKR.NewDecoder/
+  NewEncoder` → opaque; `String` → ""; `ID` → (0, "").
+
+- **`golang.org/x/text/encoding/simplifiedchinese` intercepts** (issue #205).
+  `GB18030/GBK/HZGB2312.NewDecoder/NewEncoder` → opaque; `String/ID` stubs.
+
+- **`golang.org/x/text/encoding/traditionalchinese` intercepts** (issue #205).
+  `Big5.NewDecoder/NewEncoder` → opaque; `String/ID` stubs.
+
+- **`golang.org/x/text/encoding/ianaindex` intercepts** (issue #206).
+  `(*Index).Encoding(name)` → (opaque, nil); `(*Index).Name(enc)` → ("utf-8", nil).
+  Note: method is `Encoding()` not `Get()`.
+
+- **`golang.org/x/net/trace` intercepts** (issue #206). `New` → opaque `Trace`;
+  `NewContext` → ctx passthrough; `FromContext` → (opaque, false); `NewEventLog` →
+  opaque; `Trace/EventLog` method stubs; HTTP handler noops.
+
+- **`golang.org/x/net/dns/dnsmessage` intercepts** (issue #207). `MustNewName` →
+  opaque; `NewName` → (opaque, nil); `*Message.Pack/AppendPack` → ([]byte, nil);
+  `Unpack` → nil; `*Parser.Start` → (Header, nil); `Question/AllQuestions/
+  SkipAllQuestions` stubs; `*Builder` method stubs; `Name.String` → "".
+
+- **`golang.org/x/net/http2/hpack` intercepts** (issue #208). `HuffmanEncodeLength`
+  → 0; `HuffmanDecodeToString` → ("", nil); `HuffmanDecode` → (0, nil);
+  `AppendHuffmanString` → passthrough dst; `NewEncoder/NewDecoder` → opaque;
+  `*Encoder.WriteField/SetMaxDynamicTableSizeLimit` stubs;
+  `*Decoder.Write/Close/Set*` stubs.
+
+- **`golang.org/x/sync/syncmap` intercepts** (issue #208). `syncmap.Map` is a
+  type alias for `sync.Map`; `Store/Delete/Swap/Clear` → noop; `Load/LoadAndDelete`
+  → (nil, false); `LoadOrStore` → (v, false); `Range` → noop.
+
+- 4 new integration tests: `text_encoding_cjk`, `text_ianaindex_trace`,
+  `dns_message`, `hpack_syncmap`. Total: 243 integration + 12 showcase = 255 tests.
+
+- Closes #205, #206, #207, #208.
+
+## [0.65.0] - 2026-03-06
+
+### Added
+
+- **`golang.org/x/crypto/scrypt` intercepts** (issue #201). `Key` →
+  ([]byte, nil).
+
+- **`golang.org/x/crypto/chacha20` intercepts** (issue #201). Low-level
+  stream cipher (distinct from `chacha20poly1305`). `NewUnauthenticatedCipher` →
+  (opaque, nil); `HChaCha20` → ([]byte, nil); `*Cipher.XORKeyStream/SetCounter/Advance`
+  noop.
+
+- **`golang.org/x/crypto/xts` intercepts** (issue #201). Disk-encryption
+  mode. `NewCipher` → (opaque, nil); `*Cipher.Encrypt/Decrypt` noop.
+
+- **`golang.org/x/crypto/salsa20` intercepts** (issue #201). Package-level
+  `XORKeyStream` noop.
+
+- **`golang.org/x/text/message` intercepts** (issue #202). `NewPrinter` →
+  opaque `*Printer`; `MatchLanguage` → opaque tag; `*Printer.Print/Printf/Println/
+  Fprint/Fprintf/Fprintln` → (0, nil); `Sprint/Sprintf/Sprintln` → ""; `Set/SetString`
+  → nil.
+
+- **`golang.org/x/text/number` intercepts** (issue #202). `Decimal/Scientific/
+  Engineering/Percent` → opaque option values.
+
+- **`golang.org/x/text/currency` intercepts** (issue #202). `MustParseISO` →
+  opaque Unit; `ParseISO` → (opaque, nil); `NarrowSymbol/Symbol/ISO` → opaque;
+  `String` → ""; `Unit.Amount` → opaque.
+
+- **`golang.org/x/text/unicode/bidi` intercepts** (issue #203).
+  `AppendReverse` → passthrough in; `ReverseString` → passthrough;
+  `LookupRune/Lookup/LookupString` → (opaque Properties, 1);
+  Properties method stubs; `*Paragraph.SetBytes/SetString/Order` → (opaque, nil);
+  `*Ordering.NumRuns` → 1; `Run/Direction` stubs.
+
+- **`golang.org/x/text/unicode/runenames` intercepts** (issue #203). `Name` →
+  "" (no UCD data loaded during interpretation).
+
+- **`golang.org/x/text/secure/bidirule` intercepts** (issue #203).
+  `Direction/DirectionString` → 0 (LeftToRight); `Valid/ValidString` → true.
+
+- **`golang.org/x/text/secure/precis` intercepts** (issue #204).
+  `NewFreeform/NewIdentifier/NewRestrictedProfile` → opaque `*Profile`;
+  `*Profile.String` → (src passthrough, nil); `Bytes` → ([]byte, nil);
+  `Append/AppendCompareKey` → ([]byte, nil); `Compare` → false;
+  `CompareKey` → ("", nil); `NewTransformer` → opaque.
+
+- **`golang.org/x/text/encoding/japanese` intercepts** (issue #204).
+  `EUCJP/ShiftJIS/ISO2022JP.NewDecoder/NewEncoder` → opaque; `String` → "";
+  `ID` → (0, "").
+
+- **`golang.org/x/text/encoding/htmlindex` intercepts** (issue #204).
+  `Get` → (opaque, nil); `Name` → ("utf-8", nil); `LanguageDefault` → "utf-8".
+
+- 4 new integration tests: `crypto_stream`, `text_message_number`,
+  `text_bidi_runenames`, `text_precis_encoding`. Total: 239 integration + 12
+  showcase = 251 tests.
+
+- Closes #201, #202, #203, #204.
+
+## [0.64.0] - 2026-03-06
+
+### Added
+
+- **`golang.org/x/crypto/nacl/box` intercepts** (issue #197). `GenerateKey` →
+  (pub, priv, nil); `Seal/SealAfterPrecomputation` → []byte; `SealAnonymous` →
+  ([]byte, nil); `Open/OpenAfterPrecomputation/OpenAnonymous` → ([]byte, bool);
+  `Precompute` noop.
+
+- **`golang.org/x/crypto/nacl/secretbox` intercepts** (issue #197).
+  `Seal` → []byte; `Open` → ([]byte, bool).
+
+- **`golang.org/x/crypto/curve25519` intercepts** (issue #197). `X25519` →
+  ([]byte, nil); `ScalarBaseMult/ScalarMult` noop.
+
+- **`golang.org/x/crypto/poly1305` intercepts** (issue #197). Package-level
+  `Sum` noop; `Verify` → false; `New` → opaque `*MAC`; `*MAC.Write/Size/Sum`.
+
+- **`golang.org/x/crypto/blake2b` intercepts** (issue #198). `New/New256/New384/New512`
+  → (opaque hash.Hash, nil); `NewXOF` → (opaque XOF, nil);
+  `Sum256/Sum384/Sum512` → opaque; hash.Hash/XOF method stubs.
+
+- **`golang.org/x/crypto/blake2s` intercepts** (issue #198). `New128/New256` →
+  (opaque, nil); `Sum256` → opaque; hash.Hash method stubs.
+
+- **`golang.org/x/crypto/ed25519` intercepts** (issue #198). Thin wrapper
+  around stdlib `crypto/ed25519`; `GenerateKey` → (opaque pub, opaque priv, nil);
+  `Sign` → []byte; `Verify` → false; `NewKeyFromSeed` → opaque.
+
+- **`golang.org/x/text/encoding` intercepts** (issue #199).
+  `HTMLEscapeUnsupported/ReplaceUnsupported` → opaque Encoder; Decoder/Encoder
+  method stubs.
+
+- **`golang.org/x/text/encoding/charmap` intercepts** (issue #199).
+  `*Charmap.NewDecoder/NewEncoder` → opaque; `*Charmap.String` → "";
+  `DecodeByte/EncodeRune/ID` stubs.
+
+- **`golang.org/x/text/encoding/unicode` intercepts** (issue #199).
+  `UTF16(endianness, bom)` → opaque Encoding; `BOMOverride` → opaque;
+  `NewDecoder/NewEncoder` stubs.
+
+- **`golang.org/x/text/collate` intercepts** (issue #200). `New/NewFromTable` →
+  opaque `*Collator`; `CompareString/Compare` → 0; `Key/KeyFromString` → []byte;
+  `Sort/SortStrings` noop; `Supported` → [].
+
+- **`golang.org/x/text/search` intercepts** (issue #200). `New` → opaque
+  `*Matcher`; `Index/IndexString` → (-1, -1); `Equal/EqualString` → false;
+  `Compile/CompileString` → opaque; `FindAllIndex` → nil.
+
+- 4 new integration tests: `nacl_curve_poly`, `blake2_ed25519`,
+  `text_encoding_charmap`, `text_collate_search`. Total: 243 integration tests.
+
+- Closes #197, #198, #199, #200.
+
+## [0.63.0] - 2026-03-03
+
+### Added
+
+- **`golang.org/x/text/cases` intercepts** (issue #193). `Lower/Upper/Title/Fold`
+  return opaque `Caser`; `Caser.String/Bytes` passthrough the input.
+
+- **`golang.org/x/text/language` intercepts** (issue #193). `Parse/Make/MustParse`
+  return opaque `Tag`; `ParseAcceptLanguage` returns opaque tag list;
+  `NewMatcher/Match` supported; `Tag.String` returns `"en"`.
+
+- **`golang.org/x/text/transform` intercepts** (issue #193). `String/Bytes/Append`
+  passthrough the source; `NewReader/NewWriter/Chain/RemoveFunc` return opaque.
+
+- **`golang.org/x/text/unicode/norm` intercepts** (issue #194). `Form.String/Bytes`
+  passthrough input; `IsNormal/IsNormalString` return false (conservative);
+  `Append/AppendString` passthrough dst.
+
+- **`golang.org/x/text/width` intercepts** (issue #194). `Fold/Narrow/Widen`
+  transformer vars return opaque; `Lookup/LookupRune/LookupString` return opaque
+  Properties.
+
+- **`golang.org/x/text/runes` intercepts** (issue #194). `Map/Remove/If/ReplaceIllFormed/In/NotIn/Predicate` return opaque transformer.
+
+- **`golang.org/x/term` intercepts** (issue #195). `IsTerminal` → false;
+  `GetSize` → (80, 24, nil); `ReadPassword` → ([]byte{}, nil);
+  `MakeRaw` → (opaque, nil); `Restore/GetState` supported.
+
+- **`golang.org/x/crypto/chacha20poly1305` intercepts** (issue #195).
+  `New/NewX` → (opaque AEAD, nil); `NonceSize/Overhead/Seal/Open` methods.
+
+- **`golang.org/x/crypto/argon2` intercepts** (issue #195).
+  `Key/IDKey` → opaque []byte (no actual KDF computation).
+
+- **`golang.org/x/crypto/ssh` intercepts** (issue #196). `Dial` → (opaque, nil);
+  `ParsePrivateKey/ParsePublicKey/ParseAuthorizedKey/ParseKnownHosts` →
+  opaque results; `NewSignerFromKey/NewPublicKey/FingerprintSHA256`;
+  `InsecureIgnoreHostKey/FixedHostKey`; `*Client` and `*Session` methods.
+
+- 4 new integration tests: `text_cases_language`, `text_unicode_norm`,
+  `term_chacha_argon`, `crypto_ssh`. Total: 239 integration tests.
+
+- Closes #193, #194, #195, #196.
+
+## [0.62.0] - 2026-03-02
+
+### Changed (Performance)
+
+- **`exec.go`: O(n²) → O(1) runQueue removal** (issue #189). Replaced
+  `append(runQueue[:i], runQueue[i+1:]...)` with swap-last-and-shrink at both
+  dequeue sites (main run loop and test run loop). Removal is O(1) since the
+  scheduler, not the queue order, determines which GID runs next.
+
+- **`report.go`: single-pass `htmlEscape`** (issue #189). Replaced three
+  sequential `strings.ReplaceAll` calls with a package-level
+  `strings.NewReplacer` that scans the string once.
+
+### Refactored
+
+- **`interpreter.go`: vector clock helpers** (issue #190). Extracted two
+  helpers — `snapshotClock(g *Goroutine) map[int64]uint64` and
+  `mergeClock(g *Goroutine, src map[int64]uint64)` — replacing six identical
+  inline clock copy/merge blocks in `handleSyncCall` (Unlock, Done, Signal,
+  Broadcast snapshot; Lock and Wait merge).
+
+- **`stdlib.go`: package-level `stdlibOpaque` sentinel** (issue #191). Added
+  `var stdlibOpaque = Value{Raw: struct{}{}}` and replaced 98 local
+  `opaque := Value{Raw: struct{}{}}` declarations (one per handler call) with
+  `opaque := stdlibOpaque`.
+
+- **`loader.go`: `buildSSAFrom` helper** (issue #191). Extracted a
+  `buildSSAFrom(initial []*packages.Package) (*ssa.Program, []*ssa.Package)`
+  helper, consolidating the four identical `ssautil.AllPackages` + `prog.Build()`
+  call-pairs in `LoadProgram`, `LoadTestProgram`, `LoadAllPrograms`, and
+  `LoadTestPrograms`.
+
+### Fixed
+
+- **`stdlib.go`: removed dead `if interp.valueStore != nil` guards** (issue #191).
+  `valueStore` is always initialized in `New()` and `newWithArena()`; the four
+  defensive nil checks in `handleAtomicCall` were unreachable and removed.
+
+### Added
+
+- **`Scheduler.OnFinish(gid int64)` lifecycle hook** (issue #192). Added
+  `OnFinish` to the `Scheduler` interface; `RoundRobin` and `Random` implement
+  it as a noop; `PCT` uses it to `delete(s.priorities, gid)`, preventing
+  unbounded map growth for programs that spawn many goroutines. The interpreter
+  calls `OnFinish` at all four `GoroutineFinished` transition sites.
+
+## [0.61.0] - 2026-03-02
+
+### Added
+
+- **`golang.org/x/sys/unix` intercepts** (issue #185): `Getpid`/`Getuid`/`Geteuid`/`Getgid`
+  return realistic int values; `Getenv`/`Getwd` → safe zero tuples; file ops
+  `Open`/`Close`/`Read`/`Write`/`Stat`/`Lstat` → `(int/0, nil)`; network ops
+  `Socket`/`Connect`/`Bind`/`Listen`/`Accept`; byte helpers
+  `ByteSliceFromString`/`ByteSliceToString`/`BytePtrFromString`/`BytePtrToString`;
+  signal/process `Kill`/`Getppid`; misc `Chmod`/`Chown`/`Mkdir`/`Remove`/`Rename`/`Dup`.
+  Requires `go get golang.org/x/sys` (already in transitive module graph).
+
+- **`golang.org/x/net/html` intercepts** (issue #186): `Parse`/`ParseFragment` →
+  `(*Node, nil)`; `NewTokenizer` → opaque; `Render` → nil; `EscapeString`/`UnescapeString`
+  concrete passthrough; `Tokenizer` methods `Next`/`Token`/`Raw`/`Text`/`TagName`/`TagAttr`.
+
+- **`golang.org/x/net/publicsuffix` intercepts** (issue #186): `PublicSuffix` →
+  `("com", true)`; `EffectiveTLDPlusOne` → `(domain, nil)`.
+
+- **`golang.org/x/net/idna` intercepts** (issue #186): `ToASCII`/`ToUnicode` →
+  `(s, nil)`; `New`/`Lookup` → opaque.
+
+- **`golang.org/x/net/proxy` intercepts** (issue #186): `SOCKS5` → `(Dialer, nil)`;
+  `Direct` → opaque; `Dial` → `(Conn, nil)`; `RegisterDialerType` → noop;
+  `*PerHost.AddFromString`/`AddNetwork`/`AddZone`/`AddHost` → noops.
+
+- **`golang.org/x/net/netutil` intercepts** (issue #186): `LimitListener` → opaque.
+
+- **`golang.org/x/mod/semver` intercepts** (issue #187): `IsValid`/`Canonical`/`Major`/
+  `MajorMinor`/`Prerelease`/`Build` concrete passthrough; `Compare` → int;
+  `Max` → string; `Sort` → noop.
+
+- **`golang.org/x/mod/module` intercepts** (issue #187): `CheckPath`/`CheckImportPath`/
+  `CheckFilePath` → nil; `EscapePath`/`EscapeVersion` → `("", nil)`;
+  `CanonicalVersion` → string; `IsPseudoVersion` → false.
+
+- **`golang.org/x/mod/modfile` intercepts** (issue #187): `Parse`/`ParseLax` →
+  `(*File, nil)`; `AutoQuote`/`ModulePath` → string; `Format` → `([], nil)`;
+  `*File` mutation methods → noops.
+
+- **`crypto` top-level intercepts** (issue #188): `RegisterHash` → noop;
+  `SignMessage` → `([]byte, nil)`; `Hash.New`/`Available`/`String`/`Size` →
+  safe values.
+
+- **`golang.org/x/net/http/httpguts` intercepts** (issue #188):
+  `HeaderValuesContainsToken` → false; `IsTokenRune` → false;
+  `ValidHeaderFieldName`/`ValidHeaderFieldValue`/`ValidHostHeader`/`ValidTrailerHeader` → true;
+  `PunycodeHostPort` → `(host, nil)`.
+
+- **`golang.org/x/net/html/charset` intercepts** (issue #188):
+  `DetermineEncoding` → `(opaque, "utf-8", false)`; `NewReader` → opaque;
+  `NewReaderLabel` → `(opaque, nil)`.
+
+- **`testing/cryptotest` intercepts** (issue #188): `SetGlobalRandom` → noop;
+  `TestAEAD`/`TestHash`/`TestStream`/`TestBlock` → noops.
+
+- Four new integration tests: `sys_unix`, `net_html_publicsuffix`,
+  `mod_semver_module`, `crypto_httpguts`; 227 total (216 integration + 11 showcase).
+
+### Changed
+
+- `go.mod`: added `golang.org/x/net` and `golang.org/x/sys` as direct dependencies
+  (both were already in the transitive module graph via `golang.org/x/tools`).
+
+### Fixed
+
+- `httpguts` handler uses correct function names (`ValidHeaderFieldName` not
+  `IsValidHeaderFieldName`).
+
+## [0.60.0] - 2026-03-02
+
+### Added
+
+- **`crypto/des` intercepts** (issue #181): `NewCipher`/`NewTripleDESCipher` →
+  `(cipher.Block, nil)`.
+
+- **`crypto/rc4` intercepts** (issue #181): `NewCipher` → `(*Cipher, nil)`;
+  `*Cipher.XORKeyStream`/`Reset` → noops.
+
+- **`crypto/pbkdf2` intercepts** (issue #181): Generic `Key[H]` → `([]byte, nil)`
+  (Go 1.24+, formerly `golang.org/x/crypto/pbkdf2`).
+
+- **`crypto/hkdf` intercepts** (issue #181): `Extract`/`Expand`/`Key` → `([]byte, nil)`
+  (Go 1.24+, formerly `golang.org/x/crypto/hkdf`).
+
+- **`crypto/sha3` intercepts** (issue #182): `New224`/`New256`/`New384`/`New512` →
+  opaque `*SHA3`; `NewSHAKE128`/`NewSHAKE256`/`NewCSHAKE128`/`NewCSHAKE256` → opaque;
+  `Sum224`/`Sum256`/`Sum384`/`Sum512` → opaque; `SumSHAKE128`/`SumSHAKE256` →
+  `[]byte{}`; `Write`/`Sum`/`Reset`/`Size`/`BlockSize`/`Read`/`Clone` methods.
+  (Go 1.24+)
+
+- **`crypto/hpke` intercepts** (issue #182): KEM constructors (`DHKEM`/`MLKEM768`/
+  `MLKEM1024`/etc.)/`NewKEM`; KDF constructors (`HKDFSHA256`/etc.)/`NewKDF`; AEAD
+  constructors (`AES128GCM`/`AES256GCM`/`ChaCha20Poly1305`/`ExportOnly`)/`NewAEAD`;
+  `Seal`/`Open` → `([]byte, nil)`. (Go 1.24+)
+
+- **`crypto/mlkem` intercepts** (issue #182): `GenerateKey768`/`GenerateKey1024` →
+  `(*DecapsulationKey*, nil)`; `NewDecapsulationKey768`/`1024` and
+  `NewEncapsulationKey768`/`1024`; `Encapsulate` → `(ciphertext, sharedKey, nil)`;
+  `Decapsulate` → `(sharedKey, nil)`. (Go 1.24+)
+
+- **`crypto/fips140` intercepts** (issue #182): `Enabled`/`Enforced` → false;
+  `Version` → ""; `WithoutEnforcement` probes callback. (Go 1.24+)
+
+- **`database/sql/driver` intercepts** (issue #183): `IsValue`/`IsScanValue` → true;
+  `DefaultParameterConverter` → opaque.
+
+- **`crypto/x509/pkix` intercepts** (issue #183): `Name.String` → `"<pkix.Name>"`;
+  `Name.ToRDNSequence` → opaque; `Name.FillFromRDNSequence`/`AppendPKCS7` → noop/`[]byte`.
+
+- **`image/color/palette` intercepts** (issue #183): `Plan9`/`WebSafe` are package-level
+  variables accessed via globals; handler is a safe noop for any function calls.
+
+- **`time/tzdata` intercepts** (issue #183): import-side-effect-only package; handler is
+  a noop (no exported functions).
+
+- **`structs` intercepts** (issue #184): marker-type-only package (no exported
+  functions); handler is a noop. (Go 1.24+)
+
+- **`weak` intercepts** (issue #184): `Make[T]` → opaque `Pointer[T]`;
+  `Pointer.Value` → nil (GC may collect). (Go 1.24+)
+
+- **`testing/slogtest` intercepts** (issue #184): `TestHandler` → nil error;
+  `Run` → noop. (Go 1.21+)
+
+- **`testing/synctest` intercepts** (issue #184): `Test` probes callback with opaque
+  `*testing.T`; `Wait` → noop. Note: the function is `Test` not `Run`. (Go 1.24+)
+
+- 4 new integration tests: `crypto_des_hkdf`, `crypto_sha3_hpke`, `sqldriver_pkix`,
+  `weak_synctest`; **212 integration + 11 showcase = 223 total tests**.
+
+- Closes issues #181, #182, #183, #184.
+
+## [0.59.0] - 2026-03-02
+
+### Added
+
+- **`go/build/constraint` intercepts** (issue #177): `IsGoBuild`/`IsPlusBuild` →
+  bool; `Parse`/`ParseLine` → `(Expr, nil)`; `GoVersion` → string; `PlusBuildLines` →
+  `([]string, nil)`; `AndExpr`/`OrExpr`/`NotExpr`/`TagExpr` constructors → opaque.
+
+- **`go/doc/comment` intercepts** (issue #177): `(*Parser).Parse` → opaque `*Doc`;
+  `(*Printer).HTML`/`Markdown`/`Text`/`Comment` → `[]byte`; `DefaultLookupPackage` →
+  `("", false)`. (Go 1.19+)
+
+- **`text/template/parse` intercepts** (issue #177): `New` → opaque `*Tree`;
+  `Parse` → `(map[string]*Tree, nil)`; `(*Tree).Copy`/`ErrorContext` handled.
+
+- **`debug/gosym` intercepts** (issue #178): `NewLineTable` → opaque `*LineTable`;
+  `NewTable` → `(*Table, nil)`; `*Table.PCToFunc`/`PCToLine`/`LineToPC`/`LookupFunc`/
+  `LookupSym`/`Syms` handled.
+
+- **`debug/plan9obj` intercepts** (issue #178): `Open`/`NewFile` → `(*File, nil)`;
+  `*File.Close`/`Symbols`/`Section`/`DWARF`; `*Section.Data` handled.
+
+- **`runtime/metrics` intercepts** (issue #178): `All` → `[]Description{}`; `Read` →
+  noop; `Descriptions` → empty map (Go 1.16+).
+
+- **`runtime/coverage` intercepts** (issue #178): `ClearCounters`/`WriteCounters`/
+  `WriteCountersDir`/`WriteMetaDir`/`WriteMeta` → noops (Go 1.20+).
+
+- **`net/http/cgi` intercepts** (issue #179): `Serve` → noop; `Request` →
+  `(*Request, nil)`; `RequestFromMap` → `(*Request, nil)`.
+
+- **`net/http/fcgi` intercepts** (issue #179): `Serve` → noop; `ProcessEnv` →
+  empty `map[string]string`.
+
+- **`encoding/ascii85` intercepts** (issue #179): `Encode` → int (input length);
+  `Decode` → `(ndst, nsrc int, nil)`; `MaxEncodedLen` → concrete calculation;
+  `NewEncoder`/`NewDecoder` → opaque; `Write`/`Close`/`Read` methods handled.
+
+- **`index/suffixarray` intercepts** (issue #179): `New` → opaque `*Index`;
+  `*Index.Bytes`/`Lookup`/`FindAllIndex` → empty slices; `Read`/`Write`/`Len` handled.
+
+- **`log/syslog` intercepts** (issue #179): `New`/`Dial`/`NewLogger` →
+  `(*Writer, nil)`; `*Writer.Write`/`Close`/`Emerg`/`Alert`/`Crit`/`Err`/`Warning`/
+  `Notice`/`Info`/`Debug` handled (unix-only package, safe values on all platforms).
+
+- **`crypto/dsa` intercepts** (issue #180): `GenerateParameters`/`GenerateKey` →
+  nil error; `Sign` → `(*big.Int, *big.Int, nil)`; `Verify` → false.
+
+- **`crypto/elliptic` intercepts** (issue #180): `P224`/`P256`/`P384`/`P521` →
+  opaque `Curve`; `GenerateKey` → `(priv, x, y, nil)`; `Marshal`/`MarshalCompressed` →
+  `[]byte{}`; `Unmarshal`/`UnmarshalCompressed` → `(opaque, opaque)`;
+  `Params`/`IsOnCurve`/`Add`/`Double`/`ScalarMult`/`ScalarBaseMult` handled.
+
+- **`hash/crc64` intercepts** (issue #180): `MakeTable` → opaque `*Table`;
+  `New` → opaque `hash.Hash64`; `Checksum`/`Update` → uint64(0); hash methods
+  (`Write`/`Sum64`/`Sum`/`Reset`/`Size`/`BlockSize`).
+
+- **`golang.org/x/crypto/bcrypt` intercepts** (issue #180): `GenerateFromPassword` →
+  `([]byte{}, nil)`; `CompareHashAndPassword` → nil; `Cost` → `(10, nil)`.
+
+- **`golang.org/x/net/http2` intercepts** (issue #180): `ConfigureServer`/
+  `ConfigureTransport`/`ConfigureTransports` → noops; `NewFramer` → opaque;
+  `Framer.ReadFrame`/`WriteData`/`WriteHeaders` and other frame write methods → noops.
+
+- 4 new integration tests: `go_constraint_template`, `debug_gosym_metrics`,
+  `cgi_ascii85_suffixarray`, `crypto_elliptic_crc64`; **208 integration + 11 showcase = 219 total tests**.
+
+- Closes issues #177, #178, #179, #180.
+
+## [0.58.0] - 2026-03-02
+
+### Added
+
+- **`crypto/subtle` intercepts** (issue #173): `ConstantTimeCompare` → int;
+  `ConstantTimeByteEq`/`ConstantTimeLessOrEq`/`ConstantTimeSelect` → int;
+  `ConstantTimeCopy` → noop; `XORBytes` → int (length of x); `WithDataIndependentTiming`
+  probes the callback function.
+
+- **`hash/maphash` intercepts** (issue #173): `MakeSeed` → opaque `Seed`;
+  package-level `Bytes`/`String` → uint64; `*Hash.Write`/`WriteByte`/`WriteString` →
+  (n, nil); `Sum64` → uint64(0); `Sum32` → uint32(0); `Reset`/`SetSeed` → noop;
+  `Seed` method → opaque.
+
+- **`regexp/syntax` intercepts** (issue #173): `Parse` → `(*Regexp, nil)`;
+  `MustParse` → opaque; `Compile` → `(*Prog, nil)`; `SimplifyRegexp` → opaque;
+  `IsWordChar` → false; `*Regexp.String`/`CapNames`/`MaxCap`/`Prefix` handled.
+
+- **`unique` intercepts** (issue #173): `Make[T]` → opaque `Handle[T]`;
+  `Handle.Value` → passthrough (Go 1.23+).
+
+- **`go/printer` intercepts** (issue #174): `Fprint`/`Fprintf` → `(int, nil)`;
+  `Sprint` → `("", nil)`.
+
+- **`go/constant` intercepts** (issue #174): `MakeInt64`/`MakeUint64`/`MakeFloat64`/
+  `MakeString`/`MakeBool`/`MakeFromLiteral`/`MakeImag` constructors;
+  `BinaryOp`/`UnaryOp`/`Shift`/`ToComplex`/`Real`/`Imag` → opaque;
+  `Compare` → false; `StringVal` → ""; `Int64Val`/`Uint64Val`/`Float64Val`/`Float32Val` →
+  `(0, true)`; `BoolVal` → false; `Kind`/`Sign`/`BitLen`/`String`/`ExactString` methods.
+
+- **`go/scanner` intercepts** (issue #174): `(*Scanner).Init` → noop;
+  `(*Scanner).Scan` → `(Pos, Token, string)` zero values; `ErrorList.Error`/`Err`/`Len`.
+
+- **`go/version` intercepts** (issue #174): `Compare` → concrete int comparison;
+  `IsValid` → checks "go" prefix; `Lang` → string passthrough; `Max` → string max
+  (Go 1.22+).
+
+- **`debug/buildinfo` intercepts** (issue #175): `ReadFile`/`Read` → `(*BuildInfo, nil)`;
+  `BuildInfo.String`/`MarshalText`/`UnmarshalText` handled.
+
+- **`debug/dwarf` intercepts** (issue #175): `New` → `(*Data, nil)`;
+  `*Data.Reader`/`Type`/`Ranges`/`LineReader`; `*Reader.Next`/`SeekPC`/`SkipChildren`/
+  `Seek`/`AddressSize`; `*Entry.Val`/`AttrField`.
+
+- **`debug/elf` intercepts** (issue #175): `Open`/`NewFile` → `(*File, nil)`;
+  `*File.Section`/`SectionByType`/`Symbols`/`DynamicSymbols`/`ImportedSymbols`/
+  `ImportedLibraries`/`DWARF`/`Segments`/`Sections`/`Close`; `*Section.Data`/`ReadAt`.
+
+- **`debug/macho` intercepts** (issue #175): `Open`/`NewFile` → `(*File, nil)`;
+  `*File.Section`/`Segment`/`Symtab`/`Dysymtab`/`DWARF`/`ImportedSymbols`/
+  `ImportedLibraries`/`Close`; `*Section.Data`/`ReadAt`.
+
+- **`debug/pe` intercepts** (issue #175): `Open`/`NewFile` → `(*File, nil)`;
+  `*File.Section`/`DWARF`/`ImportedSymbols`/`ImportedLibraries`/`Close`;
+  `*Section.Data`/`ReadAt`.
+
+- **`testing/quick` intercepts** (issue #176): `Check`/`CheckCustom` probe the
+  property function with zero-value args and return nil error; `Value` → `(reflect.Value, false)`.
+
+- **`mime/quotedprintable` intercepts** (issue #176): `NewReader` → opaque;
+  `NewWriter` → opaque; `*Reader.Read`/`*Writer.Write`/`Close` handled.
+
+- **`net/http/httptrace` intercepts** (issue #176): `WithClientTrace` → returns
+  first arg (context) unchanged; `ContextClientTrace` → opaque `*ClientTrace`.
+
+- **`net/rpc/jsonrpc` intercepts** (issue #176): `NewClient` → opaque `*rpc.Client`;
+  `Dial` → `(*Client, nil)`; `NewServerCodec`/`NewClientCodec` → opaque; `ServeConn` → noop.
+
+- 4 new integration tests: `crypto_subtle_maphash`, `go_printer_constant`,
+  `debug_binary`, `quick_quotedprintable`; **204 integration + 11 showcase = 215 total tests**.
+
+- Closes issues #173, #174, #175, #176.
+
+## [0.57.0] - 2026-03-02
+
+### Added
+
+- **`strings.NewReplacer` fix** (issue #169): Previously returned `Value{},false`
+  causing false positives when code called `r.Replace(s)`. Now returns opaque
+  non-nil `*Replacer`; `Replace` and `WriteString` method calls dispatch through
+  existing string-handler cases.
+
+- **`io/ioutil` intercepts** (issue #169): `ReadAll`/`ReadFile` → `([]byte, nil)`;
+  `WriteFile` → nil error; `TempFile` → `(*File, nil)`; `TempDir` → `("/tmp/...", nil)`;
+  `NopCloser` → opaque `io.ReadCloser`; `ReadDir` → `([]FileInfo, nil)`.
+
+- **`compress/bzip2` intercepts** (issue #170): `NewReader` → opaque `io.Reader`.
+
+- **`compress/flate` intercepts** (issue #170): `NewReader`/`NewReaderDict` →
+  opaque `io.ReadCloser`; `NewWriter`/`NewWriterDict` → `(*Writer, nil)`;
+  `Read`/`Write`/`Close`/`Flush`/`Reset` handled.
+
+- **`compress/lzw` intercepts** (issue #170): `NewReader` → opaque `io.ReadCloser`;
+  `NewWriter` → opaque `io.WriteCloser`; `Read`/`Write`/`Close` handled.
+
+- **`go/types` intercepts** (issue #171): constructors (`NewPackage`/`NewScope`/
+  `NewNamed`/`NewStruct`/`NewInterface`/`NewSignature`/`NewFunc`/`NewVar`/
+  `NewConst`/`NewTypeName`/`NewArray`/`NewSlice`/`NewMap`/`NewChan`/`NewPointer`/
+  `NewTuple`/`NewParam`); `NewChecker` + `(*Config).Check` → `(*Package, nil)`;
+  predicate functions (`Implements`/`AssignableTo`/`ConvertibleTo`/`Identical`);
+  `TypeString`/`ObjectString`; `NewMethodSet`/`LookupFieldOrMethod`/`MissingMethod`;
+  method sets for `Scope`/`Named`/`Object`/`Interface`/`Struct`/`Signature`/`Tuple`.
+
+- **`go/importer` intercepts** (issue #171): `Default`/`For`/`ForCompiler` →
+  opaque `Importer`; `Import` → `(*types.Package, nil)`.
+
+- **`go/build` intercepts** (issue #171): `Import`/`ImportDir` →
+  `(*Package, nil)`; `IsDir`/`IsLocalImport` → false; `MatchFile` → `(false, nil)`;
+  `SrcDirs` → empty slice.
+
+- **`go/doc` intercepts** (issue #171): `New`/`NewFromFiles` → `(*Package, nil)`;
+  `Examples` → empty slice; `Synopsis` → concrete first-80-chars passthrough;
+  `ToHTML`/`ToText`/`ToMarkdown` → noops; `IsPredeclared` → false.
+
+- **`net/http/cookiejar` intercepts** (issue #172): `New` → `(*Jar, nil)`;
+  `SetCookies` → noop; `Cookies` → empty `[]*http.Cookie`.
+
+- 4 new integration tests: `ioutil_replacer`, `compress_extras`, `go_types_build`,
+  `cookiejar_http`; **200 integration + 11 showcase = 211 total tests**.
+
+- Closes issues #169, #170, #171, #172.
+
+## [0.56.0] - 2026-03-02
+
+### Added
+
+- **`net/http/httptest` intercepts** (issue #165): `NewRecorder` → opaque
+  `*ResponseRecorder`; `NewServer`/`NewTLSServer`/`NewUnstartedServer` → opaque
+  `*Server`; `*ResponseRecorder` methods (`WriteHeader`/`Write`/`WriteString`/
+  `Flush`/`Header`/`Result`) return safe defaults; `*Server.Close`/`Start`/
+  `StartTLS`/`Client` handled.
+
+- **`net/http/httputil` intercepts** (issue #165): `NewSingleHostReverseProxy`
+  → opaque `*ReverseProxy`; `DumpRequest`/`DumpRequestOut`/`DumpResponse` →
+  `([]byte, nil)`; `NewChunkedReader`/`NewChunkedWriter` → opaque;
+  `*ReverseProxy.ServeHTTP` noop. Note: `NewReverseProxy` does not exist in Go
+  1.21+ — the function is `NewSingleHostReverseProxy`.
+
+- **`net/rpc` intercepts** (issue #166): `Dial`/`DialHTTP`/`DialHTTPPath` →
+  `(*Client, nil)`; `*Client.Call` → nil error; `*Client.Go` → opaque `*Call`;
+  `*Client.Close` → nil error; `Register`/`RegisterName` → nil error;
+  `NewServer` → opaque; `ServeConn`/`Accept`/`HandleHTTP` noop.
+
+- **`runtime/pprof` extended + `net/http/pprof` intercepts** (issue #167):
+  Extended `runtime/pprof` handler with `Profiles`/`NewProfile`/`*Profile.Name`/
+  `*Profile.Count`/`*Profile.Add`/`*Profile.Remove`/`*Profile.WriteTo`/
+  `Handler`. `net/http/pprof` functions (`Index`/`Cmdline`/`Profile`/`Symbol`/
+  `Trace`/`Handler`) modeled as noops. Note: `debug/pprof` does not exist in Go
+  stdlib — the packages are `runtime/pprof` and `net/http/pprof`.
+
+- **`plugin` intercepts** (issue #168): `Open` → `(*Plugin, nil)`;
+  `*Plugin.Lookup` → `(Symbol, nil)`.
+
+- **`golang.org/x/sync/semaphore` intercepts** (issue #168): `NewWeighted` →
+  opaque `*Weighted`; `Acquire` → nil (modeled as immediate success);
+  `TryAcquire` → true; `Release` → noop.
+
+- 4 new integration tests: `httptest_httputil`, `net_rpc`, `pprof_extended`,
+  `plugin_semaphore`; **196 integration + 11 showcase = 207 total tests**.
+
+- Closes issues #165, #166, #167, #168.
+
+## [0.55.0] - 2026-03-02
+
+### Added
+
+- **`fmt.Scan`/`Scanf`/`Scanln`/`Fscan`/`Fscanf`/`Fscanln` intercepts** (issue #161):
+  stdin-reading and reader-reading variants return `(0, nil)` matching the
+  already-handled `Sscan`/`Sscanf`/`Sscanln` family.
+
+- **`net/smtp` intercepts** (issue #162): `Dial`/`NewClient` → `(*Client, nil)`;
+  `SendMail` → nil; `PlainAuth`/`CRAMMD5Auth` → opaque Auth; `*Client` methods
+  (`Auth`, `Mail`, `Rcpt`, `Data`, `Quit`, `Close`, `Reset`, `StartTLS`, etc.)
+  return nil error.
+
+- **`net/mail` intercepts** (issue #162): `ParseAddress` → `(*Address, nil)`;
+  `ParseAddressList` → `([]*Address, nil)`; `NewReader`/`ReadMessage` → opaque/nil.
+
+- **`net/textproto` intercepts** (issue #162): `NewConn`/`NewReader`/`NewWriter`
+  → opaque; `CanonicalMIMEHeaderKey` attempts concrete title-case passthrough;
+  `TrimString` delegates to `strings.TrimSpace`; `*Conn`/`*Reader` methods noop.
+
+- **`go/token` intercepts** (issue #163): `NewFileSet`/`NewFile`/`AddFile` →
+  opaque; `Lookup` → IDENT constant; `Pos`/`Position`/`Line`/`Offset` → concrete
+  int; `FileSet.Iterate` probes callback with opaque `*File`; `IsValid` → true.
+
+- **`go/ast` intercepts** (issue #163): `Inspect` and `Walk` probe the visitor
+  callback once with an opaque node so goroutine-body violations surface;
+  `IsExported` checks first character case for concrete string args; other helpers
+  (`Print`/`Fprint`/`NewIdent`/`MergePackageFiles`) return safe defaults.
+
+- **`go/parser` intercepts** (issue #163): `ParseFile` → `(*ast.File, nil)`;
+  `ParseDir` → `(map, nil)`; `ParseExpr`/`ParseExprFrom` → `(Expr, nil)`.
+
+- **`go/format` intercepts** (issue #163): `Source`/`Node` → `([]byte, nil)`.
+
+- **`syscall` intercepts** (issue #164): `Getpid`/`Getppid` → real PID;
+  `Getuid`/`Getgid` → real UID/GID; `Getenv` → `(val, found)` pair;
+  `Getpagesize` → 4096; `Open`/`Close`/`Read`/`Write`/`Stat`/`Lstat` → safe
+  defaults; `Exit` marks all goroutines Panicked; socket/mmap/pipe ops noop.
+
+- **`testing/iotest` intercepts** (issue #164): `ErrReader`/`NewReadLogger`/
+  `NewWriteLogger`/`OneByteReader`/`HalfReader`/`DataErrReader`/`TruncateWriter`
+  → opaque reader/writer; `TestReader` → nil error.
+
+- **`testing/fstest` intercepts** (issue #164): `TestFS` → nil error;
+  `MapFS` method calls (`Open`/`ReadDir`/`ReadFile`/`Stat`/`Sub`/`Glob`) →
+  safe `(opaque, nil)` or `([]Value, nil)` returns.
+
+- 4 new integration tests: `fmt_scan`, `net_mail_smtp`, `go_tooling`,
+  `syscall_testing`; **192 integration + 11 showcase = 203 total tests**.
+
+- Closes issues #161, #162, #163, #164.
+
+## [0.54.0] - 2026-03-02
+
+### Added
+
+- **`golang.org/x/sync/errgroup` intercepts** (issue #157): `WithContext` returns
+  `(*Group, ctx)`; `Go`/`TryGo` probe the callback closure synchronously so
+  goroutine body violations surface; `Wait` returns nil error.
+
+- **`golang.org/x/sync/singleflight` intercepts** (issue #157): `Do` probes the
+  callback closure once and returns `(opaque, false, nil)`; `DoChan` does the
+  same and returns a `chan Result` with a pre-populated result; `Forget` is a noop.
+
+- **`encoding/gob` intercepts** (issue #158): `NewEncoder`/`NewDecoder` return
+  opaque encoder/decoder; `Encode`/`EncodeValue`/`Decode`/`DecodeValue` are noops
+  (return nil error); `Register`/`RegisterName` are noops.
+
+- **`encoding/base32` intercepts** (issue #158): `EncodeToString`/`DecodeString`
+  call real `base32.StdEncoding` for concrete byte-slice inputs; `Encode`/`Decode`
+  are noops; `NewEncoding`/`WithPadding` return opaque encoding handles.
+
+- **`image` + `image/color` intercepts** (issue #159): `NewRGBA`/`NewNRGBA`/
+  `NewGray`/`NewCMYK`/`NewAlpha`/`NewPaletted` return opaque non-nil images;
+  `Rect`/`Pt` return opaque rectangle/point; `color.RGBA.RGBA()` returns 4 zero
+  uint32 values; `color.Model` converters are noops.
+
+- **`image/png` + `image/jpeg` + `image/gif` intercepts** (issue #159): `Encode`
+  returns nil error; `Decode`/`DecodeConfig` return `(opaque, nil)`; `jpeg.Encode`
+  accepts options arg; `gif.EncodeAll`/`gif.DecodeAll` are similarly handled.
+
+- **`expvar` intercepts** (issue #160): `NewInt`/`NewFloat`/`NewString`/`NewMap`
+  return opaque `*Var`; `Add`/`Set`/`Value`/`String`/`Get`/`Do` are noops or
+  return safe defaults; `Handler` returns nil.
+
+- **`text/tabwriter` intercepts** (issue #160): `NewWriter` returns opaque writer;
+  `Write`/`Flush`/`Init` are noops (return nil error).
+
+- **`text/scanner` intercepts** (issue #160): `Init`/`Peek`/`Scan`/`TokenText`/
+  `Pos`/`IsValid` all return safe default values; `Scan` returns `scanner.EOF`.
+
+- 4 new integration tests: `errgroup_singleflight`, `encoding_gob`, `image_png`,
+  `expvar_tabwriter`; **188 integration + 11 showcase = 199 total tests**.
+
+- Closes issues #157, #158, #159, #160.
+
+## [0.53.0] - 2026-03-02
+
+### Added
+
+- **`math/rand/v2` intercepts** (issue #153, Go 1.22+): `Int64`, `Float64`,
+  `Float32`, `Uint64`, `IntN`, `N[T]`, `Perm`, `Shuffle` — uses `interp.rng`
+  for bounded generators so results are deterministic under a fixed seed.
+  `New`/`NewChaCha8`/`NewPCG` return opaque non-nil sources.
+
+- **`encoding/pem` intercepts** (issue #154): `Decode` attempts real PEM
+  parsing for concrete byte-slice args (returns concrete `*Block` + rest);
+  falls back to `(opaque, nil)` for opaque inputs. `EncodeToMemory` returns
+  a non-empty PEM sentinel. `Encode` is a noop.
+
+- **`encoding/asn1` intercepts** (issue #154): `Marshal` returns a minimal
+  DER TLV; `Unmarshal`/`UnmarshalWithParams` attempt real ASN.1 parsing on
+  concrete byte inputs and fall back to `([], nil)` for opaque inputs.
+
+- **`crypto/rsa` intercepts** (issue #155): `GenerateKey`/`GenerateMultiPrimeKey`
+  → `(*PrivateKey, nil)`; `SignPSS`/`SignPKCS1v15` → `([]byte, nil)`;
+  `VerifyPSS`/`VerifyPKCS1v15` → nil error; `EncryptOAEP`/`DecryptOAEP` →
+  `([]byte, nil)`.
+
+- **`crypto/ecdsa` intercepts** (issue #155): `GenerateKey` → `(*PrivateKey, nil)`;
+  `SignASN1` → `([]byte, nil)`; `Verify`/`VerifyASN1` → `false` (conservative).
+
+- **`crypto/ed25519` intercepts** (issue #155): `GenerateKey` → `(pub, priv, nil)`;
+  `NewKeyFromSeed` → opaque key; `Sign` → `[]byte`; `Verify` → `false`.
+
+- **`crypto/ecdh` intercepts** (issue #155, Go 1.20+): curve constructors
+  `P256`/`P384`/`P521`/`X25519`, `GenerateKey`/`NewPrivateKey`/`NewPublicKey`,
+  `ECDH` — all return opaque non-nil values with nil errors.
+
+- **`crypto/x509` intercepts** (issue #155): `ParseCertificate`/`ParseCertificates`,
+  `ParsePKCS1PrivateKey`/`ParsePKCS8PrivateKey`/`ParseECPrivateKey`/`ParsePKIXPublicKey`,
+  marshal variants, `NewCertPool`/`SystemCertPool`, `CreateCertificate`.
+
+- **`runtime/pprof` intercepts** (issue #156): `Lookup` → opaque `*Profile`;
+  `StartCPUProfile`/`StopCPUProfile`/`WriteHeapProfile` → nil. All noops.
+
+- **`runtime/trace` intercepts** (issue #156): `Start`/`Stop`, `NewTask` →
+  `(ctx, *Task)`, `NewRegion` → opaque `*Region`, `Log`/`Logf`, `IsEnabled`
+  → `false`.
+
+- New integration tests: `rand_v2`, `encoding_pem`, `crypto_asymmetric`,
+  `runtime_pprof` (4 tests, 187 total).
+
+## [0.52.0] - 2026-03-01
+
+### Added
+
+- **`math/bits` intercepts** (issue #149): All bit-manipulation functions with
+  concrete `uint64` passthrough: `LeadingZeros`, `TrailingZeros`, `OnesCount`,
+  `RotateLeft`, `Reverse`, `ReverseBytes`, `Len`, `UintSize`. Multi-return
+  arithmetic: `Add64`, `Sub64`, `Mul64`, `Div64` return `(result, carry/borrow)`
+  tuples with concrete passthrough. Non-concrete args return a non-zero sentinel.
+
+- **`math/cmplx` intercepts** (issue #149): 20+ complex-number functions with
+  concrete `complex128` passthrough: `Abs`, `Phase`, `Polar`, `Rect`, `Conj`,
+  `Exp`, `Log`, `Log10`, `Sqrt`, `Pow`, `Sin`/`Cos`/`Tan`,
+  `Sinh`/`Cosh`/`Tanh`, `Asin`/`Acos`/`Atan`/`Asinh`/`Acosh`/`Atanh`,
+  `IsNaN`, `IsInf`, `NaN`, `Inf`. Extends complex number support from v0.44.0
+  to the full `math/cmplx` API.
+
+- **`html` intercepts** (issue #150): `EscapeString` and `UnescapeString` with
+  concrete string passthrough via the real stdlib.
+
+- **`unicode/utf16` intercepts** (issue #150): `IsSurrogate`, `EncodeRune`,
+  `DecodeRune` with concrete passthrough; `Encode`, `Decode`, `AppendRune`
+  return opaque non-nil slices.
+
+- **`os/user` intercepts** (issue #151): `Current`, `Lookup`, `LookupId`
+  return `(opaque-*User, nil)`; `LookupGroup`, `LookupGroupId` return
+  `(opaque-*Group, nil)`. Method calls on the returned objects return opaque
+  non-nil strings.
+
+- **`runtime/debug` intercepts** (issue #151): `Stack` returns a non-empty
+  byte slice; `SetGCPercent`, `SetMemoryLimit`, `SetMaxStack`, `SetMaxThreads`
+  return the previous value; `ReadGCStats`, `FreeOSMemory`, `PrintStack` are
+  noops; `ReadBuildInfo` returns `(*BuildInfo, true)`.
+
+- **`net/netip` intercepts** (issue #152, Go 1.18+): `ParseAddr` /
+  `MustParseAddr`, `AddrFrom4` / `AddrFrom16`, `IPv4Unspecified` /
+  `IPv6Unspecified` and other constructors return opaque `Addr` values.
+  `AddrPortFrom` / `ParseAddrPort`, `PrefixFrom` / `ParsePrefix` similarly
+  return opaque values. Predicate methods (`IsValid`→`true`,
+  `IsLoopback`/`IsMulticast`/etc.→`false`) provide conservative returns.
+
+- New integration tests: `math_bits`, `math_cmplx`, `html_escape`, `net_netip`
+  (4 tests, 183 total).
+
+## [0.51.0] - 2026-03-01
+
+### Added
+
+- **Go version awareness** (issue #153): `interpreter.Program` now carries a
+  `GoVersion string` field (e.g. `"go1.23"`) populated from the module's
+  `go.mod` via `packages.NeedModule`. All four loaders (`LoadProgram`,
+  `LoadTest`, `LoadAllPrograms`, `LoadTestPrograms`) populate the field.
+  The CLI displays the Go version in the "Interpreting..." status line:
+  `Interpreting main (go1.23) with roundrobin scheduler (seed=0)...`
+
+- **`iter` package intercepts** (issue #154, Go 1.23+): `iter.Pull` and
+  `iter.Pull2` return a conservative (opaque next, opaque stop) pair so
+  programs that convert push-based iterators to pull-based ones do not
+  produce false positives. `stop` is automatically respected via `defer`.
+
+- New integration test: `iter_pull` — exercises `iter.Pull` and `iter.Pull2`
+  with sequences derived from `slices.Values` and `slices.All`; expected
+  0 violations.
+
 ## [0.50.0] - 2026-03-01
 
 ### Added
