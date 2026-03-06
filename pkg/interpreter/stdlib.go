@@ -1861,6 +1861,22 @@ func (interp *Interpreter) handleJSONCall(name string, args []Value) (Value, boo
 
 	case "Number":
 		return Value{Raw: ""}, true
+
+	// Decoder option setters (return the decoder receiver for chaining; noop here):
+	case "UseNumber", "DisallowUnknownFields":
+		return Value{}, true
+
+	// Decoder informational methods:
+	case "InputOffset":
+		// Decoder.InputOffset() int64 — bytes consumed so far.
+		return Value{Raw: int64(0)}, true
+	case "Buffered":
+		// Decoder.Buffered() io.Reader — remaining buffered data.
+		return stdlibOpaque, true
+
+	// Encoder option setters:
+	case "SetIndent", "SetEscapeHTML":
+		return Value{}, true
 	}
 	return Value{}, false
 }
@@ -4589,7 +4605,20 @@ func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, boo
 	opaque := stdlibOpaque
 	switch name {
 	// Package-level client functions:
-	case "Get", "Post", "Head", "PostForm":
+	case "Get":
+		// Disambiguate: package-level http.Get(url) has 1 arg;
+		// (http.Header).Get(key) or (*http.Client).Get(url) have 2 args.
+		// When the receiver (args[0]) is nil/zero (e.g. from FieldAddr on an opaque
+		// *http.Request), treat as http.Header.Get and return a string.
+		if len(args) == 1 {
+			return Value{Raw: []Value{opaque, {}}}, true // http.Get(url) → (*Response, error)
+		}
+		if len(args) >= 2 && args[0].Raw == nil {
+			return Value{Raw: "value"}, true // http.Header.Get(key) → string
+		}
+		return Value{Raw: []Value{opaque, {}}}, true // (*http.Client).Get(url) → (*Response, error)
+
+	case "Post", "Head", "PostForm":
 		// (*Response, error)
 		return Value{Raw: []Value{opaque, {}}}, true
 	case "NewRequest", "NewRequestWithContext":
@@ -4634,6 +4663,28 @@ func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, boo
 		return opaque, true
 	case "Clone":
 		return opaque, true
+	case "Context":
+		// (*http.Request).Context() context.Context
+		return opaque, true
+
+	// http.Header method calls (map[string][]string):
+	case "Set", "Add", "Del":
+		// Header.Set/Add/Del — mutate header, no return value.
+		return Value{}, true
+	case "Values":
+		// Header.Values(key) []string — return pessimistic non-empty slice.
+		return Value{Raw: []Value{{Raw: "value"}}}, true
+	case "CanonicalHeaderKey":
+		// http.CanonicalHeaderKey(s) string — return input unchanged if known.
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: s}, true
+		}
+		return Value{Raw: "Content-Type"}, true
+
+	// http.ResponseWriter method calls:
+	case "WriteHeader":
+		// ResponseWriter.WriteHeader(statusCode int) — noop.
+		return Value{}, true
 
 	// *http.Response methods (Body is io.ReadCloser — handled by io intercept):
 	case "Cookies":
@@ -4648,6 +4699,12 @@ func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, boo
 		return Value{}, true
 	case "ReadResponse":
 		return Value{Raw: []Value{opaque, {}}}, true
+
+	// Misc helpers:
+	case "MaxBytesReader":
+		return opaque, true
+	case "DetectContentType":
+		return Value{Raw: "application/octet-stream"}, true
 	}
 	return Value{}, false
 }

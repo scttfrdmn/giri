@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.70.0] - 2026-03-06
+
+### Added
+
+- **`net/http` Header method disambiguation and additions** (issue #212):
+  fix `case "Get"` split: `len(args)==1` → package-level `http.Get(url)` returns
+  `(*Response, error)` tuple; `len(args)>=2` with nil receiver → `(http.Header).Get(key)`
+  returns `string`; otherwise `(*http.Client).Get(url)` returns tuple.
+  New cases: `Set`/`Add`/`Del` → noop; `Values` → `[]string{"value"}`;
+  `Context` → opaque (for `(*http.Request).Context()`);
+  `WriteHeader` → noop (for `http.ResponseWriter.WriteHeader`);
+  `CanonicalHeaderKey` → string passthrough;
+  `DetectContentType` → `"application/octet-stream"`;
+  `MaxBytesReader` → opaque.
+
+- **6 new `encoding/json` Decoder/Encoder option methods** (issue #212):
+  `UseNumber` → noop; `DisallowUnknownFields` → noop;
+  `InputOffset` → `int64(0)`; `Buffered` → opaque;
+  `SetIndent` → noop; `SetEscapeHTML` → noop.
+
+- **Integration tests**: `http_header` (exercises Header.Set/Add/Del/Values,
+  Request.Context, MaxBytesReader, CanonicalHeaderKey, DetectContentType);
+  `json_options` (exercises UseNumber, DisallowUnknownFields, InputOffset,
+  Buffered, SetIndent, SetEscapeHTML).
+
+- Test count: 249 integration + 12 showcase = 261 total.
+
+### Fixed
+
+- `(http.Header).Get(key)` no longer returns a `(*Response, error)` tuple when
+  the receiver is nil (opaque field access). Closes #212.
+
 ## [0.69.0] - 2026-03-06
 
 ### Added
