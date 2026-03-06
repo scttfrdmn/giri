@@ -1363,6 +1363,47 @@ func (interp *Interpreter) handleTimeCall(name string, args []Value) (Value, boo
 	case "UnmarshalJSON", "UnmarshalText", "UnmarshalBinary":
 		return Value{}, true
 
+	// Additional time.Time methods (v0.72.0):
+	case "Compare":
+		// (time.Time).Compare(u time.Time) int — returns -1, 0, or 1.
+		return Value{Raw: int64(0)}, true
+
+	case "AppendFormat":
+		// (time.Time).AppendFormat(b []byte, layout string) []byte
+		if len(args) > 1 {
+			return args[1], true // return the slice arg as-is
+		}
+		return Value{Raw: []Value{}}, true
+
+	case "Clock":
+		// (time.Time).Clock() (hour, min, sec int) — 3-tuple.
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: int64(0)}, {Raw: int64(0)}}}, true
+
+	case "Location":
+		// (time.Time).Location() *time.Location — opaque.
+		return opaque, true
+
+	case "IsDST":
+		// (time.Time).IsDST() bool (Go 1.17).
+		return Value{Raw: false}, true
+
+	case "ZoneBounds":
+		// (time.Time).ZoneBounds() (start, end time.Time) — 2-tuple of opaque times (Go 1.19).
+		return Value{Raw: []Value{opaque, opaque}}, true
+
+	case "AddDate":
+		// (time.Time).AddDate(years, months, days int) time.Time
+		return opaque, true
+
+	// Package-level time functions (v0.72.0):
+	case "LoadLocation":
+		// time.LoadLocation(name string) (*time.Location, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+
+	case "FixedZone":
+		// time.FixedZone(name string, offset int) *time.Location
+		return opaque, true
+
 	// Ticker / Timer methods:
 	case "Stop":
 		// (*Ticker).Stop() and (*Timer).Stop() return bool.
@@ -1377,6 +1418,18 @@ func (interp *Interpreter) handleTimeCall(name string, args []Value) (Value, boo
 		return Value{Raw: float64(0)}, true
 
 	case "Milliseconds", "Microseconds", "Nanoseconds":
+		return Value{Raw: int64(0)}, true
+
+	case "Abs":
+		// (time.Duration).Abs() time.Duration (Go 1.19) — returns int64.
+		if len(args) > 0 {
+			if d, ok := args[0].Raw.(int64); ok {
+				if d < 0 {
+					return Value{Raw: -d}, true
+				}
+				return Value{Raw: d}, true
+			}
+		}
 		return Value{Raw: int64(0)}, true
 	}
 	return Value{}, false

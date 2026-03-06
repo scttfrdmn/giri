@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.72.0 regression tests
+	{
+		name:           "time complete",
+		dir:            "time_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.71.0 regression tests
 	{
 		name:           "strings complete",

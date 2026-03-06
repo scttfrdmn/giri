@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.72.0] - 2026-03-06
+
+### Added
+
+- **`time` package completions** (issue #214): `Compare` (Go 1.20) → `int`; `AppendFormat` (Go 1.20)
+  → `[]byte`; `Clock` → `(hour, min, sec int)` 3-tuple; `Location` → opaque `*time.Location`;
+  `IsDST` (Go 1.17) → `bool`; `ZoneBounds` (Go 1.19) → `(start, end time.Time)` 2-tuple;
+  `AddDate` → opaque `time.Time`; `Duration.Abs` (Go 1.19) → `int64`; `LoadLocation` →
+  `(*time.Location, error)`; `FixedZone` → opaque `*time.Location`. 10 new intercepts.
+- Integration test `time_complete`: exercises all new `time` intercepts; 0 violations.
+- 1 new integration test (253 integration + 12 showcase = 265 total).
+
 ## [0.71.0] - 2026-03-06
 
 ### Added
