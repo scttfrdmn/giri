@@ -2111,6 +2111,15 @@ func (interp *Interpreter) handleSortCall(gid int64, name string, args []Value, 
 		// sort.Find(n int, cmp func(int) int) (int, bool): probe cmp with 0.
 		probeCallback(1, []Value{{Raw: int64(0)}})
 		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
+
+	// v0.73.0: typed binary-search helpers and sorted-check aliases.
+	case "SearchStrings", "SearchInts", "SearchFloat64s":
+		// SearchXxx(a []T, x T) int — binary search, pessimistic 0.
+		return Value{Raw: int64(0)}, true
+
+	case "StringsAreSorted", "IntsAreSorted", "Float64sAreSorted":
+		// XxxAreSorted(x []T) bool (Go 1.21 aliases for IsSorted on typed slices).
+		return Value{Raw: true}, true
 	}
 	return Value{}, false
 }
@@ -2208,6 +2217,15 @@ func (interp *Interpreter) handleRegexpCall(gid int64, name string, args []Value
 		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
 
 	case "MustCompile":
+		// (expr string) *Regexp
+		return Value{Raw: struct{}{}}, true
+
+	// v0.73.0: POSIX-flavour constructors.
+	case "CompilePOSIX":
+		// (expr string) (*Regexp, error)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
+
+	case "MustCompilePOSIX":
 		// (expr string) *Regexp
 		return Value{Raw: struct{}{}}, true
 
@@ -2315,6 +2333,26 @@ func (interp *Interpreter) handleRegexpCall(gid int64, name string, args []Value
 
 	case "Find", "FindIndex", "FindSubmatch", "FindAll", "FindAllIndex", "FindAllSubmatch":
 		return Value{Raw: []Value{}}, true
+
+	// v0.73.0: remaining byte-slice index methods and template expansion.
+	case "FindSubmatchIndex", "FindAllSubmatchIndex":
+		return Value{Raw: []Value{}}, true
+
+	case "Expand":
+		// (*Regexp).Expand(dst []byte, template []byte, src []byte, match []int) []byte
+		// Return dst (args[1] = template? no: receiver,dst,template,src,match)
+		// Receiver=args[0], dst=args[1]; pass dst back.
+		if len(args) > 1 {
+			return args[1], true
+		}
+		return Value{Raw: []byte{}}, true
+
+	case "ExpandString":
+		// (*Regexp).ExpandString(dst []byte, template string, src string, match []int) []byte
+		if len(args) > 1 {
+			return args[1], true
+		}
+		return Value{Raw: []byte{}}, true
 	}
 	return Value{}, false
 }
@@ -3239,6 +3277,15 @@ func (interp *Interpreter) handleIOCall(name string, args []Value) (Value, bool)
 	case "Discard":
 		// io.Discard is a variable (iota/Writer); return opaque.
 		return opaque, true
+
+	// v0.73.0: SectionReader.Size and OffsetWriter.
+	case "Size":
+		// (*io.SectionReader).Size() int64
+		return Value{Raw: int64(0)}, true
+
+	case "NewOffsetWriter":
+		// io.NewOffsetWriter(w WriterAt, off int64) *OffsetWriter (Go 1.20)
+		return opaque, true
 	}
 	return Value{}, false
 }
@@ -3721,6 +3768,13 @@ func (interp *Interpreter) handleFilepathCall(name string, args []Value) (Value,
 			return Value{Raw: vals}, true
 		}
 		return Value{Raw: []Value{}}, true
+
+	case "IsLocal":
+		// filepath.IsLocal(path string) bool (Go 1.22)
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: filepath.IsLocal(s)}, true
+		}
+		return Value{Raw: false}, true
 	}
 	return Value{}, false
 }

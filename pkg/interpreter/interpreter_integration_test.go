@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.73.0 regression tests
+	{
+		name:           "sort regexp io complete",
+		dir:            "sort_regexp_io_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.72.0 regression tests
 	{
 		name:           "time complete",

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-03-06
+
+### Added
+
+- **`sort` completions** (issue #215): `SearchStrings`, `SearchInts`, `SearchFloat64s` → `int`;
+  `StringsAreSorted`, `IntsAreSorted`, `Float64sAreSorted` (Go 1.21) → `bool`. 6 new intercepts.
+- **`regexp` completions** (issue #215): `CompilePOSIX` → `(*Regexp, error)`; `MustCompilePOSIX` →
+  `*Regexp`; `FindSubmatchIndex`/`FindAllSubmatchIndex` → `[]int`; `Expand`/`ExpandString` →
+  `[]byte`. 6 new intercepts.
+- **`io` completions** (issue #215): `NewOffsetWriter` (Go 1.20) → opaque `*OffsetWriter`;
+  `(*SectionReader).Size()` → `int64`. 2 new intercepts.
+- **`path/filepath` completions** (issue #215): `IsLocal` (Go 1.22) → concrete `bool`. 1 new intercept.
+- Integration test `sort_regexp_io_complete`: exercises all new intercepts; 0 violations.
+- 1 new integration test (254 integration + 12 showcase = 266 total).
+
 ## [0.72.0] - 2026-03-06
 
 ### Added
