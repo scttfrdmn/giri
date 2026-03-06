@@ -345,6 +345,21 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.69.0 regression tests
+	{
+		name:           "os complete",
+		dir:            "os_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "atomic generics",
+		dir:            "atomic_generics",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.68.0 regression tests
 	{
 		name:           "math complete",

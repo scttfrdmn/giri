@@ -1274,6 +1274,63 @@ func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool)
 	case "DirFS":
 		// DirFS(dir string) fs.FS — return opaque fs.FS value.
 		return opaque, true
+
+	// --- Added in v0.69.0 ---
+
+	case "Lstat":
+		// Lstat(name string) (FileInfo, error) — same semantics as Stat.
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "TempDir":
+		// TempDir() string — return the OS temporary directory.
+		return Value{Raw: "/tmp"}, true
+	case "Hostname":
+		// Hostname() (string, error)
+		return Value{Raw: []Value{{Raw: "localhost"}, {}}}, true
+	case "Getpid":
+		return Value{Raw: int64(os.Getpid())}, true
+	case "Getuid":
+		return Value{Raw: int64(os.Getuid())}, true
+	case "Getgid":
+		return Value{Raw: int64(os.Getgid())}, true
+	case "Geteuid":
+		return Value{Raw: int64(os.Geteuid())}, true
+	case "Getegid":
+		return Value{Raw: int64(os.Getegid())}, true
+	case "Getgroups":
+		// Getgroups() ([]int, error) — return empty slice, nil error.
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "IsNotExist", "IsExist", "IsPermission", "IsTimeout":
+		// Conservative: return false (unknown error type).
+		return Value{Raw: false}, true
+	case "ExpandEnv":
+		// ExpandEnv(s string) string — return empty string (env not modeled).
+		return Value{Raw: ""}, true
+	case "Environ":
+		// Environ() []string — return empty slice.
+		return Value{Raw: []Value{}}, true
+	case "Clearenv":
+		return Value{}, true
+	case "Executable":
+		// Executable() (string, error)
+		return Value{Raw: []Value{{Raw: "/tmp/giri-test"}, {}}}, true
+	case "UserHomeDir", "UserCacheDir", "UserConfigDir":
+		// (string, error)
+		return Value{Raw: []Value{{Raw: "/tmp"}, {}}}, true
+	case "Pipe":
+		// Pipe() (*File, *File, error) — return two opaque files, nil error.
+		return Value{Raw: []Value{opaque, opaque, {}}}, true
+	case "Readlink":
+		// Readlink(name string) (string, error)
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "Link", "Symlink", "Chtimes":
+		// File-system operations that return only error.
+		return Value{}, true
+	case "SameFile":
+		// SameFile(fi1, fi2 FileInfo) bool — conservative false.
+		return Value{Raw: false}, true
+	case "Exit":
+		// os.Exit terminates the process; in the interpreter, noop.
+		return Value{}, true
 	}
 	return Value{}, false
 }
@@ -2727,6 +2784,86 @@ func (interp *Interpreter) handleAtomicCall(name string, args []Value) (Value, b
 		// atomic.Value is a struct; Load/Store methods on it.
 		// Method calls on atomic.Value have pkg path "sync/atomic".
 		return Value{}, true
+
+	// --- Added in v0.69.0: methods on Go 1.19+ concrete atomic types ---
+	// atomic.Int32, Int64, Uint32, Uint64, Uintptr, Bool — concrete struct types
+	// whose methods (Load, Store, Add, Swap, CompareAndSwap, And, Or) route here
+	// as bare names because Function.Name() strips the receiver prefix.
+
+	case "Load":
+		if allocID != 0 && interp.valueStore != nil {
+			if v, ok := interp.valueStore[allocID]; ok {
+				return v, true
+			}
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "Store":
+		if allocID != 0 && len(args) >= 2 && interp.valueStore != nil {
+			interp.valueStore[allocID] = args[1]
+		}
+		return Value{}, true
+
+	case "Add":
+		if allocID != 0 && len(args) >= 2 {
+			cur := int64(0)
+			if v, ok := interp.valueStore[allocID]; ok {
+				cur = toInt64(v)
+			}
+			newVal := Value{Raw: cur + toInt64(args[1])}
+			interp.valueStore[allocID] = newVal
+			return newVal, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "Swap":
+		if allocID != 0 && len(args) >= 2 {
+			old := Value{Raw: int64(0)}
+			if v, ok := interp.valueStore[allocID]; ok {
+				old = v
+			}
+			interp.valueStore[allocID] = args[1]
+			return old, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "CompareAndSwap":
+		if allocID != 0 && len(args) >= 3 {
+			cur := int64(0)
+			if v, ok := interp.valueStore[allocID]; ok {
+				cur = toInt64(v)
+			}
+			if cur == toInt64(args[1]) {
+				interp.valueStore[allocID] = args[2]
+				return Value{Raw: true}, true
+			}
+			return Value{Raw: false}, true
+		}
+		return Value{Raw: true}, true // pessimistic: assume CAS succeeds
+
+	case "And":
+		if allocID != 0 && len(args) >= 2 {
+			cur := int64(0)
+			if v, ok := interp.valueStore[allocID]; ok {
+				cur = toInt64(v)
+			}
+			newVal := Value{Raw: cur & toInt64(args[1])}
+			interp.valueStore[allocID] = newVal
+			return newVal, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "Or":
+		if allocID != 0 && len(args) >= 2 {
+			cur := int64(0)
+			if v, ok := interp.valueStore[allocID]; ok {
+				cur = toInt64(v)
+			}
+			newVal := Value{Raw: cur | toInt64(args[1])}
+			interp.valueStore[allocID] = newVal
+			return newVal, true
+		}
+		return Value{Raw: int64(0)}, true
 	}
 	return Value{}, false
 }
@@ -2858,6 +2995,9 @@ func (interp *Interpreter) handleBufioCall(name string, args []Value) (Value, bo
 	// bufio.Reader methods.
 	case "ReadString":
 		return Value{Raw: []Value{{Raw: ""}, {}}}, true
+	case "ReadBytes":
+		// ReadBytes(delim byte) ([]byte, error) — return empty slice, nil error.
+		return Value{Raw: []Value{{Raw: []byte(nil)}, {}}}, true
 	case "ReadLine":
 		return Value{Raw: []Value{{Raw: []byte(nil)}, {Raw: false}, {}}}, true
 	case "ReadByte":

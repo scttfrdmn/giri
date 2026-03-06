@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-03-06
+
+### Added
+
+- **20 new `os.*` intercepts** (issue #211): `Lstat` → `(opaque,nil)`;
+  `TempDir` → `"/tmp"`; `Hostname` → `("localhost",nil)`;
+  `Getpid`/`Getuid`/`Getgid`/`Geteuid`/`Getegid` → real int values;
+  `Getgroups` → `([],nil)`; `IsNotExist`/`IsExist`/`IsPermission`/`IsTimeout`
+  → `false`; `ExpandEnv` → `""`; `Environ` → `[]`; `Clearenv` → noop;
+  `Executable` → `("/tmp/giri-test",nil)`;
+  `UserHomeDir`/`UserCacheDir`/`UserConfigDir` → `("/tmp",nil)`;
+  `Pipe` → `(opaque,opaque,nil)`;
+  `Readlink` → `("",nil)`; `Link`/`Symlink`/`Chtimes` → noop;
+  `SameFile` → `false`; `Exit` → noop.
+
+- **8 new `sync/atomic` method cases** (issue #211): `Load`, `Store`, `Add`,
+  `Swap`, `CompareAndSwap`, `And`, `Or` added to `handleAtomicCall` for
+  the Go 1.19+ concrete atomic struct types (`atomic.Int32`, `Int64`, `Uint32`,
+  `Uint64`, `Uintptr`, `Bool`). Method names dispatch as bare names
+  (e.g., `"Load"`) because `Function.Name()` strips the receiver prefix.
+  Uses the same `valueStore` AllocID mechanism as the existing package-level
+  atomic functions.
+
+- **`bufio.ReadBytes`** (issue #211): `(*Reader).ReadBytes(delim byte)
+  ([]byte, error)` — complementary to the existing `ReadString` case.
+
+- **2 new integration tests**: `os_complete`, `atomic_generics`. Total:
+  247 integration + 12 showcase = 259 tests.
+
+### Closes
+
+- issue #211
+
 ## [0.68.0] - 2026-03-06
 
 ### Added
