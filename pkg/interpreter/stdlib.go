@@ -736,6 +736,89 @@ func (interp *Interpreter) handleStringsCall(name string, args []Value) (Value, 
 			return Value{Raw: []Value{{Raw: before}, {Raw: after}, {Raw: found}}}, true
 		}
 		return Value{Raw: []Value{{Raw: "x"}, {Raw: "x"}, {Raw: true}}}, true
+	case "Clone":
+		// strings.Clone(s) string — return same value (Go 1.20).
+		if s0ok {
+			return Value{Raw: s0}, true
+		}
+		return Value{Raw: "x"}, true
+
+	case "CutPrefix":
+		// strings.CutPrefix(s, prefix) (after string, found bool) (Go 1.20).
+		if s0ok && s1ok {
+			after, found := strings.CutPrefix(s0, s1)
+			return Value{Raw: []Value{{Raw: after}, {Raw: found}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "x"}, {Raw: false}}}, true
+
+	case "CutSuffix":
+		// strings.CutSuffix(s, suffix) (before string, found bool) (Go 1.20).
+		if s0ok && s1ok {
+			before, found := strings.CutSuffix(s0, s1)
+			return Value{Raw: []Value{{Raw: before}, {Raw: found}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "x"}, {Raw: false}}}, true
+
+	case "ContainsFunc":
+		// strings.ContainsFunc(s, f) bool (Go 1.21) — func not invoked; pessimistic.
+		return Value{Raw: true}, true
+
+	case "FieldsFunc":
+		// strings.FieldsFunc(s, f) []string — func not invoked; return single-element.
+		if s0ok {
+			return Value{Raw: []Value{{Raw: s0}}}, true
+		}
+		return Value{Raw: []Value{{Raw: "x"}}}, true
+
+	case "IndexFunc":
+		// strings.IndexFunc(s, f) int — func not invoked; pessimistic 0.
+		return Value{Raw: int64(0)}, true
+
+	case "LastIndexAny":
+		if s0ok && s1ok {
+			return Value{Raw: int64(strings.LastIndexAny(s0, s1))}, true
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "LastIndexByte":
+		if s0ok {
+			if c, ok := stdlibArgInt(args, 1); ok {
+				return Value{Raw: int64(strings.LastIndexByte(s0, byte(c)))}, true
+			}
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "LastIndexFunc":
+		// strings.LastIndexFunc(s, f) int — func not invoked; pessimistic 0.
+		return Value{Raw: int64(0)}, true
+
+	case "SplitAfterN":
+		if s0ok && s1ok {
+			n, _ := stdlibArgInt(args, 2)
+			return Value{Raw: stringsToValues(strings.SplitAfterN(s0, s1, int(n)))}, true
+		}
+		return Value{Raw: []Value{{Raw: "x"}}}, true
+
+	case "Title":
+		// strings.Title is deprecated but still present.
+		if s0ok {
+			return Value{Raw: strings.Title(s0)}, true //nolint:staticcheck
+		}
+		return Value{Raw: "X"}, true
+
+	case "ToValidUTF8":
+		if s0ok && s1ok {
+			return Value{Raw: strings.ToValidUTF8(s0, s1)}, true
+		}
+		return Value{Raw: "x"}, true
+
+	case "TrimFunc", "TrimLeftFunc", "TrimRightFunc":
+		// func arg not invoked; return input string unchanged.
+		if s0ok {
+			return Value{Raw: s0}, true
+		}
+		return Value{Raw: "x"}, true
+
 	case "NewReplacer":
 		// Returns a *strings.Replacer (opaque but non-nil so method calls are dispatched).
 		// Method calls (Replace, WriteString) share existing cases below.
@@ -959,12 +1042,125 @@ func (interp *Interpreter) handleStrconvCall(name string, args []Value) (Value, 
 		}
 		return Value{Raw: []Value{{Raw: "x"}, {}}}, true
 
-	case "AppendInt", "AppendUint", "AppendFloat", "AppendBool", "AppendQuote":
+	case "AppendInt", "AppendUint", "AppendFloat", "AppendBool", "AppendQuote",
+		"AppendQuoteRune", "AppendQuoteRuneToASCII", "AppendQuoteRuneToGraphic",
+		"AppendQuoteToASCII", "AppendQuoteToGraphic":
 		// Returns []byte; return the dst slice unchanged.
 		if len(args) > 0 {
 			return args[0], true
 		}
 		return Value{}, true
+
+	case "QuoteRune":
+		// strconv.QuoteRune(r rune) string
+		if r, ok := stdlibArgInt(args, 0); ok {
+			return Value{Raw: strconv.QuoteRune(rune(r))}, true
+		}
+		return Value{Raw: `'x'`}, true
+
+	case "QuoteRuneToASCII":
+		if r, ok := stdlibArgInt(args, 0); ok {
+			return Value{Raw: strconv.QuoteRuneToASCII(rune(r))}, true
+		}
+		return Value{Raw: `'x'`}, true
+
+	case "QuoteRuneToGraphic":
+		if r, ok := stdlibArgInt(args, 0); ok {
+			return Value{Raw: strconv.QuoteRuneToGraphic(rune(r))}, true
+		}
+		return Value{Raw: `'x'`}, true
+
+	case "QuoteToASCII":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: strconv.QuoteToASCII(s)}, true
+		}
+		return Value{Raw: `"x"`}, true
+
+	case "QuoteToGraphic":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: strconv.QuoteToGraphic(s)}, true
+		}
+		return Value{Raw: `"x"`}, true
+
+	case "QuotedPrefix":
+		// strconv.QuotedPrefix(s string) (string, error) — Go 1.17
+		if s, ok := stdlibArgString(args, 0); ok {
+			p, err := strconv.QuotedPrefix(s)
+			if err != nil {
+				return Value{Raw: []Value{{Raw: ""}, {Raw: err.Error()}}}, true
+			}
+			return Value{Raw: []Value{{Raw: p}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: `"x"`}, {}}}, true
+
+	case "CanBackquote":
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: strconv.CanBackquote(s)}, true
+		}
+		return Value{Raw: true}, true
+
+	case "IsPrint":
+		if r, ok := stdlibArgInt(args, 0); ok {
+			return Value{Raw: strconv.IsPrint(rune(r))}, true
+		}
+		return Value{Raw: true}, true
+
+	case "IsGraphic":
+		if r, ok := stdlibArgInt(args, 0); ok {
+			return Value{Raw: strconv.IsGraphic(rune(r))}, true
+		}
+		return Value{Raw: true}, true
+
+	case "ParseComplex":
+		// strconv.ParseComplex(s string, bitSize int) (complex128, error)
+		if s, ok := stdlibArgString(args, 0); ok {
+			bitSize := 128
+			if bs, ok2 := stdlibArgInt(args, 1); ok2 {
+				bitSize = int(bs)
+			}
+			c, err := strconv.ParseComplex(s, bitSize)
+			if err != nil {
+				return Value{Raw: []Value{{Raw: complex128(0)}, {Raw: err.Error()}}}, true
+			}
+			return Value{Raw: []Value{{Raw: c}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: complex128(1 + 0i)}, {}}}, true
+
+	case "FormatComplex":
+		// strconv.FormatComplex(c complex128, fmt byte, prec, bitSize int) string
+		if len(args) >= 4 {
+			if c, ok := args[0].Raw.(complex128); ok {
+				fmtByte := byte('g')
+				if f, ok2 := stdlibArgInt(args, 1); ok2 {
+					fmtByte = byte(f)
+				}
+				prec := -1
+				if p, ok2 := stdlibArgInt(args, 2); ok2 {
+					prec = int(p)
+				}
+				bitSize := 128
+				if bs, ok2 := stdlibArgInt(args, 3); ok2 {
+					bitSize = int(bs)
+				}
+				return Value{Raw: strconv.FormatComplex(c, fmtByte, prec, bitSize)}, true
+			}
+		}
+		return Value{Raw: "(1+0i)"}, true
+
+	case "UnquoteChar":
+		// strconv.UnquoteChar(s string, quote byte) (rune, bool, string, error)
+		if s, ok := stdlibArgString(args, 0); ok {
+			q := byte('"')
+			if qv, ok2 := stdlibArgInt(args, 1); ok2 {
+				q = byte(qv)
+			}
+			r, multi, tail, err := strconv.UnquoteChar(s, q)
+			if err != nil {
+				return Value{Raw: []Value{{Raw: int64(r)}, {Raw: multi}, {Raw: tail}, {Raw: err.Error()}}}, true
+			}
+			return Value{Raw: []Value{{Raw: int64(r)}, {Raw: multi}, {Raw: tail}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: int64('x')}, {Raw: false}, {Raw: ""}, {}}}, true
 	}
 	return Value{}, false
 }
@@ -1608,6 +1804,50 @@ func (interp *Interpreter) handleBytesCall(name string, args []Value) (Value, bo
 		}
 		return Value{Raw: []Value{args[0], {Raw: false}}}, true
 	case "Clone":
+		return Value{Raw: args[0].Raw}, true
+
+	case "ContainsFunc":
+		// bytes.ContainsFunc(b []byte, f func(rune) bool) bool — func not invoked.
+		return Value{Raw: true}, true
+
+	case "FieldsFunc":
+		// bytes.FieldsFunc(b []byte, f func(rune) bool) [][]byte — func not invoked.
+		return Value{Raw: []Value{{Raw: args[0].Raw}}}, true
+
+	case "IndexFunc":
+		// bytes.IndexFunc(b []byte, f func(rune) bool) int — func not invoked.
+		return Value{Raw: int64(0)}, true
+
+	case "LastIndexByte":
+		// bytes.LastIndexByte(b []byte, c byte) int
+		if s0ok {
+			if c, ok := stdlibArgInt(args, 1); ok {
+				idx := strings.LastIndexByte(s0, byte(c))
+				return Value{Raw: int64(idx)}, true
+			}
+		}
+		return Value{Raw: int64(0)}, true
+
+	case "LastIndexFunc":
+		// bytes.LastIndexFunc(b []byte, f func(rune) bool) int — func not invoked.
+		return Value{Raw: int64(0)}, true
+
+	case "Runes":
+		// bytes.Runes(b []byte) []rune
+		if s0ok {
+			rs := []rune(s0)
+			vs := make([]Value, len(rs))
+			for i, r := range rs {
+				vs[i] = Value{Raw: int64(r)}
+			}
+			return Value{Raw: vs}, true
+		}
+		return Value{Raw: []Value{}}, true
+
+	case "ToValidUTF8":
+		if s0ok && s1ok {
+			return Value{Raw: []byte(strings.ToValidUTF8(s0, s1))}, true
+		}
 		return Value{Raw: args[0].Raw}, true
 
 	// bytes.Buffer method calls (#79): receiver = args[0], other args follow.

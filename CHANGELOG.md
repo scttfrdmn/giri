@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.71.0] - 2026-03-06
+
+### Added
+
+- **`strings` package completions** (issue #213): `Clone` → passthrough; `CutPrefix`/`CutSuffix`
+  (Go 1.20) → `(string, bool)` tuples; `ContainsFunc` (Go 1.21) → pessimistic `true`;
+  `FieldsFunc` → single-element `[]string`; `IndexFunc`/`LastIndexFunc` → `int` (pessimistic 0);
+  `LastIndexAny`/`LastIndexByte` → concrete or 0; `SplitAfterN` → concrete or single slice;
+  `Title` (deprecated) → concrete; `ToValidUTF8` → concrete; `TrimFunc`/`TrimLeftFunc`/`TrimRightFunc`
+  → input passthrough. 15 new string intercepts.
+
+- **`bytes` package completions** (issue #213): `ContainsFunc` → `true`; `FieldsFunc` → `[][]byte`;
+  `IndexFunc`/`LastIndexFunc` → `int`; `LastIndexByte` → `int`; `Runes` → `[]rune`; `ToValidUTF8`
+  → `[]byte`. 7 new bytes intercepts.
+
+- **`strconv` package completions** (issue #213): `QuoteRune`/`QuoteRuneToASCII`/`QuoteRuneToGraphic`
+  → concrete `string`; `QuoteToASCII`/`QuoteToGraphic` → concrete `string`; `QuotedPrefix` (Go 1.17)
+  → `(string, error)`; `CanBackquote` → concrete `bool`; `IsPrint`/`IsGraphic` → concrete `bool`;
+  `ParseComplex` → `(complex128, error)`; `FormatComplex` → `string`; `UnquoteChar` → 4-tuple;
+  `AppendQuoteRune`/`AppendQuoteRuneToASCII`/`AppendQuoteRuneToGraphic`/`AppendQuoteToASCII`/
+  `AppendQuoteToGraphic` added to the existing `AppendXxx` case. 13 new strconv intercepts.
+
+- **Integration tests**: `strings_complete` (exercises 15 new string functions);
+  `strconv_complete` (exercises 13 new strconv functions).
+
+- Test count: 251 integration + 12 showcase = 263 total.
+
 ## [0.70.0] - 2026-03-06
 
 ### Added

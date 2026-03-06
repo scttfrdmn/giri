@@ -345,6 +345,21 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.71.0 regression tests
+	{
+		name:           "strings complete",
+		dir:            "strings_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "strconv complete",
+		dir:            "strconv_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.70.0 regression tests
 	{
 		name:           "http header",
