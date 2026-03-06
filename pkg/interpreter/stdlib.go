@@ -3937,6 +3937,88 @@ func (interp *Interpreter) handleNetCall(name string, args []Value) (Value, bool
 
 	case "CIDRMask":
 		return Value{Raw: struct{}{}}, true
+
+	// v0.74.0: additional DNS lookups.
+	case "LookupAddr":
+		// LookupAddr(addr string) ([]string, error)
+		return Value{Raw: []Value{{Raw: []Value{{Raw: "localhost."}}}, {}}}, true
+
+	case "LookupSRV":
+		// LookupSRV(service, proto, name string) (cname string, addrs []*SRV, error)
+		return Value{Raw: []Value{{Raw: ""}, {Raw: []Value{}}, {}}}, true
+
+	case "ParseMAC":
+		// ParseMAC(s string) (HardwareAddr, error)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
+
+	case "Interfaces":
+		// net.Interfaces() ([]Interface, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+
+	case "InterfaceAddrs":
+		// net.InterfaceAddrs() ([]Addr, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+
+	case "InterfaceByName":
+		// net.InterfaceByName(name string) (*Interface, error)
+		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
+
+	// v0.74.0: net.IP methods (receiver = args[0]).
+	case "String":
+		// (net.IP).String() string / (net.HardwareAddr).String() / (net.Addr).String()
+		if len(args) > 0 {
+			if s, ok := args[0].Raw.(string); ok {
+				return Value{Raw: s}, true
+			}
+		}
+		return Value{Raw: "0.0.0.0"}, true
+
+	case "Equal":
+		// (net.IP).Equal(x IP) bool
+		return Value{Raw: false}, true
+
+	case "IsLoopback", "IsGlobalUnicast", "IsMulticast",
+		"IsLinkLocalUnicast", "IsLinkLocalMulticast", "IsInterfaceLocalMulticast",
+		"IsUnspecified", "IsPrivate":
+		// Boolean IP classification predicates.
+		return Value{Raw: false}, true
+
+	case "To4", "To16":
+		// (net.IP).To4() / To16() — returns IP (opaque) or nil.
+		return Value{Raw: struct{}{}}, true
+
+	case "Mask":
+		// (net.IP).Mask(mask IPMask) IP
+		return Value{Raw: struct{}{}}, true
+
+	case "Contains":
+		// (*net.IPNet).Contains(ip IP) bool
+		return Value{Raw: false}, true
+
+	case "Network":
+		// Addr.Network() string — returns the address family name.
+		return Value{Raw: "tcp"}, true
+
+	// v0.74.0: Conn interface methods (dispatched from net-defined types).
+	case "Read":
+		// (net.Conn).Read(b []byte) (n int, err error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	case "Write":
+		// (net.Conn).Write(b []byte) (n int, err error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	case "Close":
+		// (net.Conn).Close() error
+		return Value{}, true
+
+	case "LocalAddr", "RemoteAddr":
+		// (net.Conn).LocalAddr() / RemoteAddr() net.Addr
+		return Value{Raw: struct{}{}}, true
+
+	case "SetDeadline", "SetReadDeadline", "SetWriteDeadline":
+		// (net.Conn).SetDeadline(t time.Time) error
+		return Value{}, true
 	}
 	return Value{}, false
 }
@@ -4455,6 +4537,10 @@ func (interp *Interpreter) handleFlagCall(name string, args []Value) (Value, boo
 		// flag.Func(name, usage string, fn func(string) error)
 		return Value{}, true
 
+	case "BoolFunc":
+		// flag.BoolFunc(name, usage string, fn func(string) error) (Go 1.20)
+		return Value{}, true
+
 	case "TextVar":
 		return Value{}, true
 
@@ -4787,6 +4873,10 @@ func (interp *Interpreter) handleNetURLCall(name string, args []Value) (Value, b
 
 	case "EscapedFragment":
 		return Value{Raw: ""}, true
+
+	case "Redacted":
+		// (*url.URL).Redacted() string (Go 1.15) — returns URL string with password masked.
+		return Value{Raw: "http://user:xxxxx@example.com/"}, true
 
 	// url.Values method calls (receiver = args[0]):
 	case "Get":

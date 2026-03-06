@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-03-06
+
+### Added
+
+- **`net` package completions** (issue #216): `LookupAddr` → `([]string, error)`; `LookupSRV` →
+  `(cname, []*SRV, error)`; `ParseMAC` → `(HardwareAddr, error)`; `Interfaces`/`InterfaceAddrs` →
+  `([]T, error)`; `InterfaceByName` → `(*Interface, error)`; `net.IP` methods: `String`, `Equal`,
+  `IsLoopback`, `IsGlobalUnicast`, `IsMulticast`, `IsLinkLocalUnicast`, `IsLinkLocalMulticast`,
+  `IsInterfaceLocalMulticast`, `IsUnspecified`, `IsPrivate`, `To4`, `To16`, `Mask`; `IPNet.Contains`;
+  `Addr.Network`; Conn interface: `Read`, `Write`, `Close`, `LocalAddr`, `RemoteAddr`,
+  `SetDeadline`, `SetReadDeadline`, `SetWriteDeadline`. 27 new intercepts.
+- **`net/url` package completions** (issue #216): `(*URL).Redacted()` → `string` (Go 1.15). 1 new.
+- **`flag` package completions** (issue #216): `BoolFunc` (Go 1.20) → noop. 1 new.
+- Integration test `net_url_flag_complete`: exercises all new intercepts; 0 violations.
+- 1 new integration test (255 integration + 12 showcase = 267 total).
+
 ## [0.73.0] - 2026-03-06
 
 ### Added
