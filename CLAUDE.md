@@ -3,7 +3,7 @@
 ## Project Overview
 Giri (Go IR Interpreter) is an undefined behavior detector for Go programs. It interprets Go SSA and validates memory operations against shadow memory, similar to Miri for Rust.
 
-**Current version: v0.77.0** — mature, with 246 integration tests and intercepts for 170+ stdlib packages.
+**Current version: v0.79.0** — mature, with 248 integration tests and intercepts for 170+ stdlib packages.
 
 ## Build & Test
 ```bash
@@ -26,8 +26,8 @@ Target always: zero failing tests, zero vet warnings.
 - `internal/ssautil/` - SSA loading from Go packages
 - `internal/tools/tools.go` - `//go:build tools` anchor for x/ deps in go.mod
 - `cmd/giri/` - CLI entry point
-- `testdata/showcase/` - 11 curated UB demonstrations
-- `pkg/interpreter/testdata/integration/` - 246 integration test programs
+- `testdata/showcase/` - 14 curated UB demonstrations
+- `pkg/interpreter/testdata/integration/` - 248 integration test programs
 
 ## Dependencies
 - `golang.org/x/tools` - SSA form + package loading
@@ -70,7 +70,7 @@ ls testdata/showcase/ | grep -v README | wc -l
 grep -n '^var showcaseTests' pkg/interpreter/interpreter_integration_test.go
 # then: sed -n '14,<that_line-1>p' ... | grep -c 'dir:'
 ```
-**Current baseline**: 246 integration + 11 showcase = 257 total (as of v0.77.0)
+**Current baseline**: 248 integration + 14 showcase = 262 total (as of v0.79.0)
 
 ### 2. CHANGELOG entry format
 ```markdown
@@ -79,7 +79,7 @@ grep -n '^var showcaseTests' pkg/interpreter/interpreter_integration_test.go
 ### Added
 - **`pkg/name` completions** (issue #NNN): brief description. N new intercepts.
 - Integration test `test_name`: exercises new intercepts; 0 violations.
-- N new integration test(s) (246 integration + 11 showcase = 257 total).
+- N new integration test(s) (248 integration + 14 showcase = 262 total).
 ```
 Use **actual grep counts** — never estimate or carry forward from memory.
 
@@ -123,3 +123,4 @@ gh issue close NNN --repo scttfrdmn/giri
 - Integration test programs must NOT have a local `go.mod` — they're part of the module
 - Closure-captured channels don't work for channel-race testing — pass channels as explicit args
 - Race tests: use **sibling goroutines** (both spawned from main), NOT parent-child
+- Division-by-zero detection requires a **direct literal `0` argument** — zero values from slice range iteration are NOT tracked through SSA
