@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.79.0 regression tests
+	{
+		name:           "fmt strings slices complete",
+		dir:            "fmt_strings_slices_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.78.0 regression tests
 	{
 		name:           "math bytes unicode complete",
@@ -1968,6 +1976,37 @@ var showcaseTests = []struct {
 		config:         interpreter.DefaultConfig(),
 		runs:           20,
 		seed:           42,
+	},
+	// v0.79.0 showcases:
+	{
+		// Two goroutines write to the same map key with no synchronization.
+		// go vet: pass, go test -race: pass under round-robin scheduling.
+		// Giri: data race on concurrent unsynchronized map writes.
+		name:           "map race",
+		dir:            "map_race",
+		wantViolations: 1,
+		wantCategory:   "data race",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		// context.WithCancel cancel function is never called — resource leak.
+		// go vet: pass, go test -race: pass.
+		// Giri: context-cancel-leak at program exit.
+		name:           "context cancel leak",
+		dir:            "context_cancel_leak",
+		wantViolations: 1,
+		wantCategory:   "context-cancel-leak",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		// itemsPerBatch(100, 0) — integer division by zero on untested path.
+		// go vet: pass, go test -race: pass.
+		// Giri: DivisionByZeroError detected during SSA interpretation.
+		name:           "div zero",
+		dir:            "div_zero",
+		wantViolations: 1,
+		wantCategory:   "division by zero",
+		config:         interpreter.DefaultConfig(),
 	},
 }
 

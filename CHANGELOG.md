@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.0] - 2026-03-06
+
+### Added
+
+- **`fmt` completions** (issue #221): `Append(b []byte, a ...any) []byte` → `[]byte{}`
+  (Go 1.19); `Appendf` → `[]byte{}`; `Appendln` → `[]byte{}`. 3 new intercepts.
+- **`strings` completions** (issue #221, Go 1.24): `SplitSeq(s, sep string) iter.Seq[string]` →
+  opaque; `FieldsSeq(s string) iter.Seq[string]` → opaque; `Lines(s string) iter.Seq[string]`
+  → opaque. 3 new intercepts.
+- **`slices` completions** (issue #221, Go 1.23/1.24): `Sorted[E cmp.Ordered](seq iter.Seq[E]) []E`
+  → `[]Value{}`; `SortedFunc` → `[]Value{}`; `SortedStableFunc` → `[]Value{}`. 3 new intercepts.
+- Integration test `fmt_strings_slices_complete`: exercises all 9 new intercepts; 0 violations.
+- **3 new showcase programs** (issue #221):
+  - `map_race`: concurrent unsynchronized writes to shared map — `data race` violation.
+  - `context_cancel_leak`: `context.WithCancel` cancel func never called — `context-cancel-leak` violation.
+  - `div_zero`: integer division by zero on untested code path — `division by zero` violation.
+- 4 new tests (248 integration + 14 showcase = 262 total). Closes #221.
+
 ## [0.78.0] - 2026-03-06
 
 ### Added

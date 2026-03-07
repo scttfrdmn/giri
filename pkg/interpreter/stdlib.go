@@ -891,6 +891,10 @@ func (interp *Interpreter) handleStringsCall(name string, args []Value) (Value, 
 	case "WriteTo":
 		// (int64, error)
 		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	// v0.79.0: Go 1.24 iterator functions — return opaque iter.Seq[string].
+	case "SplitSeq", "FieldsSeq", "Lines":
+		return stdlibOpaque, true
 	}
 	return Value{}, false
 }
@@ -1209,6 +1213,17 @@ func (interp *Interpreter) handleFmtCall(name string, args []Value) (Value, bool
 	case "Fscan", "Fscanf", "Fscanln":
 		// fmt.Fscan/Fscanf/Fscanln read from an io.Reader — return (0, nil) (#161).
 		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	// v0.79.0: Go 1.19 append-to-slice functions.
+	case "Append":
+		// fmt.Append(b []byte, a ...any) []byte
+		return Value{Raw: []byte{}}, true
+	case "Appendf":
+		// fmt.Appendf(b []byte, format string, a ...any) []byte
+		return Value{Raw: []byte{}}, true
+	case "Appendln":
+		// fmt.Appendln(b []byte, a ...any) []byte
+		return Value{Raw: []byte{}}, true
 	}
 	return Value{}, false
 }
@@ -6503,6 +6518,11 @@ func (interp *Interpreter) handleSlicesCall(gid int64, name string, args []Value
 	case "All", "Values", "Backward":
 		// slices.All(s []E) iter.Seq2[int,E] etc. — return opaque.
 		return Value{Raw: struct{}{}}, true
+
+	// v0.79.0: Go 1.23/1.24 iterator-based sort collectors.
+	case "Sorted", "SortedFunc", "SortedStableFunc":
+		// slices.Sorted(seq iter.Seq[E]) []E — seq is opaque; return empty slice.
+		return Value{Raw: []Value{}}, true
 	}
 	return Value{}, true // safe noop for unknown slices functions
 }
