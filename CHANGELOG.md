@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.78.0] - 2026-03-06
+
+### Added
+
+- **`math` completions** (issue #220): `FMA(x, y, z float64) float64` → concrete passthrough
+  (Go 1.14); `RoundToEven(x float64) float64` → concrete passthrough; `Erfcinv(x float64) float64`
+  → concrete passthrough. 3 new intercepts.
+  Note: `math.Erfinv` intentionally remains unmodeled — it serves as the `TestUnmodeledCallsReport` sentinel.
+- **`bytes.Buffer` completions** (issue #220, Go 1.21): `Available() int` → 0;
+  `AvailableBuffer() []byte` → nil; `Peek(n int) ([]byte, error)` → (nil, nil). 3 new intercepts.
+- **`unicode` completions** (issue #220): `IsSymbol(r rune) bool` → concrete passthrough;
+  `IsOneOf(ranges []*RangeTable, r rune) bool` → conservative `true`;
+  `To(_case int, r rune) rune` → concrete passthrough. 3 new intercepts.
+- Integration test `math_bytes_unicode_complete`: exercises all 9 new intercepts; 0 violations.
+- 1 new integration test (247 integration + 11 showcase = 258 total).
+
 ## [0.77.0] - 2026-03-06
 
 ### Added

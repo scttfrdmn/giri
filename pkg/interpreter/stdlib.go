@@ -2018,6 +2018,17 @@ func (interp *Interpreter) handleBytesCall(name string, args []Value) (Value, bo
 			}
 		}
 		return Value{Raw: []Value{{Raw: n}, {}}}, true
+
+	// v0.78.0: bytes.Buffer methods (Go 1.21).
+	case "Available":
+		// (*Buffer).Available() int — bytes available in the buffer's backing store.
+		return Value{Raw: int64(0)}, true
+	case "AvailableBuffer":
+		// (*Buffer).AvailableBuffer() []byte — unwritten portion of the buffer.
+		return Value{Raw: []byte(nil)}, true
+	case "Peek":
+		// (*Buffer).Peek(n int) ([]byte, error)
+		return Value{Raw: []Value{{Raw: []byte(nil)}, {}}}, true
 	}
 	return Value{}, false
 }
@@ -2792,6 +2803,28 @@ func (interp *Interpreter) handleMathCall(name string, args []Value) (Value, boo
 			return Value{Raw: math.Yn(int(n), y)}, true
 		}
 		return Value{Raw: float64(0)}, true
+
+	// v0.78.0: additional math functions.
+	case "FMA":
+		// FMA(x, y, z float64) float64 — fused multiply-add.
+		y2, y2ok := stdlibArgFloat(args, 1)
+		z, zok := stdlibArgFloat(args, 2)
+		if xok && y2ok && zok {
+			return Value{Raw: math.FMA(x, y2, z)}, true
+		}
+		return Value{Raw: float64(0)}, true
+	case "RoundToEven":
+		// RoundToEven(x float64) float64 — round ties to even.
+		if xok {
+			return Value{Raw: math.RoundToEven(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
+	case "Erfcinv":
+		// Erfcinv(x float64) float64 — inverse of erfc.
+		if xok {
+			return Value{Raw: math.Erfcinv(x)}, true
+		}
+		return Value{Raw: float64(0)}, true
 	}
 	return Value{}, false
 }
@@ -2991,6 +3024,25 @@ func (interp *Interpreter) handleUnicodeCall(name string, args []Value) (Value, 
 	case "SimpleFold":
 		if r0ok {
 			return Value{Raw: int64(unicode.SimpleFold(rune(r0)))}, true
+		}
+		return Value{Raw: r0}, true
+
+	// v0.78.0: additional unicode functions.
+	case "IsSymbol":
+		// IsSymbol(r rune) bool — concrete passthrough.
+		if r0ok {
+			return Value{Raw: unicode.IsSymbol(rune(r0))}, true
+		}
+		return Value{Raw: false}, true
+	case "IsOneOf":
+		// IsOneOf(ranges []*RangeTable, r rune) bool — conservative true.
+		return Value{Raw: true}, true
+	case "To":
+		// To(_case int, r rune) rune — concrete passthrough.
+		caseVal, cok := stdlibArgInt(args, 0)
+		r1, r1ok := stdlibArgInt(args, 1)
+		if cok && r1ok {
+			return Value{Raw: int64(unicode.To(int(caseVal), rune(r1)))}, true
 		}
 		return Value{Raw: r0}, true
 	}

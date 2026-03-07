@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.78.0 regression tests
+	{
+		name:           "math bytes unicode complete",
+		dir:            "math_bytes_unicode_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.77.0 regression tests
 	{
 		name:           "binary os complete",
