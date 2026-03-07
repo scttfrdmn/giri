@@ -5360,6 +5360,26 @@ func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, boo
 	case "FileServer":
 		// http.FileServer(root FileSystem) Handler — opaque handler.
 		return opaque, true
+
+	// v0.83.0: additional handler factories and middleware.
+	case "FS":
+		// http.FS(fsys fs.FS) FileSystem (Go 1.16) — opaque FileSystem.
+		return opaque, true
+	case "NewFileTransport":
+		// http.NewFileTransport(fs FileSystem) RoundTripper — opaque transport.
+		return opaque, true
+	case "NewFileTransportFS":
+		// http.NewFileTransportFS(fsys fs.FS) RoundTripper (Go 1.22) — opaque transport.
+		return opaque, true
+	case "AllowQuerySemicolons":
+		// http.AllowQuerySemicolons(h Handler) Handler (Go 1.17) — opaque handler.
+		return opaque, true
+	case "TimeoutHandler":
+		// http.TimeoutHandler(h Handler, dt time.Duration, msg string) Handler — opaque handler.
+		return opaque, true
+	case "MaxBytesHandler":
+		// http.MaxBytesHandler(h Handler, n int64) Handler (Go 1.20) — opaque handler.
+		return opaque, true
 	case "NewResponseController":
 		// http.NewResponseController(rw ResponseWriter) *ResponseController (Go 1.20)
 		return opaque, true
@@ -6015,6 +6035,24 @@ func (interp *Interpreter) handleTestingCall(gid int64, name string, args []Valu
 		return Value{Raw: false}, true
 	case "Init":
 		return Value{}, true
+
+	// v0.83.0: package-level Benchmark runner.
+	case "Benchmark":
+		// testing.Benchmark(f func(b *testing.B)) BenchmarkResult
+		// Probe the callback with a sentinel *testing.B then return opaque result.
+		if len(args) >= 1 {
+			sentinel := Value{Raw: struct{}{}}
+			switch fn := args[0].Raw.(type) {
+			case *ssa.Function:
+				if fn.Blocks != nil {
+					interp.execFunction(gid, fn, []Value{sentinel})
+				}
+			case *ClosureValue:
+				callArgs := append([]Value{sentinel}, fn.FreeVars...)
+				interp.execFunction(gid, fn.Fn, callArgs)
+			}
+		}
+		return Value{Raw: struct{}{}}, true // opaque BenchmarkResult
 	}
 	return Value{}, false
 }
@@ -6834,6 +6872,11 @@ func (interp *Interpreter) handleSlogCall(name string, args []Value) (Value, boo
 
 	case "Handle", "Enabled2":
 		return Value{}, true
+
+	// v0.83.0: log/slog.NewLogLogger bridges slog → *log.Logger.
+	case "NewLogLogger":
+		// slog.NewLogLogger(h Handler, level Level) *log.Logger (Go 1.21)
+		return Value{Raw: struct{}{}}, true
 	}
 	return Value{}, true // safe noop for unknown slog functions
 }

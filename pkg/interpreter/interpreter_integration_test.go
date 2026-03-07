@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.83.0 regression tests
+	{
+		name:           "http testing slog complete",
+		dir:            "http_testing_slog_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.82.0 regression tests
 	{
 		name:           "rand bufio io http complete",

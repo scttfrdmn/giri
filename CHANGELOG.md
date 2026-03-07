@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.0] - 2026-03-06
+
+### Added
+
+- **`net/http` additions** (6 new intercepts):
+  - `http.FS(fsys fs.FS) FileSystem` → opaque (Go 1.16)
+  - `http.NewFileTransport(fs FileSystem) RoundTripper` → opaque
+  - `http.NewFileTransportFS(fsys fs.FS) RoundTripper` → opaque (Go 1.22)
+  - `http.AllowQuerySemicolons(h Handler) Handler` → opaque (Go 1.17)
+  - `http.TimeoutHandler(h Handler, dt, msg) Handler` → opaque
+  - `http.MaxBytesHandler(h Handler, n int64) Handler` → opaque (Go 1.20)
+- **`testing.Benchmark`** (1 new intercept): probes the callback function with
+  an opaque `*testing.B` sentinel; returns opaque `BenchmarkResult`.
+  Note: benchmark callbacks must not access `b.N` directly — use method calls only.
+- **`log/slog.NewLogLogger`** (1 new intercept): `slog.NewLogLogger(h, level) *log.Logger` → opaque.
+- Integration test `http_testing_slog_complete`: exercises all 8 new intercepts; 0 violations.
+- 1 new integration test (252 integration + 14 showcase = 266 total).
+
 ## [0.82.0] - 2026-03-06
 
 ### Added
