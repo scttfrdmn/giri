@@ -1630,6 +1630,18 @@ func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool)
 	case "FS":
 		// (*Root).FS() fs.FS — return opaque fs.FS value.
 		return opaque, true
+
+	// v0.90.0 additions.
+	case "OpenInRoot":
+		// os.OpenInRoot(dir, name string) (*File, error) (Go 1.25+).
+		// Opens name inside dir without following symlinks out of dir.
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "WriteTo":
+		// (*os.File).WriteTo(w io.Writer) (n int64, err error) (Go 1.22+).
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "SetDeadline", "SetReadDeadline", "SetWriteDeadline":
+		// (*os.File).SetDeadline/SetReadDeadline/SetWriteDeadline(t time.Time) error.
+		return Value{}, true
 	}
 	return Value{}, false
 }
@@ -4329,6 +4341,14 @@ func (interp *Interpreter) handleTemplateCall(name string, args []Value) (Value,
 			return Value{Raw: s}, true // pass-through for non-dangerous input
 		}
 		return Value{Raw: "escaped"}, true
+
+	// v0.90.0 additions.
+	case "AddParseTree":
+		// t.AddParseTree(name string, tree *parse.Tree) (*Template, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "DefinedTemplates":
+		// t.DefinedTemplates() string — returns "; defined templates are: ..."
+		return Value{Raw: ""}, true
 	}
 	return Value{}, false
 }
@@ -4451,6 +4471,10 @@ func (interp *Interpreter) handleReflectCall(name string, args []Value) (Value, 
 	switch name {
 	case "TypeOf":
 		// reflect.TypeOf(v interface{}) reflect.Type — return opaque non-nil Type.
+		return opaque, true
+
+	case "TypeFor":
+		// reflect.TypeFor[T]() reflect.Type (Go 1.22+) — return opaque non-nil Type.
 		return opaque, true
 
 	case "ValueOf":
@@ -4929,6 +4953,10 @@ func (interp *Interpreter) handleRuntimeCall(name string, args []Value) (Value, 
 		// Returns *runtime.Frames (opaque).
 		return Value{Raw: struct{}{}}, true
 
+	case "Next":
+		// (*runtime.Frames).Next() (runtime.Frame, bool)
+		return Value{Raw: []Value{stdlibOpaque, {Raw: false}}}, true
+
 	case "GC":
 		return Value{}, true
 
@@ -4961,6 +4989,35 @@ func (interp *Interpreter) handleRuntimeCall(name string, args []Value) (Value, 
 
 	case "SetBlockProfileRate", "SetMutexProfileFraction", "SetCPUProfileRate":
 		return Value{}, true
+
+	case "SetDefaultGOMAXPROCS":
+		// runtime.SetDefaultGOMAXPROCS() (Go 1.25+) — resets GOMAXPROCS to runtime default.
+		return Value{}, true
+
+	case "BlockProfile", "MutexProfile":
+		// runtime.BlockProfile(p []BlockProfileRecord) (n int, ok bool)
+		// runtime.MutexProfile(p []BlockProfileRecord) (n int, ok bool)
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
+
+	case "GoroutineProfile":
+		// runtime.GoroutineProfile(p []StackRecord) (n int, ok bool)
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
+
+	case "MemProfile":
+		// runtime.MemProfile(p []MemProfileRecord, inuseZero bool) (n int, ok bool)
+		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
+
+	case "StartTrace":
+		// runtime.StartTrace() error — return nil.
+		return Value{}, true
+
+	case "StopTrace":
+		// runtime.StopTrace() — noop.
+		return Value{}, true
+
+	case "ReadTrace":
+		// runtime.ReadTrace() []byte — return nil slice.
+		return Value{Raw: []Value{}}, true
 
 	case "Breakpoint":
 		return Value{}, true
@@ -5493,6 +5550,13 @@ func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, boo
 		return Value{}, true
 	case "Serve":
 		// (*Server).Serve(l net.Listener) error — noop.
+		return Value{}, true
+	case "RegisterOnShutdown":
+		// (*Server).RegisterOnShutdown(f func()) — registers f to call on Shutdown.
+		// Noop: the callback is stored and invoked by Shutdown, which is also a noop.
+		return Value{}, true
+	case "SetKeepAlivesEnabled":
+		// (*Server).SetKeepAlivesEnabled(v bool) — noop.
 		return Value{}, true
 
 	// v0.85.0: (*Request) accessor methods, (*Response).Location, Go 1.23+ cookie parsing.

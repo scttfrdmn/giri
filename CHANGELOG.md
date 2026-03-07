@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.90.0] - 2026-03-06
+
+### Added
+
+- **`reflect.TypeFor[T]`** (Go 1.22+): new generic function intercept → opaque `reflect.Type`
+- **`runtime` additions** (9 new intercepts):
+  - `(*runtime.Frames).Next() (Frame, bool)` → `(opaque, false)`
+  - `runtime.SetDefaultGOMAXPROCS()` (Go 1.25+) → noop
+  - `runtime.BlockProfile(p []BlockProfileRecord) (int, bool)` → `(0, false)`
+  - `runtime.GoroutineProfile(p []StackRecord) (int, bool)` → `(0, false)`
+  - `runtime.MemProfile(p []MemProfileRecord, inuseZero bool) (int, bool)` → `(0, false)`
+  - `runtime.MutexProfile(p []BlockProfileRecord) (int, bool)` → `(0, false)`
+  - `runtime.StartTrace() error` → nil
+  - `runtime.StopTrace()` → noop
+  - `runtime.ReadTrace() []byte` → empty slice
+- **`os` additions** (4 new intercepts):
+  - `os.OpenInRoot(dir, name string) (*File, error)` (Go 1.25+) → `(opaque, nil)`
+  - `(*os.File).WriteTo(w io.Writer) (int64, error)` (Go 1.22+) → `(0, nil)`
+  - `(*os.File).SetDeadline(t time.Time) error` → nil
+  - `(*os.File).SetReadDeadline(t time.Time) error` → nil
+  - `(*os.File).SetWriteDeadline(t time.Time) error` → nil
+- **`net/http.Server` additions** (2 new intercepts):
+  - `(*Server).RegisterOnShutdown(f func())` → noop
+  - `(*Server).SetKeepAlivesEnabled(v bool)` → noop
+- **`text/template` additions** (2 new intercepts):
+  - `(*Template).AddParseTree(name string, tree *parse.Tree) (*Template, error)` → `(opaque, nil)`
+  - `(*Template).DefinedTemplates() string` → `""`
+- New integration test: `runtime_os_reflect_complete` (0 violations)
+- Total: 259 integration + 14 showcase = 273 tests
+
 ## [0.89.0] - 2026-03-06
 
 ### Added

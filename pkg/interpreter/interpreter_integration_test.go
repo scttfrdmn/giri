@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.90.0 regression tests
+	{
+		name:           "runtime os reflect complete",
+		dir:            "runtime_os_reflect_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.89.0 regression tests
 	{
 		name:           "testing fs tls complete",
