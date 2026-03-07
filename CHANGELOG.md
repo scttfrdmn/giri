@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.77.0] - 2026-03-06
+
+### Added
+
+- **`encoding/binary` completions** (issue #219): `Encode` → `(int, error)` (Go 1.23);
+  `Decode` → `(int, error)` (Go 1.23); `Append` → `([]byte, error)` (Go 1.23). 3 new intercepts.
+- **`os` completions** (issue #219): `NewSyscallError` → nil; `CopyFS` (Go 1.23) → nil;
+  `Expand` → `""`. 3 new intercepts.
+- Integration test `binary_os_complete`: exercises all 6 new intercepts; 0 violations.
+- **`CLAUDE.md` overhaul**: updated from stale "Phase 1 / SSA walker scaffolded" to reflect
+  current v0.77.0 maturity; added Release Checklist (test count commands, CHANGELOG format,
+  README tag verification), integration test conventions, and common gotchas.
+- 1 new integration test (246 integration + 11 showcase = 257 total).
+
 ## [0.76.0] - 2026-03-06
 
 ### Added

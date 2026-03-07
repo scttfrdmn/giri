@@ -1580,6 +1580,17 @@ func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool)
 	case "Exit":
 		// os.Exit terminates the process; in the interpreter, noop.
 		return Value{}, true
+
+	// v0.77.0 additions:
+	case "NewSyscallError":
+		// NewSyscallError(syscall string, err error) error — return nil (conservative).
+		return Value{}, true
+	case "CopyFS":
+		// CopyFS(dir string, fsys fs.FS) error (Go 1.23) — noop, return nil.
+		return Value{}, true
+	case "Expand":
+		// Expand(s string, mapping func(string) string) string — return empty string.
+		return Value{Raw: ""}, true
 	}
 	return Value{}, false
 }
@@ -5344,6 +5355,19 @@ func (interp *Interpreter) handleBinaryCall(name string, args []Value) (Value, b
 		// binary.ReadUvarint(r io.ByteReader) (uint64, error)
 		return Value{Raw: []Value{{Raw: uint64(0)}, {}}}, true
 
+	// v0.77.0: Go 1.23 generic bulk helpers.
+	case "Encode":
+		// binary.Encode(buf []byte, order ByteOrder, data any) (int, error)
+		return Value{Raw: []Value{{Raw: int64(8)}, {}}}, true
+	case "Decode":
+		// binary.Decode(buf []byte, order ByteOrder, data any) (int, error)
+		return Value{Raw: []Value{{Raw: int64(8)}, {}}}, true
+	case "Append":
+		// binary.Append(buf []byte, order ByteOrder, data any) ([]byte, error)
+		if len(args) >= 1 {
+			return Value{Raw: []Value{args[0], {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
 	}
 	return Value{}, false
 }
