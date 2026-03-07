@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.81.0 regression tests
+	{
+		name:           "net json runtime complete",
+		dir:            "net_json_runtime_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.80.0 regression tests
 	{
 		name:           "os root slices maps url complete",

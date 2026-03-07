@@ -2210,6 +2210,14 @@ func (interp *Interpreter) handleJSONCall(name string, args []Value) (Value, boo
 	case "Number":
 		return Value{Raw: ""}, true
 
+	case "Float64":
+		// (json.Number).Float64() (float64, error) — return (0, nil) conservative.
+		return Value{Raw: []Value{{Raw: float64(0)}, {}}}, true
+
+	case "Int64":
+		// (json.Number).Int64() (int64, error) — return (0, nil) conservative.
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
 	// Decoder option setters (return the decoder receiver for chaining; noop here):
 	case "UseNumber", "DisallowUnknownFields":
 		return Value{}, true
@@ -4110,6 +4118,27 @@ func (interp *Interpreter) handleNetCall(name string, args []Value) (Value, bool
 	case "SetDeadline", "SetReadDeadline", "SetWriteDeadline":
 		// (net.Conn).SetDeadline(t time.Time) error
 		return Value{}, true
+
+	// v0.81.0: Listener methods and typed dial/listen constructors.
+	case "Accept":
+		// (net.Listener).Accept() (net.Conn, error)
+		return Value{Raw: []Value{stdlibOpaque, {}}}, true
+
+	case "Addr":
+		// (net.Listener).Addr() net.Addr
+		return stdlibOpaque, true
+
+	case "DialTCP", "DialUDP", "DialUnix":
+		// net.DialTCP/DialUDP/DialUnix — typed connection constructors.
+		return Value{Raw: []Value{stdlibOpaque, {}}}, true
+
+	case "ListenTCP", "ListenUDP", "ListenUnix":
+		// net.ListenTCP/ListenUDP/ListenUnix — typed listener constructors.
+		return Value{Raw: []Value{stdlibOpaque, {}}}, true
+
+	case "DialContext":
+		// (*net.Dialer).DialContext(ctx, network, address) (net.Conn, error)
+		return Value{Raw: []Value{stdlibOpaque, {}}}, true
 	}
 	return Value{}, false
 }
@@ -4766,8 +4795,20 @@ func (interp *Interpreter) handleRuntimeCall(name string, args []Value) (Value, 
 		return Value{Raw: int64(0)}, true
 
 	case "FuncForPC":
-		// Returns *runtime.Func (nil — no debug info available).
-		return Value{}, true
+		// Returns opaque *runtime.Func — methods on it are intercepted below.
+		return stdlibOpaque, true
+
+	case "Name":
+		// (*runtime.Func).Name() string — returns empty string (no debug info).
+		return Value{Raw: ""}, true
+
+	case "Entry":
+		// (*runtime.Func).Entry() uintptr — returns 0.
+		return Value{Raw: int64(0)}, true
+
+	case "FileLine":
+		// (*runtime.Func).FileLine(pc uintptr) (file string, line int)
+		return Value{Raw: []Value{{Raw: ""}, {Raw: int64(0)}}}, true
 
 	case "CallersFrames":
 		// Returns *runtime.Frames (opaque).

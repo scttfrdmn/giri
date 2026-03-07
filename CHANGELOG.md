@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.81.0] - 2026-03-06
+
+### Added
+
+- **`net` completions** (9 new intercepts):
+  - `net.Listener.Accept() (Conn, error)` → `(opaque, nil)`
+  - `net.Listener.Addr() Addr` → opaque
+  - `net.DialTCP`, `net.DialUDP`, `net.DialUnix` → `(opaque, nil)` — typed connection constructors
+  - `net.ListenTCP`, `net.ListenUDP`, `net.ListenUnix` → `(opaque, nil)` — typed listener constructors
+  - `(*net.Dialer).DialContext(ctx, network, address)` → `(opaque, nil)`
+- **`encoding/json.Number` methods** (2 new intercepts):
+  - `(json.Number).Float64() (float64, error)` → `(0.0, nil)`
+  - `(json.Number).Int64() (int64, error)` → `(0, nil)`
+- **`runtime.Func` methods** (3 new intercepts + 1 fix):
+  - `(*runtime.Func).Name() string` → `""`
+  - `(*runtime.Func).Entry() uintptr` → `0`
+  - `(*runtime.Func).FileLine(pc uintptr) (string, int)` → `("", 0)`
+  - `runtime.FuncForPC` changed from `nil` → `opaque` so downstream method calls are exercised
+- Integration test `net_json_runtime_complete`: exercises all 14 new intercepts; 0 violations.
+- 1 new integration test (250 integration + 14 showcase = 264 total).
+
 ## [0.80.0] - 2026-03-06
 
 ### Added
