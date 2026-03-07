@@ -1529,6 +1529,10 @@ func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool)
 		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
 	case "Sync", "Chmod", "Chown", "Lchown", "Truncate", "Chdir":
 		return Value{}, true
+	case "ReadFrom":
+		// (*os.File).ReadFrom(r io.Reader) (n int64, err error) (Go 1.16+).
+		// Implements io.ReaderFrom for zero-copy transfer (sendfile). Return (0, nil).
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
 	case "Name":
 		return Value{Raw: ""}, true
 	case "Fd":
@@ -2403,6 +2407,11 @@ func (interp *Interpreter) handleRegexpCall(gid int64, name string, args []Value
 	case "NumSubexp":
 		return Value{Raw: int64(0)}, true
 
+	case "LiteralPrefix":
+		// (*regexp.Regexp).LiteralPrefix() (prefix string, complete bool).
+		// Conservative: return ("", false) — unknown prefix.
+		return Value{Raw: []Value{{Raw: ""}, {Raw: false}}}, true
+
 	case "String":
 		return Value{Raw: ""}, true
 
@@ -3139,6 +3148,11 @@ func (interp *Interpreter) handleContextCall(gid int64, site, name string, args 
 		// Returns Context (ignores key/value pair).
 		return opaque, true
 
+	case "WithoutCancel":
+		// context.WithoutCancel(parent Context) Context (Go 1.21+).
+		// Returns a copy of parent with no cancellation propagated.
+		return opaque, true
+
 	case "WithCancelCause":
 		// Go 1.20+: returns (Context, CancelCauseFunc). Register the cancel function.
 		cfID := interp.newCancelFunc(gid, site)
@@ -3434,6 +3448,11 @@ func (interp *Interpreter) handleIOCall(name string, args []Value) (Value, bool)
 	case "Close":
 		// io.PipeReader.Close / io.PipeWriter.Close — nil error.
 		return Value{}, true
+
+	// v0.86.0: io.SectionReader.Outer (Go 1.22).
+	case "Outer":
+		// (*io.SectionReader).Outer() (r ReaderAt, off int64, n int64) (Go 1.22).
+		return Value{Raw: []Value{stdlibOpaque, {Raw: int64(0)}, {Raw: int64(0)}}}, true
 	}
 	return Value{}, false
 }
@@ -3522,6 +3541,14 @@ func (interp *Interpreter) handleBufioCall(name string, args []Value) (Value, bo
 		// ScanXxx(data []byte, atEOF bool) (advance int, token []byte, err error)
 		// Conservative: no advance, no token, no error (need more data).
 		return Value{Raw: []Value{{Raw: int64(0)}, {}, {}}}, true
+
+	// v0.86.0: implements io.ReaderFrom / io.WriterTo on bufio.Writer and bufio.Reader.
+	case "ReadFrom":
+		// (*bufio.Writer).ReadFrom(r io.Reader) (n int64, err error) — io.ReaderFrom.
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "WriteTo":
+		// (*bufio.Reader).WriteTo(w io.Writer) (n int64, err error) — io.WriterTo.
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
 	}
 	return Value{}, false
 }
@@ -5474,6 +5501,17 @@ func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, boo
 	case "ParseSetCookie":
 		// http.ParseSetCookie(line string) (*Cookie, error) (Go 1.23+)
 		return Value{Raw: []Value{opaque, {}}}, true
+
+	// v0.86.0: Go 1.22+ request pattern helpers and response controller addition.
+	case "PathValue":
+		// (*http.Request).PathValue(name string) string (Go 1.22).
+		return Value{Raw: ""}, true
+	case "SetPathValue":
+		// (*http.Request).SetPathValue(name, value string) (Go 1.22) — noop.
+		return Value{}, true
+	case "EnableFullDuplex":
+		// (*http.ResponseController).EnableFullDuplex() error (Go 1.23) — noop.
+		return Value{}, true
 	}
 	return Value{}, false
 }

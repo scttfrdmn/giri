@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-03-06
+
+### Added
+
+- **`io` addition** (1 new intercept):
+  - `(*io.SectionReader).Outer() (ReaderAt, int64, int64)` → `(opaque, 0, 0)` (Go 1.22)
+- **`bufio` additions** (2 new intercepts):
+  - `(*bufio.Writer).ReadFrom(r io.Reader) (int64, error)` → `(0, nil)` — implements `io.ReaderFrom`
+  - `(*bufio.Reader).WriteTo(w io.Writer) (int64, error)` → `(0, nil)` — implements `io.WriterTo`
+- **`context` addition** (1 new intercept):
+  - `context.WithoutCancel(parent Context) Context` → opaque context (Go 1.21)
+- **`net/http` additions** (3 new intercepts):
+  - `(*http.Request).PathValue(name string) string` → `""` (Go 1.22)
+  - `(*http.Request).SetPathValue(name, value string)` → noop (Go 1.22)
+  - `(*http.ResponseController).EnableFullDuplex() error` → nil (Go 1.23)
+- **`regexp` addition** (1 new intercept):
+  - `(*regexp.Regexp).LiteralPrefix() (prefix string, complete bool)` → `("", false)` conservative
+- **`os` addition** (1 new intercept):
+  - `(*os.File).ReadFrom(r io.Reader) (int64, error)` → `(0, nil)` — implements `io.ReaderFrom` (sendfile, Go 1.16+)
+- Integration test `io_bufio_context_http_complete`: exercises all 9 new intercepts; 0 violations.
+- 1 new integration test (255 integration + 14 showcase = 269 total).
+
 ## [0.85.0] - 2026-03-06
 
 ### Added
