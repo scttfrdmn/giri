@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.0] - 2026-03-06
+
+### Added
+
+- **`net/http` additions** (4 new intercepts):
+  - `(*http.Client).CloseIdleConnections()` → noop
+  - `(*http.Transport).CloseIdleConnections()` → noop
+  - `(*http.Request).FormFile(key string) (multipart.File, *multipart.FileHeader, error)` → `(opaque, opaque, nil)`
+  - `(*http.Request).MultipartReader() (*multipart.Reader, error)` → `(opaque, nil)`
+- **`net` additions** (2 new intercepts):
+  - `(*net.Interface).Addrs() ([]Addr, error)` → `([], nil)`
+  - `(*net.Interface).MulticastAddrs() ([]Addr, error)` → `([], nil)`
+- **`os` addition** (1 new intercept):
+  - `(*os.File).SyscallConn() (syscall.RawConn, error)` → `(opaque, nil)` — implements `syscall.Conn`
+- **`unsafe` builtins** (2 new builtins in `execBuiltin`):
+  - `unsafe.SliceData(slice) *T` (Go 1.20+) → provenance pointer or nil
+  - `unsafe.StringData(str) *byte` (Go 1.20+) → nil (conservative; string bytes are immutable)
+- Integration test `http_net_os_unsafe_complete`: exercises all 9 new intercepts; 0 violations.
+- 1 new integration test (256 integration + 14 showcase = 270 total).
+
 ## [0.86.0] - 2026-03-06
 
 ### Added

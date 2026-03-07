@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.87.0 regression tests
+	{
+		name:           "http net os unsafe complete",
+		dir:            "http_net_os_unsafe_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.86.0 regression tests
 	{
 		name:           "io bufio context http complete",

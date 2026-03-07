@@ -1533,6 +1533,9 @@ func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool)
 		// (*os.File).ReadFrom(r io.Reader) (n int64, err error) (Go 1.16+).
 		// Implements io.ReaderFrom for zero-copy transfer (sendfile). Return (0, nil).
 		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "SyscallConn":
+		// (*os.File).SyscallConn() (syscall.RawConn, error) — implements syscall.Conn.
+		return Value{Raw: []Value{opaque, {}}}, true
 	case "Name":
 		return Value{Raw: ""}, true
 	case "Fd":
@@ -4243,6 +4246,14 @@ func (interp *Interpreter) handleNetCall(name string, args []Value) (Value, bool
 	case "WriteTo", "WriteToUDP", "WriteToUnix", "WriteToIP":
 		// (*UDPConn).WriteTo(b []byte, addr net.Addr) (int, error)
 		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	// v0.87.0: (*net.Interface) address methods.
+	case "Addrs":
+		// (*net.Interface).Addrs() ([]Addr, error) — return ([], nil).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "MulticastAddrs":
+		// (*net.Interface).MulticastAddrs() ([]Addr, error) — return ([], nil).
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
 	}
 	return Value{}, false
 }
@@ -5512,6 +5523,17 @@ func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, boo
 	case "EnableFullDuplex":
 		// (*http.ResponseController).EnableFullDuplex() error (Go 1.23) — noop.
 		return Value{}, true
+
+	// v0.87.0: Client/Transport lifecycle, multipart, and response serialization.
+	case "CloseIdleConnections":
+		// (*http.Client).CloseIdleConnections() and (*http.Transport).CloseIdleConnections() — noop.
+		return Value{}, true
+	case "FormFile":
+		// (*http.Request).FormFile(key string) (multipart.File, *multipart.FileHeader, error)
+		return Value{Raw: []Value{opaque, opaque, {}}}, true
+	case "MultipartReader":
+		// (*http.Request).MultipartReader() (*multipart.Reader, error)
+		return Value{Raw: []Value{opaque, {}}}, true
 	}
 	return Value{}, false
 }

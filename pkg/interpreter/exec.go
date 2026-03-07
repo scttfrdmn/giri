@@ -1883,6 +1883,18 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 			sv := arenaNew(interp.arena, SliceValue{Backing: args[0].Provenance, Len: lenN, Cap: lenN})
 			return Value{Raw: sv, Provenance: args[0].Provenance}
 		}
+
+	case "SliceData": // unsafe.SliceData(slice) — pointer to backing array (Go 1.20+)
+		// Returns &slice[0] for non-nil/non-empty slice, nil otherwise.
+		if len(args) > 0 && args[0].Provenance != nil {
+			return Value{Provenance: args[0].Provenance}
+		}
+		return Value{} // nil for nil or empty slice
+
+	case "StringData": // unsafe.StringData(str) — pointer to string bytes (Go 1.20+)
+		// Returns a pointer to the underlying bytes; conservative: return nil.
+		// Strings are immutable; the pointer should not be used for writes.
+		return Value{}
 	}
 
 	return Value{}
