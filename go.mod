@@ -1,6 +1,6 @@
 module github.com/scttfrdmn/giri
 
-go 1.25.6
+go 1.26
 
 require (
 	github.com/scttfrdmn/safearena v0.5.2
@@ -13,4 +13,4 @@ require (
 	golang.org/x/tools v0.41.0
 )
 
-require golang.org/x/sync v0.19.0 // indirect
+require golang.org/x/sync v0.19.0

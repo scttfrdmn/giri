@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.89.0] - 2026-03-06
+
+### Added
+
+- **Go 1.26 toolchain**: updated `go.mod` minimum from `go 1.25.6` → `go 1.26`
+- **`testing.T` additions** (6 new method intercepts):
+  - `(*T).Context() context.Context` → opaque (Go 1.21+)
+  - `(*T).Deadline() (time.Time, bool)` → `(opaque, false)` (Go 1.21+)
+  - `(*T).Chdir(dir string)` → noop (Go 1.24+)
+  - `(*T).ArtifactDir() string` → `""` (Go 1.26)
+  - `(*T).Attr(key, value string)` → noop (Go 1.26)
+  - `(*T).Output() io.Writer` → opaque (Go 1.21+)
+- **`io/fs` additions** (3 new function intercepts):
+  - `fs.FormatDirEntry(dir DirEntry) string` → `"- file"` (Go 1.21+)
+  - `fs.FormatFileInfo(info FileInfo) string` → `"- file"` (Go 1.21+)
+  - `fs.ReadLink(fsys FS, name string) (string, error)` → `("", nil)` (Go 1.25+)
+- **`crypto/tls` additions** (3 new intercepts):
+  - `(*Conn).CloseWrite() error` → nil
+  - `tls.CipherSuiteName(id uint16) string` → `""`
+  - `tls.VersionName(version uint16) string` → `""` (Go 1.23+)
+- **`net/url` fix**: `(*URL).JoinPath(elem ...string) *URL` method form now returns opaque `*URL` (previously returned wrong `(string, error)` tuple)
+- New integration test: `testing_fs_tls_complete` (0 violations)
+- Total: 258 integration + 14 showcase = 272 tests
+
 ## [0.88.0] - 2026-03-06
 
 ### Added

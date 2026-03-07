@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.89.0 regression tests
+	{
+		name:           "testing fs tls complete",
+		dir:            "testing_fs_tls_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.88.0 regression tests
 	{
 		name:           "sync http complete",

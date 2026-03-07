@@ -5061,7 +5061,8 @@ func (interp *Interpreter) handleNetURLCall(name string, args []Value) (Value, b
 		return Value{Raw: []Value{{Raw: ""}, {Raw: false}}}, true
 
 	case "JoinPath":
-		// url.JoinPath(base string, elem ...string) (string, error)
+		// Disambiguate: url.JoinPath(base string, elem ...string) (string, error) [pkg-level]
+		// vs (*url.URL).JoinPath(elem ...string) *URL [method, Go 1.19+].
 		if s, ok := stdlibArgString(args, 0); ok {
 			parts := []string{s}
 			for _, a := range args[1:] {
@@ -5071,7 +5072,8 @@ func (interp *Interpreter) handleNetURLCall(name string, args []Value) (Value, b
 			}
 			return Value{Raw: []Value{{Raw: strings.Join(parts, "/")}, {}}}, true
 		}
-		return Value{Raw: []Value{{Raw: "http://example.com/path"}, {}}}, true
+		// Method form: receiver is opaque URL → return opaque *URL.
+		return stdlibOpaque, true
 
 	// *url.URL method calls (receiver = args[0]):
 	case "String":
@@ -6024,6 +6026,17 @@ func (interp *Interpreter) handleTLSCall(name string, args []Value) (Value, bool
 		return Value{Raw: []Value{opaque, {}}}, true
 	case "Addr":
 		return opaque, true
+
+	// v0.89.0: missing *Conn method and package-level helpers.
+	case "CloseWrite":
+		// (*tls.Conn).CloseWrite() error — send TLS close_notify; noop.
+		return Value{}, true
+	case "CipherSuiteName":
+		// tls.CipherSuiteName(id uint16) string — human-readable cipher name.
+		return Value{Raw: ""}, true
+	case "VersionName":
+		// tls.VersionName(version uint16) string — e.g. "TLS 1.3" (Go 1.23+).
+		return Value{Raw: ""}, true
 	}
 	return Value{}, false
 }
@@ -6219,6 +6232,26 @@ func (interp *Interpreter) handleTestingCall(gid int64, name string, args []Valu
 			}
 		}
 		return Value{Raw: struct{}{}}, true // opaque BenchmarkResult
+
+	// v0.89.0: newer testing.T/B/F methods (Go 1.21+/1.24+/1.25+).
+	case "Context":
+		// (*T).Context() context.Context (Go 1.21+).
+		return stdlibOpaque, true
+	case "Deadline":
+		// (*T).Deadline() (deadline time.Time, ok bool) (Go 1.21+).
+		return Value{Raw: []Value{stdlibOpaque, {Raw: false}}}, true
+	case "Chdir":
+		// (*T).Chdir(dir string) (Go 1.24+) — noop.
+		return Value{}, true
+	case "ArtifactDir":
+		// (*T).ArtifactDir() string (Go 1.25+).
+		return Value{Raw: ""}, true
+	case "Attr":
+		// (*T).Attr(key, value string) (Go 1.25+) — noop.
+		return Value{}, true
+	case "Output":
+		// (*T).Output() io.Writer (Go 1.21+) — opaque writer.
+		return stdlibOpaque, true
 	}
 	return Value{}, false
 }
@@ -6291,6 +6324,17 @@ func (interp *Interpreter) handleFsCall(pkgPath, name string, args []Value) (Val
 		return Value{Raw: []Value{{Raw: n}, {}}}, true
 	case "Close":
 		return Value{}, true
+
+	// v0.89.0: helpers added in Go 1.21+ / 1.25+.
+	case "FormatDirEntry":
+		// fs.FormatDirEntry(dir DirEntry) string (Go 1.21+).
+		return Value{Raw: "- file"}, true
+	case "FormatFileInfo":
+		// fs.FormatFileInfo(info FileInfo) string (Go 1.21+).
+		return Value{Raw: "- file"}, true
+	case "ReadLink":
+		// fs.ReadLink(fsys FS, name string) (string, error) (Go 1.25+).
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
 	}
 	_ = pkgPath
 	return Value{}, false
