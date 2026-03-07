@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.85.0 regression tests
+	{
+		name:           "regexp http time utf8 complete",
+		dir:            "regexp_http_time_utf8_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.84.0 regression tests
 	{
 		name:           "net context complete",

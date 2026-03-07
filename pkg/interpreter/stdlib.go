@@ -1378,6 +1378,14 @@ func (interp *Interpreter) handleTimeCall(name string, args []Value) (Value, boo
 	case "UnmarshalJSON", "UnmarshalText", "UnmarshalBinary":
 		return Value{}, true
 
+	// v0.85.0: Gob serialization methods for time.Time.
+	case "GobEncode":
+		// (time.Time).GobEncode() ([]byte, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "GobDecode":
+		// (time.Time).GobDecode(buf []byte) error
+		return Value{}, true
+
 	// Additional time.Time methods (v0.72.0):
 	case "Compare":
 		// (time.Time).Compare(u time.Time) int — returns -1, 0, or 1.
@@ -2326,6 +2334,22 @@ func (interp *Interpreter) handleRegexpCall(gid int64, name string, args []Value
 	case "FindAllStringIndex":
 		return Value{Raw: []Value{}}, true
 
+	// v0.85.0: submatch-index variants and byte-slice callback replace.
+	case "FindStringSubmatchIndex":
+		// (*Regexp).FindStringSubmatchIndex(s string) []int
+		return Value{Raw: []Value{}}, true
+	case "FindAllStringSubmatchIndex":
+		// (*Regexp).FindAllStringSubmatchIndex(s string, n int) [][]int
+		return Value{Raw: []Value{}}, true
+	case "ReplaceAllFunc":
+		// (*Regexp).ReplaceAllFunc(src []byte, repl func([]byte) []byte) []byte
+		// Probe the callback with a sentinel []byte to surface violations inside it.
+		probeCallback(2, []Value{{Raw: []byte{}}})
+		if len(args) > 1 {
+			return args[1], true
+		}
+		return Value{Raw: []byte{}}, true
+
 	case "ReplaceAllString":
 		// receiver = args[0], src = args[1], repl = args[2]; return src unchanged.
 		if len(args) > 1 {
@@ -2931,6 +2955,11 @@ func (interp *Interpreter) handleUTF8Call(name string, args []Value) (Value, boo
 		return Value{Raw: []Value{{Raw: int64('?')}, {Raw: int64(1)}}}, true
 
 	case "FullRune", "FullRuneInString":
+		return Value{Raw: true}, true
+
+	// v0.85.0: RuneStart checks whether a byte is the start of a UTF-8 encoded rune.
+	case "RuneStart":
+		// utf8.RuneStart(b byte) bool — conservative: true.
 		return Value{Raw: true}, true
 
 	case "AppendRune":
@@ -5425,6 +5454,26 @@ func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, boo
 	case "Serve":
 		// (*Server).Serve(l net.Listener) error — noop.
 		return Value{}, true
+
+	// v0.85.0: (*Request) accessor methods, (*Response).Location, Go 1.23+ cookie parsing.
+	case "Cookie":
+		// (*Request).Cookie(name string) (*Cookie, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "BasicAuth":
+		// (*Request).BasicAuth() (username, password string, ok bool)
+		return Value{Raw: []Value{{Raw: ""}, {Raw: ""}, {Raw: false}}}, true
+	case "UserAgent", "Referer":
+		// (*Request).UserAgent/Referer() string
+		return Value{Raw: ""}, true
+	case "Location":
+		// (*Response).Location() (*URL, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ParseCookie":
+		// http.ParseCookie(line string) ([]*Cookie, error) (Go 1.23+)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "ParseSetCookie":
+		// http.ParseSetCookie(line string) (*Cookie, error) (Go 1.23+)
+		return Value{Raw: []Value{opaque, {}}}, true
 	}
 	return Value{}, false
 }

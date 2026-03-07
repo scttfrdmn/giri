@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.85.0] - 2026-03-06
+
+### Added
+
+- **`regexp` additions** (3 new intercepts):
+  - `(*regexp.Regexp).FindStringSubmatchIndex(s string) []int` → `[]int{}`
+  - `(*regexp.Regexp).FindAllStringSubmatchIndex(s string, n int) [][]int` → `[][]int{}`
+  - `(*regexp.Regexp).ReplaceAllFunc(src []byte, repl func([]byte) []byte) []byte` — probes callback with opaque `[]byte`, returns result
+- **`net/http` additions** (7 new intercepts):
+  - `(*http.Request).Cookie(name string) (*Cookie, error)` → `(opaque, nil)`
+  - `(*http.Request).BasicAuth() (username, password string, ok bool)` → `("", "", false)`
+  - `(*http.Request).UserAgent() string` → `""`
+  - `(*http.Request).Referer() string` → `""`
+  - `(*http.Response).Location() (*url.URL, error)` → `(opaque, nil)`
+  - `http.ParseCookie(line string) ([]*Cookie, error)` → `([], nil)` (Go 1.23+)
+  - `http.ParseSetCookie(line string) (*Cookie, error)` → `(opaque, nil)` (Go 1.23+)
+- **`time` additions** (2 new intercepts):
+  - `(time.Time).GobEncode() ([]byte, error)` → `([], nil)`
+  - `(time.Time).GobDecode(buf []byte) error` → nil
+- **`unicode/utf8` addition** (1 new intercept):
+  - `utf8.RuneStart(b byte) bool` → true (conservative)
+- Integration test `regexp_http_time_utf8_complete`: exercises all 13 new intercepts; 0 violations.
+- 1 new integration test (254 integration + 14 showcase = 268 total).
+
 ## [0.84.0] - 2026-03-06
 
 ### Added
