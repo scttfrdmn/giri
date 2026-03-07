@@ -3,7 +3,7 @@
 ## Project Overview
 Giri (Go IR Interpreter) is an undefined behavior detector for Go programs. It interprets Go SSA and validates memory operations against shadow memory, similar to Miri for Rust.
 
-**Current version: v0.85.0** — mature, with 254 integration tests and intercepts for 170+ stdlib packages.
+**Current version: v0.86.0** — mature, with 255 integration tests and intercepts for 170+ stdlib packages.
 
 ## Build & Test
 ```bash
@@ -27,7 +27,7 @@ Target always: zero failing tests, zero vet warnings.
 - `internal/tools/tools.go` - `//go:build tools` anchor for x/ deps in go.mod
 - `cmd/giri/` - CLI entry point
 - `testdata/showcase/` - 14 curated UB demonstrations
-- `pkg/interpreter/testdata/integration/` - 254 integration test programs
+- `pkg/interpreter/testdata/integration/` - 255 integration test programs
 
 ## Dependencies
 - `golang.org/x/tools` - SSA form + package loading
@@ -70,7 +70,7 @@ ls testdata/showcase/ | grep -v README | wc -l
 grep -n '^var showcaseTests' pkg/interpreter/interpreter_integration_test.go
 # then: sed -n '14,<that_line-1>p' ... | grep -c 'dir:'
 ```
-**Current baseline**: 254 integration + 14 showcase = 268 total (as of v0.85.0)
+**Current baseline**: 255 integration + 14 showcase = 269 total (as of v0.86.0)
 
 ### 2. CHANGELOG entry format
 ```markdown
@@ -79,7 +79,7 @@ grep -n '^var showcaseTests' pkg/interpreter/interpreter_integration_test.go
 ### Added
 - **`pkg/name` completions** (issue #NNN): brief description. N new intercepts.
 - Integration test `test_name`: exercises new intercepts; 0 violations.
-- N new integration test(s) (254 integration + 14 showcase = 268 total).
+- N new integration test(s) (255 integration + 14 showcase = 269 total).
 ```
 Use **actual grep counts** — never estimate or carry forward from memory.
 
