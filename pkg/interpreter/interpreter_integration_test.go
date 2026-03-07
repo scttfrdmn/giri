@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.80.0 regression tests
+	{
+		name:           "os root slices maps url complete",
+		dir:            "os_root_slices_maps_url_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.79.0 regression tests
 	{
 		name:           "fmt strings slices complete",

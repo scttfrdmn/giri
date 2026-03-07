@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.80.0] - 2026-03-06
+
+### Added
+
+- **`os.Root` completions** (Go 1.24): `os.OpenRoot(name) (*Root, error)` → `(opaque, nil)`;
+  `(*Root).FS() fs.FS` → opaque. All other `*Root` methods (`Open`, `Create`, `OpenFile`, `Stat`,
+  `Lstat`, `Mkdir`, `MkdirAll`, `Remove`, `RemoveAll`, `Rename`, `Close`, `Name`, `ReadFile`,
+  `WriteFile`, `ReadDir`, `Link`, `Symlink`, `Readlink`, `Chmod`, `Chown`, `Lchown`, `Chtimes`)
+  were already covered by existing `os` handler cases. 2 new intercepts.
+- **`slices.Chunk`** (Go 1.23): `Chunk(s []E, n int) iter.Seq[[]E]` → opaque iterator.
+  (Note: the function is `Chunk`, singular — not `Chunks`.) 1 new intercept.
+- **`net/url.Userinfo` methods**: `(*Userinfo).Username() string` → `""`;
+  `(*Userinfo).Password() (string, bool)` → `("", false)`. 2 new intercepts.
+- Integration test `os_root_slices_maps_url_complete`: exercises all 5 new intercepts; 0 violations.
+- 1 new integration test (249 integration + 14 showcase = 263 total).
+
 ## [0.79.0] - 2026-03-06
 
 ### Added

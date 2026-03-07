@@ -1606,6 +1606,15 @@ func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool)
 	case "Expand":
 		// Expand(s string, mapping func(string) string) string — return empty string.
 		return Value{Raw: ""}, true
+
+	// v0.80.0 additions: os.Root (Go 1.24).
+	case "OpenRoot":
+		// os.OpenRoot(name string) (*Root, error) — package-level constructor.
+		// (*Root).OpenRoot(name string) (*Root, error) — method opening a sub-root.
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "FS":
+		// (*Root).FS() fs.FS — return opaque fs.FS value.
+		return opaque, true
 	}
 	return Value{}, false
 }
@@ -4887,6 +4896,14 @@ func (interp *Interpreter) handleNetURLCall(name string, args []Value) (Value, b
 		// url.UserPassword(username, password string) *Userinfo
 		return opaque, true
 
+	case "Username":
+		// (*Userinfo).Username() string
+		return Value{Raw: ""}, true
+
+	case "Password":
+		// (*Userinfo).Password() (string, bool) — ("", false) conservative.
+		return Value{Raw: []Value{{Raw: ""}, {Raw: false}}}, true
+
 	case "JoinPath":
 		// url.JoinPath(base string, elem ...string) (string, error)
 		if s, ok := stdlibArgString(args, 0); ok {
@@ -6517,6 +6534,10 @@ func (interp *Interpreter) handleSlicesCall(gid int64, name string, args []Value
 
 	case "All", "Values", "Backward":
 		// slices.All(s []E) iter.Seq2[int,E] etc. — return opaque.
+		return Value{Raw: struct{}{}}, true
+
+	case "Chunk":
+		// slices.Chunk(s []E, n int) iter.Seq[[]E] (Go 1.23) — opaque iterator.
 		return Value{Raw: struct{}{}}, true
 
 	// v0.79.0: Go 1.23/1.24 iterator-based sort collectors.
