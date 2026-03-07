@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.88.0 regression tests
+	{
+		name:           "sync http complete",
+		dir:            "sync_http_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.87.0 regression tests
 	{
 		name:           "http net os unsafe complete",

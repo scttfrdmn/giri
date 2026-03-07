@@ -5534,6 +5534,39 @@ func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, boo
 	case "MultipartReader":
 		// (*http.Request).MultipartReader() (*multipart.Reader, error)
 		return Value{Raw: []Value{opaque, {}}}, true
+
+	// v0.88.0: remaining Request/Response methods and misc helpers.
+	case "ProtoAtLeast":
+		// (*Request).ProtoAtLeast(major, minor int) bool and (*Response).ProtoAtLeast.
+		return Value{Raw: false}, true
+	case "AddCookie":
+		// (*Request).AddCookie(c *Cookie) — noop.
+		return Value{}, true
+	case "SetBasicAuth":
+		// (*Request).SetBasicAuth(username, password string) — noop.
+		return Value{}, true
+	case "CookiesNamed":
+		// (*Request).CookiesNamed(name string) []*Cookie (Go 1.25+) — return empty slice.
+		return Value{Raw: []Value{}}, true
+	case "Write", "WriteProxy":
+		// (*Request).Write(w io.Writer) error; (*Request).WriteProxy(w io.Writer) error.
+		// (*Response).Write(w io.Writer) error.
+		return Value{}, true
+	case "ParseHTTPVersion":
+		// http.ParseHTTPVersion(vers string) (major, minor int, ok bool)
+		return Value{Raw: []Value{{Raw: int64(1)}, {Raw: int64(1)}, {Raw: true}}}, true
+	case "ParseTime":
+		// http.ParseTime(text string) (time.Time, error)
+		return Value{Raw: []Value{opaque, {}}}, true
+	case "ServeFileFS":
+		// http.ServeFileFS(w ResponseWriter, r *Request, fsys fs.FS, name string) (Go 1.22) — noop.
+		return Value{}, true
+	case "ServeTLS":
+		// http.ServeTLS(l net.Listener, handler Handler, certFile, keyFile string) error — noop.
+		return Value{}, true
+	case "ProxyFromEnvironment":
+		// http.ProxyFromEnvironment(req *Request) (*url.URL, error) — return (nil, nil).
+		return Value{Raw: []Value{{}, {}}}, true
 	}
 	return Value{}, false
 }

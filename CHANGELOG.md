@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.88.0] - 2026-03-06
+
+### Added
+
+- **`sync` additions** (3 new package-level functions, Go 1.21+/1.22+):
+  - `sync.OnceFunc(f func()) func()` → probes `f` once, returns opaque callable
+  - `sync.OnceValue[T](f func() T) func() T` → probes `f` once, returns opaque callable
+  - `sync.OnceValues[T1,T2](f func() (T1, T2)) func() (T1, T2)` → probes `f` once, returns opaque callable
+- **`net/http` additions** (11 new intercepts):
+  - `(*Request).ProtoAtLeast(major, minor int) bool` → `false`
+  - `(*Response).ProtoAtLeast(major, minor int) bool` → `false`
+  - `(*Request).AddCookie(c *Cookie)` → noop
+  - `(*Request).SetBasicAuth(username, password string)` → noop
+  - `(*Request).CookiesNamed(name string) []*Cookie` → `[]` (Go 1.25+)
+  - `(*Request).Write(w io.Writer) error` → nil
+  - `(*Request).WriteProxy(w io.Writer) error` → nil
+  - `(*Response).Write(w io.Writer) error` → nil
+  - `http.ParseHTTPVersion(vers string) (major, minor int, ok bool)` → `(1, 1, true)`
+  - `http.ParseTime(text string) (time.Time, error)` → `(opaque, nil)`
+  - `http.ServeFileFS(w, r, fsys, name)` → noop (Go 1.22)
+  - `http.ServeTLS(l, handler, certFile, keyFile)` → nil
+  - `http.ProxyFromEnvironment(req *Request) (*url.URL, error)` → `(nil, nil)`
+- New integration test: `sync_http_complete` (0 violations)
+- Total: 257 integration + 14 showcase = 271 tests
+
 ## [0.87.0] - 2026-03-06
 
 ### Added

@@ -1589,7 +1589,31 @@ func (interp *Interpreter) callCancelFunc(id cancelFuncID) {
 // clock semantics directly.
 func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, site string) Value {
 	g := interp.goroutines[gid]
-	if g == nil || len(args) == 0 {
+	if g == nil {
+		return Value{}
+	}
+
+	// v0.88.0: Package-level functions (no sync primitive receiver) — handle before key extraction.
+	switch name {
+	case "OnceFunc", "OnceValue", "OnceValues":
+		// sync.OnceFunc(f func()) func() (Go 1.21+): returns a function that calls f at most once.
+		// sync.OnceValue[T](f func() T) func() T (Go 1.21+).
+		// sync.OnceValues[T1,T2](f func() (T1, T2)) func() (T1, T2) (Go 1.22+).
+		// Probe f once to surface violations inside the callback; return opaque callable.
+		if len(args) >= 1 {
+			switch fn := args[0].Raw.(type) {
+			case *ssa.Function:
+				if fn.Blocks != nil {
+					interp.execFunction(gid, fn, nil)
+				}
+			case *ClosureValue:
+				interp.execFunction(gid, fn.Fn, fn.FreeVars)
+			}
+		}
+		return Value{Raw: struct{}{}}
+	}
+
+	if len(args) == 0 {
 		return Value{}
 	}
 
