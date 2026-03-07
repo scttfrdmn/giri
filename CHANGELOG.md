@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-03-07
+
+### Added
+
+- **`reflect` package completions** (issue #217): `NewAt` → opaque; `Complex` → `complex128(0)`;
+  `SetComplex` → noop; `CanComplex` (Go 1.20) → `bool`; `OverflowInt`/`OverflowUint`/`OverflowFloat`/
+  `OverflowComplex` → `false`; `Pointer` → `uintptr`; `UnsafePointer` (Go 1.18) → opaque;
+  `UnsafeAddr` → `uintptr`; `Select` → `(int, Value, bool)` 3-tuple; `Swapper` → opaque;
+  `SetZero` (Go 1.20) → noop; `Equal` (Go 1.20) → `bool`. 13 new intercepts.
+  Note: `Pointer`/`UnsafePointer`/`UnsafeAddr` correctly trigger Rule 5 when results survive GC
+  points — this is expected correct behavior.
+- **`log` package completions** (issue #217): `Output` → noop. 1 new intercept.
+- Integration test `reflect_complete`: exercises all new reflect/log intercepts; 0 violations.
+- 1 new integration test (256 integration + 12 showcase = 268 total).
+
 ## [0.74.0] - 2026-03-06
 
 ### Added

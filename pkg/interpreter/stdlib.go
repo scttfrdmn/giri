@@ -3414,6 +3414,10 @@ func (interp *Interpreter) handleLogCall(gid int64, name string, args []Value) (
 	case "Default":
 		// log.Default() *Logger
 		return Value{Raw: struct{}{}}, true
+
+	case "Output":
+		// log.Output(calldepth int, s string) error / (*Logger).Output — noop.
+		return Value{}, true
 	}
 	return Value{}, false
 }
@@ -4433,6 +4437,55 @@ func (interp *Interpreter) handleReflectCall(name string, args []Value) (Value, 
 
 	case "Align", "FieldAlign":
 		return Value{Raw: int64(8)}, true
+
+	// v0.75.0: reflect completions.
+	case "NewAt":
+		// reflect.NewAt(t Type, p unsafe.Pointer) Value — opaque pointer Value.
+		return opaque, true
+
+	case "Complex":
+		// v.Complex() complex128
+		return Value{Raw: complex128(0 + 0i)}, true
+
+	case "SetComplex":
+		// v.SetComplex(x complex128) — noop mutator.
+		return Value{}, true
+
+	case "CanComplex":
+		// v.CanComplex() bool (Go 1.20) — pessimistic true.
+		return Value{Raw: true}, true
+
+	case "OverflowInt", "OverflowUint", "OverflowFloat", "OverflowComplex":
+		// v.OverflowXxx(x T) bool — pessimistic false (assume no overflow).
+		return Value{Raw: false}, true
+
+	case "Pointer":
+		// v.Pointer() uintptr — return 0 (no real address in interpreter).
+		return Value{Raw: int64(0)}, true
+
+	case "UnsafePointer":
+		// v.UnsafePointer() unsafe.Pointer (Go 1.18) — opaque.
+		return opaque, true
+
+	case "UnsafeAddr":
+		// v.UnsafeAddr() uintptr — return 0.
+		return Value{Raw: int64(0)}, true
+
+	case "Select":
+		// reflect.Select(cases []SelectCase) (chosen int, recv Value, recvOK bool)
+		return Value{Raw: []Value{{Raw: int64(0)}, opaque, {Raw: false}}}, true
+
+	case "Swapper":
+		// reflect.Swapper(slice interface{}) func(i, j int) — opaque callable.
+		return opaque, true
+
+	case "SetZero":
+		// v.SetZero() (Go 1.20) — noop.
+		return Value{}, true
+
+	case "Equal":
+		// v.Equal(u Value) bool (Go 1.20) — pessimistic false.
+		return Value{Raw: false}, true
 	}
 	return Value{}, false
 }
