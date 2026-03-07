@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.82.0] - 2026-03-06
+
+### Added
+
+- **`crypto/rand.Text`** (Go 1.24): `crypto/rand.Text() string` → `""`.
+- **`bufio` split functions** (4 new intercepts):
+  - `bufio.ScanLines`, `bufio.ScanWords`, `bufio.ScanBytes`, `bufio.ScanRunes`
+    `(data []byte, atEOF bool) (advance int, token []byte, err error)` → `(0, nil, nil)` conservative.
+- **`io` method completions** (5 new intercepts, covering `SectionReader`, `OffsetWriter`, `PipeReader`, `PipeWriter`):
+  - `Read(p []byte) (int, error)` → `(0, nil)`
+  - `ReadAt(p []byte, off int64) (int, error)` → `(0, nil)`
+  - `Write(p []byte) (int, error)` → `(0, nil)`
+  - `WriteAt(p []byte, off int64) (int, error)` → `(0, nil)`
+  - `Seek(offset int64, whence int) (int64, error)` → `(0, nil)`
+  - `Close() error` → `nil`
+- **`net/http` additions** (8 new intercepts):
+  - `http.FileServer(root FileSystem) Handler` → opaque
+  - `http.NewResponseController(rw ResponseWriter) *ResponseController` → opaque
+  - `(*ResponseController).Flush() error` → nil
+  - `(*ResponseController).Hijack() (net.Conn, *bufio.ReadWriter, error)` → `(opaque, opaque, nil)`
+  - `(*ResponseController).SetReadDeadline/SetWriteDeadline(time.Time) error` → nil
+  - `(*Server).Shutdown(ctx) error` → nil
+  - `(*Server).Close() error` → nil
+  - `(*Server).Serve(net.Listener) error` → nil
+- Integration test `rand_bufio_io_http_complete`: exercises all new intercepts; 0 violations.
+- 1 new integration test (251 integration + 14 showcase = 265 total).
+
 ## [0.81.0] - 2026-03-06
 
 ### Added

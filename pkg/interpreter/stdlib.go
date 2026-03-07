@@ -3381,6 +3381,20 @@ func (interp *Interpreter) handleIOCall(name string, args []Value) (Value, bool)
 	case "NewOffsetWriter":
 		// io.NewOffsetWriter(w WriterAt, off int64) *OffsetWriter (Go 1.20)
 		return opaque, true
+
+	// v0.82.0: SectionReader / OffsetWriter / PipeReader / PipeWriter methods.
+	case "Read", "ReadAt":
+		// (n int, err error) — return (0, nil) conservative.
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Write", "WriteAt":
+		// (n int, err error) — return (0, nil) conservative.
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Seek":
+		// (int64, error) — return (0, nil).
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+	case "Close":
+		// io.PipeReader.Close / io.PipeWriter.Close — nil error.
+		return Value{}, true
 	}
 	return Value{}, false
 }
@@ -3463,6 +3477,12 @@ func (interp *Interpreter) handleBufioCall(name string, args []Value) (Value, bo
 		return Value{}, true
 	case "UnreadRune":
 		return Value{}, true
+
+	// v0.82.0: bufio split functions (used with Scanner.Split or standalone).
+	case "ScanLines", "ScanWords", "ScanBytes", "ScanRunes":
+		// ScanXxx(data []byte, atEOF bool) (advance int, token []byte, err error)
+		// Conservative: no advance, no token, no error (need more data).
+		return Value{Raw: []Value{{Raw: int64(0)}, {}, {}}}, true
 	}
 	return Value{}, false
 }
@@ -3686,6 +3706,10 @@ func (interp *Interpreter) handleCryptoRandCall(name string, args []Value) (Valu
 	case "Reader":
 		// crypto/rand.Reader is a global; return opaque.
 		return Value{Raw: struct{}{}}, true
+
+	case "Text":
+		// crypto/rand.Text() string (Go 1.24) — random base32 text; return empty string.
+		return Value{Raw: ""}, true
 	}
 	return Value{}, false
 }
@@ -5331,6 +5355,32 @@ func (interp *Interpreter) handleHTTPCall(name string, args []Value) (Value, boo
 		return opaque, true
 	case "DetectContentType":
 		return Value{Raw: "application/octet-stream"}, true
+
+	// v0.82.0: file server, response controller, and server lifecycle.
+	case "FileServer":
+		// http.FileServer(root FileSystem) Handler — opaque handler.
+		return opaque, true
+	case "NewResponseController":
+		// http.NewResponseController(rw ResponseWriter) *ResponseController (Go 1.20)
+		return opaque, true
+	case "Flush":
+		// (*ResponseController).Flush() error — noop.
+		return Value{}, true
+	case "Hijack":
+		// (*ResponseController).Hijack() (net.Conn, *bufio.ReadWriter, error)
+		return Value{Raw: []Value{opaque, opaque, {}}}, true
+	case "SetReadDeadline", "SetWriteDeadline":
+		// (*ResponseController).SetRead/WriteDeadline(deadline time.Time) error — noop.
+		return Value{}, true
+	case "Shutdown":
+		// (*Server).Shutdown(ctx context.Context) error — noop.
+		return Value{}, true
+	case "Close":
+		// (*Server).Close() error — noop.
+		return Value{}, true
+	case "Serve":
+		// (*Server).Serve(l net.Listener) error — noop.
+		return Value{}, true
 	}
 	return Value{}, false
 }
