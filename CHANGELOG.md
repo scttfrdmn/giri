@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.92.0] - 2026-03-07
+
+### Added
+
+- **Smart stdlib fallback** (#222): any call to a Go stdlib or `golang.org/x/`
+  package that lacks an explicit intercept now returns `stdlibOpaque` (a non-nil
+  opaque value) instead of `Value{}`. Eliminates false-positive nil-pointer
+  violations from unmodeled return values without requiring exhaustive enumeration.
+- Unhandled stdlib calls still appear in `RunResult.UnmodeledCalls` (and `-v`
+  output) so coverage gaps remain visible.
+
+### Fixed
+
+- CI: `golangci-lint-action` bumped from `@v6` to `@v7` (v2.x lint support)
+- CI: Go matrix updated from `[1.23, 1.24]` to `[1.25, 1.26]` (module requires go 1.26)
+- CI: `go test -race` timeout increased from 10m (default) to 25m
+- SARIF workflow: Go version updated from 1.23 to 1.26
+
+### Closes
+
+- Closes #222 (smart stdlib fallback)
+
 ## [0.91.0] - 2026-03-06
 
 ### Added

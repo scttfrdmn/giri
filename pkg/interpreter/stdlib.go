@@ -110,6 +110,47 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 		return Value{}, true
 	}
 
+	// Dispatch to the explicit per-package handler table.
+	if v, ok := interp.dispatchStdlibCall(gid, site, pkgPath, name, args); ok {
+		return v, true
+	}
+
+	// Smart fallback (#222): for any call into a stdlib or known-external package
+	// that isn't explicitly handled, return stdlibOpaque rather than zero/nil.
+	// This prevents false-positive violations from nil pointer dereferences on
+	// unmodeled return values without enumerating every stdlib function.
+	// Calls into user packages (dot in first path segment) return false here,
+	// falling through to execFunction for actual interpretation.
+	// We still record the call in unmodeledCalls so RunResult.UnmodeledCalls
+	// surfaces coverage gaps (e.g. math.Erfinv) for users inspecting with -v.
+	if isStdlibOrKnownExternalPkg(pkgPath) {
+		interp.recordUnmodeled(pkgPath, name)
+		return stdlibOpaque, true
+	}
+	return Value{}, false
+}
+
+// isStdlibOrKnownExternalPkg reports whether pkgPath belongs to the Go standard
+// library (no dot in first path segment) or a known external module with explicit
+// handlers. Used by the smart fallback in execStdlibCall (#222).
+func isStdlibOrKnownExternalPkg(pkgPath string) bool {
+	if pkgPath == "" {
+		return false
+	}
+	first := pkgPath
+	if i := strings.Index(pkgPath, "/"); i > 0 {
+		first = pkgPath[:i]
+	}
+	if !strings.Contains(first, ".") {
+		return true // standard library
+	}
+	return strings.HasPrefix(pkgPath, "golang.org/x/")
+}
+
+// dispatchStdlibCall is the explicit per-package dispatch table.
+// It is separated from execStdlibCall so the caller can apply a smart fallback
+// for any call not explicitly handled (#222).
+func (interp *Interpreter) dispatchStdlibCall(gid int64, site, pkgPath, name string, args []Value) (Value, bool) {
 	switch pkgPath {
 	case "strings":
 		return interp.handleStringsCall(name, args)
