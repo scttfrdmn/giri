@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.0] - 2026-03-06
+
+### Added
+
+- **`net` additions** (8 new intercepts):
+  - `(*net.Resolver).LookupIPAddr(ctx, host) ([]IPAddr, error)` → `([], nil)`
+  - `(*net.TCPConn).SetKeepAlive(bool) error` → nil
+  - `(*net.TCPConn).SetKeepAlivePeriod(time.Duration) error` → nil
+  - `(*net.TCPConn).SetNoDelay(bool) error` → nil
+  - `(*net.UDPConn).ReadFrom/ReadFromUDP/ReadFromUnix/ReadFromIP` → `(0, opaque, nil)` — 3-tuple
+  - `(*net.UDPConn).WriteTo/WriteToUDP/WriteToUnix/WriteToIP` → `(0, nil)`
+- **`context` additions** (3 new intercepts, Go 1.21+):
+  - `context.WithDeadlineCause(parent, d, cause) (Context, CancelFunc)` — registered for leak tracking
+  - `context.WithTimeoutCause(parent, timeout, cause) (Context, CancelFunc)` — registered for leak tracking
+  - `context.AfterFunc(ctx, f func()) (stop func())` → opaque stop function (f not invoked; context never fires in model)
+- Integration test `net_context_complete`: exercises all 11 new intercepts; 0 violations.
+- 1 new integration test (253 integration + 14 showcase = 267 total).
+- **Note:** `net.LookupIPAddr` does NOT exist as a package-level function — only `(*net.Resolver).LookupIPAddr` is valid.
+
 ## [0.83.0] - 2026-03-06
 
 ### Added

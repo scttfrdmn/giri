@@ -3134,6 +3134,16 @@ func (interp *Interpreter) handleContextCall(gid int64, site, name string, args 
 	case "Deadline":
 		// ctx.Deadline() returns (zero time, false).
 		return Value{Raw: []Value{{}, {Raw: false}}}, true
+
+	// v0.84.0: Go 1.21+ cause-bearing variants and AfterFunc.
+	case "WithDeadlineCause", "WithTimeoutCause":
+		// (parent, d/timeout, cause error) → (Context, CancelFunc) — register for leak tracking.
+		cfID := interp.newCancelFunc(gid, site)
+		return Value{Raw: []Value{opaque, {Raw: cfID}}}, true
+	case "AfterFunc":
+		// context.AfterFunc(ctx, f func()) (stop func()) — Go 1.21+.
+		// Conservative: don't invoke f (context never fires in our model).
+		return Value{Raw: struct{}{}}, true
 	}
 	return Value{}, false
 }
@@ -4163,6 +4173,20 @@ func (interp *Interpreter) handleNetCall(name string, args []Value) (Value, bool
 	case "DialContext":
 		// (*net.Dialer).DialContext(ctx, network, address) (net.Conn, error)
 		return Value{Raw: []Value{stdlibOpaque, {}}}, true
+
+	// v0.84.0: additional DNS lookup, TCPConn options, UDPConn I/O.
+	case "LookupIPAddr":
+		// (*net.Resolver).LookupIPAddr(ctx, host) ([]IPAddr, error)
+		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
+	case "SetKeepAlive", "SetKeepAlivePeriod", "SetNoDelay":
+		// (*TCPConn) option methods — nil error.
+		return Value{}, true
+	case "ReadFrom", "ReadFromUDP", "ReadFromUnix", "ReadFromIP":
+		// (*UDPConn).ReadFrom(b []byte) (int, net.Addr, error) — 3-tuple.
+		return Value{Raw: []Value{{Raw: int64(0)}, stdlibOpaque, {}}}, true
+	case "WriteTo", "WriteToUDP", "WriteToUnix", "WriteToIP":
+		// (*UDPConn).WriteTo(b []byte, addr net.Addr) (int, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
 	}
 	return Value{}, false
 }
