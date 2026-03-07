@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.91.0] - 2026-03-06
+
+### Added
+
+- **`strings` additions** (2 new intercepts):
+  - `strings.SplitAfterSeq(s, sep string) iter.Seq[string]` (Go 1.24+) → opaque
+  - `strings.FieldsFuncSeq(s string, f func(rune) bool) iter.Seq[string]` (Go 1.24+) → opaque
+- **`bytes` additions** (5 new intercepts) — all Go 1.24 iterator functions:
+  - `bytes.SplitSeq(s, sep []byte) iter.Seq[[]byte]` → opaque
+  - `bytes.FieldsSeq(s []byte) iter.Seq[[]byte]` → opaque
+  - `bytes.Lines(s []byte) iter.Seq[[]byte]` → opaque
+  - `bytes.SplitAfterSeq(s, sep []byte) iter.Seq[[]byte]` → opaque
+  - `bytes.FieldsFuncSeq(s []byte, f func(rune) bool) iter.Seq[[]byte]` → opaque
+- **`path/filepath.Localize(path string) (string, error)`** (Go 1.26) → `(path, nil)`
+- **`errors.AsType[E error](err error) (E, bool)`** (Go 1.26+) → `(zero, false)`
+- **`fmt.FormatString(state State, verb rune) string`** (Go 1.21+) → `""`
+- New integration test: `strings_bytes_misc_complete` (0 violations)
+- Total: 260 integration + 14 showcase = 274 tests
+
 ## [0.90.0] - 2026-03-06
 
 ### Added

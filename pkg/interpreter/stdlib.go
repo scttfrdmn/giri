@@ -895,6 +895,14 @@ func (interp *Interpreter) handleStringsCall(name string, args []Value) (Value, 
 	// v0.79.0: Go 1.24 iterator functions — return opaque iter.Seq[string].
 	case "SplitSeq", "FieldsSeq", "Lines":
 		return stdlibOpaque, true
+
+	// v0.91.0: remaining Go 1.24 iterator functions.
+	case "SplitAfterSeq":
+		// strings.SplitAfterSeq(s, sep string) iter.Seq[string] (Go 1.24+)
+		return stdlibOpaque, true
+	case "FieldsFuncSeq":
+		// strings.FieldsFuncSeq(s string, f func(rune) bool) iter.Seq[string] (Go 1.24+)
+		return stdlibOpaque, true
 	}
 	return Value{}, false
 }
@@ -1224,6 +1232,11 @@ func (interp *Interpreter) handleFmtCall(name string, args []Value) (Value, bool
 	case "Appendln":
 		// fmt.Appendln(b []byte, a ...any) []byte
 		return Value{Raw: []byte{}}, true
+
+	// v0.91.0
+	case "FormatString":
+		// fmt.FormatString(state State, verb rune) string (Go 1.21+) — return empty string.
+		return Value{Raw: ""}, true
 	}
 	return Value{}, false
 }
@@ -2080,6 +2093,13 @@ func (interp *Interpreter) handleBytesCall(name string, args []Value) (Value, bo
 	case "Peek":
 		// (*Buffer).Peek(n int) ([]byte, error)
 		return Value{Raw: []Value{{Raw: []byte(nil)}, {}}}, true
+
+	// v0.91.0: Go 1.24 iterator functions — return opaque iter.Seq[[]byte].
+	case "SplitSeq", "FieldsSeq", "Lines", "SplitAfterSeq":
+		return stdlibOpaque, true
+	case "FieldsFuncSeq":
+		// bytes.FieldsFuncSeq(s []byte, f func(rune) bool) iter.Seq[[]byte] (Go 1.24+)
+		return stdlibOpaque, true
 	}
 	return Value{}, false
 }
@@ -2125,6 +2145,11 @@ func (interp *Interpreter) handleErrorsCall(name string, args []Value) (Value, b
 			}
 		}
 		return Value{}, true
+
+	case "AsType":
+		// errors.AsType[E error](err error) (E, bool) (Go 1.26+)
+		// Conservative: return (zero value, false) — no unwrapping chain modeled.
+		return Value{Raw: []Value{{}, {Raw: false}}}, true
 	}
 	return Value{}, false
 }
@@ -3979,6 +4004,14 @@ func (interp *Interpreter) handleFilepathCall(name string, args []Value) (Value,
 			return Value{Raw: filepath.IsLocal(s)}, true
 		}
 		return Value{Raw: false}, true
+
+	case "Localize":
+		// filepath.Localize(path string) (string, error) (Go 1.26)
+		// On POSIX systems, slash-separated paths are already local; return unchanged.
+		if s, ok := stdlibArgString(args, 0); ok {
+			return Value{Raw: []Value{{Raw: s}, {}}}, true
+		}
+		return Value{Raw: []Value{{Raw: ""}, {}}}, true
 	}
 	return Value{}, false
 }
