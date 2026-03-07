@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.76.0] - 2026-03-06
+
+### Added
+
+- **`encoding/binary` completions** (issue #218): `AppendUint16`/`AppendUint32`/`AppendUint64`
+  (Go 1.21 `AppendByteOrder` interface methods) → return dst slice; `AppendUvarint`/`AppendVarint`
+  (Go 1.22, package-level) → return dst slice; `ReadVarint` → `(int64, error)`;
+  `ReadUvarint` → `(uint64, error)`. 7 new intercepts.
+- **`database/sql` completions** (issue #218): `Drivers` → `[]string{}`. 1 new intercept.
+- **`math/big` completions** (issue #218): `MulRange` → opaque `*Int`; `Binomial` → opaque `*Int`.
+  2 new intercepts.
+- Integration test `binary_sql_bigint_complete`: exercises all new intercepts; 0 violations.
+- README: update GitHub Action tag `@v0.17.0` → `@v0.76.0`; update stdlib coverage
+  "60+ packages" → "170+ packages".
+- 1 new integration test (245 integration + 11 showcase = 256 total).
+
 ## [0.75.0] - 2026-03-07
 
 ### Added
@@ -20,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   points — this is expected correct behavior.
 - **`log` package completions** (issue #217): `Output` → noop. 1 new intercept.
 - Integration test `reflect_complete`: exercises all new reflect/log intercepts; 0 violations.
-- 1 new integration test (256 integration + 12 showcase = 268 total).
+- 1 new integration test (244 integration + 11 showcase = 255 total).
 
 ## [0.74.0] - 2026-03-06
 
@@ -36,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`net/url` package completions** (issue #216): `(*URL).Redacted()` → `string` (Go 1.15). 1 new.
 - **`flag` package completions** (issue #216): `BoolFunc` (Go 1.20) → noop. 1 new.
 - Integration test `net_url_flag_complete`: exercises all new intercepts; 0 violations.
-- 1 new integration test (255 integration + 12 showcase = 267 total).
+- 1 new integration test (243 integration + 11 showcase = 254 total).
 
 ## [0.73.0] - 2026-03-06
 
@@ -51,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(*SectionReader).Size()` → `int64`. 2 new intercepts.
 - **`path/filepath` completions** (issue #215): `IsLocal` (Go 1.22) → concrete `bool`. 1 new intercept.
 - Integration test `sort_regexp_io_complete`: exercises all new intercepts; 0 violations.
-- 1 new integration test (254 integration + 12 showcase = 266 total).
+- 1 new integration test (242 integration + 11 showcase = 253 total).
 
 ## [0.72.0] - 2026-03-06
 
@@ -63,7 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AddDate` → opaque `time.Time`; `Duration.Abs` (Go 1.19) → `int64`; `LoadLocation` →
   `(*time.Location, error)`; `FixedZone` → opaque `*time.Location`. 10 new intercepts.
 - Integration test `time_complete`: exercises all new `time` intercepts; 0 violations.
-- 1 new integration test (253 integration + 12 showcase = 265 total).
+- 1 new integration test (241 integration + 11 showcase = 252 total).
 
 ## [0.71.0] - 2026-03-06
 

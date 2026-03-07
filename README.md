@@ -173,7 +173,7 @@ jobs:
       security-events: write   # required for SARIF upload
     steps:
       - uses: actions/checkout@v4
-      - uses: scttfrdmn/giri/.github/actions/giri@v0.17.0
+      - uses: scttfrdmn/giri/.github/actions/giri@v0.76.0
         with:
           packages: './...'
           upload-sarif: 'true'
@@ -318,7 +318,7 @@ giri/
 
 ### Phase 4: Advanced
 - [x] Interprocedural analysis (follow calls across packages) — v0.17.0
-- [x] Standard library intercepts (60+ packages: `strings`, `strconv`, `fmt`, `time`, `os`, `math/rand`, `sync`, `bytes`, `errors`, `sort`, `regexp`, `encoding/json`, `net/http`, `database/sql`, `crypto/tls`, and more) — v0.11–0.30
+- [x] Standard library intercepts (170+ packages: `strings`, `strconv`, `fmt`, `time`, `os`, `math/rand`, `sync`, `bytes`, `errors`, `sort`, `regexp`, `encoding/json`, `net/http`, `database/sql`, `crypto/tls`, and more) — v0.11–0.76
 - [ ] `cgo` boundary checking
 - [ ] `reflect` package safety verification
 - [ ] `go:linkname` tracking

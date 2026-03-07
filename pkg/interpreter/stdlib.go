@@ -5326,6 +5326,24 @@ func (interp *Interpreter) handleBinaryCall(name string, args []Value) (Value, b
 		return Value{}, true
 	case "String":
 		return Value{Raw: ""}, true
+
+	// v0.76.0: Go 1.21 byte-order append helpers and Go 1.22 varint I/O.
+	case "AppendUint16", "AppendUint32", "AppendUint64":
+		// (LittleEndian/BigEndian).AppendUintN(b []byte, v uintN) []byte — return dst slice.
+		// Receiver=args[0], dst=args[1], value=args[2].
+		if len(args) >= 2 {
+			return args[1], true
+		}
+		return Value{Raw: []Value{}}, true
+
+	case "ReadVarint":
+		// binary.ReadVarint(r io.ByteReader) (int64, error)
+		return Value{Raw: []Value{{Raw: int64(0)}, {}}}, true
+
+	case "ReadUvarint":
+		// binary.ReadUvarint(r io.ByteReader) (uint64, error)
+		return Value{Raw: []Value{{Raw: uint64(0)}, {}}}, true
+
 	}
 	return Value{}, false
 }
@@ -5543,6 +5561,10 @@ func (interp *Interpreter) handleMathBigCall(name string, args []Value) (Value, 
 		return Value{Raw: []Value{{Raw: int64(0)}, {Raw: false}}}, true
 	case "IsInt":
 		return Value{Raw: false}, true
+	case "MulRange":
+		return stdlibOpaque, true
+	case "Binomial":
+		return stdlibOpaque, true
 	}
 	return Value{}, false
 }
@@ -5714,6 +5736,10 @@ func (interp *Interpreter) handleSQLCall(name string, args []Value) (Value, bool
 	// Register helpers (noops):
 	case "Register":
 		return Value{}, true
+
+	// Drivers returns the list of registered driver names:
+	case "Drivers":
+		return Value{Raw: []Value{}}, true
 	}
 	return Value{}, false
 }

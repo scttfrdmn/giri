@@ -345,6 +345,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// v0.76.0 regression tests
+	{
+		name:           "binary sql bigint complete",
+		dir:            "binary_sql_bigint_complete",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.75.0 regression tests
 	{
 		name:           "reflect complete",
