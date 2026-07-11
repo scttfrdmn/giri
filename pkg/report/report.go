@@ -14,6 +14,10 @@ import (
 	"github.com/scttfrdmn/giri/pkg/shadow"
 )
 
+// Version is the Giri version reported in machine-readable output (e.g. the
+// SARIF tool driver). Keep in step with the CHANGELOG / release tag.
+const Version = "0.95.0"
+
 // Format controls output format.
 type Format int
 
@@ -39,6 +43,13 @@ type Finding struct {
 	// ReproSeed is non-zero when this violation was found by RunN's PCT sweep.
 	// Reproduce the exact run with: giri -strategy pct -seed <ReproSeed> ./...
 	ReproSeed int64 `json:"repro_seed,omitempty"`
+	// Suppressed is true when this finding was matched by a //giri:ignore
+	// directive (#230). Suppressed findings are still emitted (SARIF suppressions
+	// objects, JSON suppressed:true) but do not affect the exit code or the
+	// active-severity summary counts.
+	Suppressed bool `json:"suppressed,omitempty"`
+	// SuppressReason describes why the finding was suppressed (e.g. "//giri:ignore").
+	SuppressReason string `json:"suppress_reason,omitempty"`
 }
 
 // stackTracer is implemented by ViolationWithStack in pkg/interpreter.
@@ -85,6 +96,10 @@ type Report struct {
 	Findings []Finding           `json:"findings"`
 	Stats    *shadow.MemoryStats `json:"memory_stats,omitempty"`
 	Summary  Summary             `json:"summary"`
+	// MaxViolations caps how many active (non-suppressed) findings the text and
+	// HTML formatters display; 0 means unlimited (#230). Machine formats
+	// (JSON, SARIF) always emit every finding regardless of this value.
+	MaxViolations int `json:"-"`
 }
 
 // Summary provides aggregate counts.
@@ -92,6 +107,9 @@ type Summary struct {
 	TotalFindings int            `json:"total_findings"`
 	BySeverity    map[string]int `json:"by_severity"`
 	ByCategory    map[string]int `json:"by_category"`
+	// Suppressed counts findings matched by a //giri:ignore directive (#230).
+	// These are excluded from TotalFindings/BySeverity/ByCategory.
+	Suppressed int `json:"suppressed,omitempty"`
 }
 
 // Build creates a Report from a list of errors (violations from the interpreter).
@@ -105,24 +123,7 @@ func Build(violations []error, memStats *shadow.MemoryStats) *Report {
 	}
 
 	for _, err := range violations {
-		// Extract stack trace, goroutine ID, and replay seed before classifying.
-		var stackTrace string
-		var goroutineID int64
-		var reproSeed int64
-		underlying := err
-		if st, ok := err.(stackTracer); ok {
-			stackTrace = st.StackTrace()
-			goroutineID = st.GoroutineID()
-			underlying = st.Unwrap()
-		}
-		if rs, ok := err.(reproSeeder); ok {
-			reproSeed = rs.ReproSeedValue()
-		}
-
-		f := classifyError(underlying)
-		f.StackTrace = stackTrace
-		f.GoroutineID = goroutineID
-		f.ReproSeed = reproSeed
+		f := findingFromError(err)
 		r.Findings = append(r.Findings, f)
 
 		r.Summary.TotalFindings++
@@ -131,6 +132,46 @@ func Build(violations []error, memStats *shadow.MemoryStats) *Report {
 	}
 
 	return r
+}
+
+// findingFromError converts a single interpreter violation into a Finding,
+// extracting the stack trace, goroutine ID, and PCT replay seed (when present)
+// before classifying by concrete error type. Shared by Build and AddSuppressed.
+func findingFromError(err error) Finding {
+	var stackTrace string
+	var goroutineID int64
+	var reproSeed int64
+	underlying := err
+	if st, ok := err.(stackTracer); ok {
+		stackTrace = st.StackTrace()
+		goroutineID = st.GoroutineID()
+		underlying = st.Unwrap()
+	}
+	if rs, ok := err.(reproSeeder); ok {
+		reproSeed = rs.ReproSeedValue()
+	}
+
+	f := classifyError(underlying)
+	f.StackTrace = stackTrace
+	f.GoroutineID = goroutineID
+	f.ReproSeed = reproSeed
+	return f
+}
+
+// AddSuppressed appends violations that were matched by a //giri:ignore
+// directive to the report, flagged as suppressed (#230). They are recorded in
+// Summary.Suppressed but excluded from the active severity/category counts and
+// from ExitCode, so a suppressed finding never fails a build. Reporters emit
+// them distinctly (SARIF suppressions objects, JSON suppressed:true, a separate
+// text section).
+func (r *Report) AddSuppressed(violations []error) {
+	for _, err := range violations {
+		f := findingFromError(err)
+		f.Suppressed = true
+		f.SuppressReason = "//giri:ignore"
+		r.Findings = append(r.Findings, f)
+		r.Summary.Suppressed++
+	}
 }
 
 // classifyError converts a raw error into a structured Finding.
@@ -414,34 +455,67 @@ func (r *Report) writeText(w io.Writer) error {
 	tw.printf("║  Undefined Behavior Detection Report          ║\n")
 	tw.printf("╚══════════════════════════════════════════════╝\n\n")
 
-	if len(r.Findings) == 0 {
+	// Partition into active vs suppressed (#230): suppressed findings render in
+	// a separate trailing section and never count toward the active total.
+	var active, suppressed []Finding
+	for _, f := range r.Findings {
+		if f.Suppressed {
+			suppressed = append(suppressed, f)
+		} else {
+			active = append(active, f)
+		}
+	}
+
+	if len(active) == 0 {
 		tw.printf("No violations detected.\n\n")
 	} else {
-		tw.printf("Found %d violation(s):\n\n", len(r.Findings))
+		tw.printf("Found %d violation(s):\n\n", len(active))
 
-		for i, f := range r.Findings {
-			tw.printf("── [%d] %s: %s ──\n", i+1, f.Severity, f.Category)
-			tw.printf("%s\n", f.Message)
-			if f.StackTrace != "" {
-				tw.printf("\n  stack trace:\n")
-				for _, line := range strings.Split(strings.TrimRight(f.StackTrace, "\n"), "\n") {
-					tw.printf("    %s\n", line)
+		// Group by (category, file) and print one header per group (#230).
+		groups, order := groupFindings(active)
+		shown := 0
+		limited := false
+		for _, key := range order {
+			g := groups[key]
+			tw.printf("── %s (%s) — %d finding(s) ──\n", g[0].Category, groupFile(g[0]), len(g))
+			for _, f := range g {
+				if r.MaxViolations > 0 && shown >= r.MaxViolations {
+					limited = true
+					break
 				}
-			}
-			if f.ReproSeed != 0 {
-				tw.printf("\n  replay: giri -strategy pct -seed %d ./...\n", f.ReproSeed)
-			}
-			if f.Hint != "" {
-				tw.printf("\n  hint: %s\n", f.Hint)
+				writeFindingDetail(tw, f)
+				shown++
 			}
 			tw.println()
+			if limited {
+				break
+			}
 		}
+		if limited {
+			tw.printf("… and %d more (use --max-violations 0 to show all)\n\n", len(active)-shown)
+		}
+	}
+
+	// Suppressed findings (#230): shown distinctly, informational only.
+	if len(suppressed) > 0 {
+		tw.printf("── Suppressed (%d) — via //giri:ignore ──\n", len(suppressed))
+		for _, f := range suppressed {
+			loc := f.Location
+			if loc == "" {
+				loc = "?"
+			}
+			tw.printf("  %s: %s  [%s]\n", f.Category, loc, f.SuppressReason)
+		}
+		tw.println()
 	}
 
 	// Summary
 	tw.printf("── Summary ──\n")
 	for sev, count := range r.Summary.BySeverity {
 		tw.printf("  %s: %d\n", sev, count)
+	}
+	if r.Summary.Suppressed > 0 {
+		tw.printf("  Suppressed: %d\n", r.Summary.Suppressed)
 	}
 
 	if r.Stats != nil {
@@ -450,6 +524,60 @@ func (r *Report) writeText(w io.Writer) error {
 	}
 
 	return tw.err
+}
+
+// writeFindingDetail prints the message/stack/replay/hint block for one finding.
+func writeFindingDetail(tw *textWriter, f Finding) {
+	tw.printf("%s: %s\n", f.Severity, f.Message)
+	if f.StackTrace != "" {
+		tw.printf("  stack trace:\n")
+		for _, line := range strings.Split(strings.TrimRight(f.StackTrace, "\n"), "\n") {
+			tw.printf("    %s\n", line)
+		}
+	}
+	if f.ReproSeed != 0 {
+		tw.printf("  replay: giri -strategy pct -seed %d ./...\n", f.ReproSeed)
+	}
+	if f.Hint != "" {
+		tw.printf("  hint: %s\n", f.Hint)
+	}
+}
+
+// groupFile returns the file portion of a finding's Location for grouping,
+// or "?" when the location is absent. It strips any trailing ":line" and
+// ":line:col" numeric segments, so both "f.go:12" and "f.go:12:3" group under
+// "f.go".
+func groupFile(f Finding) string {
+	if f.Location == "" {
+		return "?"
+	}
+	s := f.Location
+	for {
+		i := strings.LastIndex(s, ":")
+		if i < 0 {
+			break
+		}
+		if _, err := strconv.Atoi(s[i+1:]); err != nil {
+			break
+		}
+		s = s[:i]
+	}
+	return s
+}
+
+// groupFindings buckets findings by (category, file), returning the buckets and
+// the order in which groups were first encountered (deterministic output).
+func groupFindings(findings []Finding) (map[string][]Finding, []string) {
+	groups := make(map[string][]Finding)
+	var order []string
+	for _, f := range findings {
+		key := f.Category + "\x00" + groupFile(f)
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], f)
+	}
+	return groups, order
 }
 
 func (r *Report) writeJSON(w io.Writer) error {
@@ -493,10 +621,19 @@ type sarifMessage struct {
 }
 
 type sarifResult struct {
-	RuleID    string          `json:"ruleId"`
-	Level     string          `json:"level"`
-	Message   sarifMessage    `json:"message"`
-	Locations []sarifLocation `json:"locations,omitempty"`
+	RuleID       string             `json:"ruleId"`
+	Level        string             `json:"level"`
+	Message      sarifMessage       `json:"message"`
+	Locations    []sarifLocation    `json:"locations,omitempty"`
+	Suppressions []sarifSuppression `json:"suppressions,omitempty"`
+}
+
+// sarifSuppression marks a result as suppressed in the SARIF output (#230).
+// kind "inSource" indicates the suppression came from a source annotation
+// (Giri's //giri:ignore directive). GitHub Code Scanning renders these as
+// suppressed rather than resolved.
+type sarifSuppression struct {
+	Kind string `json:"kind"`
 }
 
 type sarifLocation struct {
@@ -547,6 +684,9 @@ func (r *Report) writeSARIF(w io.Writer) error {
 		if loc := parseSARIFLocation(f.Location); loc != nil {
 			res.Locations = []sarifLocation{*loc}
 		}
+		if f.Suppressed {
+			res.Suppressions = []sarifSuppression{{Kind: "inSource"}}
+		}
 		results = append(results, res)
 	}
 
@@ -557,7 +697,7 @@ func (r *Report) writeSARIF(w io.Writer) error {
 			Tool: sarifTool{
 				Driver: sarifDriver{
 					Name:           "giri",
-					Version:        "0.6.0",
+					Version:        Version,
 					InformationURI: "https://github.com/scttfrdmn/giri",
 					Rules:          rules,
 				},
@@ -742,6 +882,13 @@ h1{font-size:1.5rem;margin-bottom:.25rem}
 		case SeverityWarning:
 			badgeClass = "badge-warning"
 		}
+		// Suppressed findings (#230) are shown but visually distinct and
+		// annotated, so they read as informational rather than active failures.
+		category := f.Category
+		if f.Suppressed {
+			badgeClass = "badge-info"
+			category += " [suppressed: " + f.SuppressReason + "]"
+		}
 		tw.printf(`<div class="finding">
   <div class="finding-header">
     <span class="finding-num">#%d</span>
@@ -750,7 +897,7 @@ h1{font-size:1.5rem;margin-bottom:.25rem}
   </div>
   <div class="finding-body">
     <div class="finding-message">%s</div>
-`, i+1, badgeClass, htmlEscape(f.Severity.String()), htmlEscape(f.Category), htmlEscape(f.Message))
+`, i+1, badgeClass, htmlEscape(f.Severity.String()), htmlEscape(category), htmlEscape(f.Message))
 
 		if f.Location != "" {
 			tw.printf(`    <div class="finding-location">Location: <span>%s</span></div>`+"\n", htmlEscape(f.Location))
@@ -789,6 +936,11 @@ func htmlEscape(s string) string {
 // 0 = no errors, 1 = errors found, 2 = internal error.
 func (r *Report) ExitCode() int {
 	for _, f := range r.Findings {
+		// Suppressed findings (#230) never affect the exit code — a
+		// //giri:ignore'd violation must not fail a build.
+		if f.Suppressed {
+			continue
+		}
 		if f.Severity == SeverityError {
 			return 1
 		}

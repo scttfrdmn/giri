@@ -2351,3 +2351,38 @@ func TestTestMode(t *testing.T) {
 		}
 	}
 }
+
+// TestSuppressedViolationsRetained verifies that a category-matched
+// //giri:ignore keeps the finding out of Violations but retains it in
+// SuppressedViolations for the reporter (#230).
+func TestSuppressedViolationsRetained(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Skipf("could not get working directory: %v", err)
+	}
+	absPath := filepath.Join(wd, "testdata", "integration", "suppress_category_match")
+	prog, err := ssautil.LoadProgram(absPath)
+	if err != nil {
+		t.Skipf("could not load program: %v", err)
+	}
+	if prog.Main == nil {
+		t.Skip("no main package found")
+	}
+
+	cfg := interpreter.DefaultConfig()
+	cfg.TrackTruncation = true
+	result := interpreter.Run(prog, cfg)
+
+	if len(result.Violations) != 0 {
+		t.Errorf("Violations: want 0 (suppressed), got %d: %v", len(result.Violations), result.Violations)
+	}
+	if len(result.SuppressedViolations) != 1 {
+		t.Fatalf("SuppressedViolations: want 1, got %d", len(result.SuppressedViolations))
+	}
+	if got := report.CategoryFor(result.SuppressedViolations[0]); got != "integer-truncation" {
+		t.Errorf("suppressed category: want integer-truncation, got %q", got)
+	}
+	if result.SuppressedCount != 1 {
+		t.Errorf("SuppressedCount: want 1, got %d", result.SuppressedCount)
+	}
+}

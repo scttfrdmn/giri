@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Suppressed findings in SARIF/JSON output** (#230): violations matched by a
+  `//giri:ignore` directive are no longer silently dropped — they are retained
+  and emitted flagged as suppressed. SARIF results carry
+  `suppressions:[{"kind":"inSource"}]` (GitHub Code Scanning shows them as
+  suppressed, not resolved); JSON findings carry `"suppressed":true` +
+  `"suppress_reason"`, with a `summary.suppressed` count. Suppressed findings
+  never affect the exit code or the active severity/category counts.
+  New `RunResult.SuppressedViolations`; `Report.AddSuppressed`.
+- **Grouped text output** (#230): text findings are grouped by (category, file)
+  under a single header; suppressed findings render in a separate trailing
+  section.
+- **`--max-violations N` flag** (#230): caps active findings shown in text/HTML
+  output (0 = unlimited), printing `… and N more`. JSON/SARIF always emit all.
+
+### Changed
+- SARIF tool-driver version is now sourced from `report.Version` instead of a
+  stale hardcoded `"0.6.0"`.
+
 ## [0.94.0] - 2026-07-11
 
 ### Added
