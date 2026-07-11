@@ -110,6 +110,7 @@ var (
 	flagUnsafe = flag.Bool("unsafe", false, "Enable unsafe.Pointer detector only")
 	flagRace   = flag.Bool("race", false, "Enable data race detector only")
 	flagInit   = flag.Bool("init", false, "Enable uninitialized read detector")
+	flagTrunc  = flag.Bool("truncation", false, "Enable integer-overflow-on-conversion detector (opt-in; not included in -all)")
 
 	// Scheduling flags
 	flagStrategy = flag.String("strategy", "roundrobin", "Scheduling strategy: roundrobin, random, pct")
@@ -297,6 +298,10 @@ func buildConfig(pc *projectConfig) interpreter.Config {
 	}
 	if *flagInit {
 		config.TrackInit = true
+	}
+	// Integer truncation is opt-in and independent of -all (noisy by design).
+	if *flagTrunc {
+		config.TrackTruncation = true
 	}
 
 	// Scheduling

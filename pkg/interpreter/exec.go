@@ -1306,6 +1306,20 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		} else {
 			// Apply concrete type conversion for string↔bytes and numeric types (#74).
 			frame.Locals[inst.Name()] = convertValue(val, inst.X.Type(), inst.Type())
+			// Integer overflow on explicit conversion (#223): report when a
+			// narrowing/sign conversion silently discards bits.
+			if interp.config.TrackTruncation {
+				if orig, result, truncated := intTruncationInfo(val, inst.X.Type(), inst.Type()); truncated {
+					interp.recordViolation(gid, &shadow.IntegerTruncationError{
+						Site:     site,
+						GID:      gid,
+						SrcType:  inst.X.Type().String(),
+						DstType:  inst.Type().String(),
+						Original: orig,
+						Result:   result,
+					})
+				}
+			}
 		}
 
 	case *ssa.ChangeType:
@@ -2410,6 +2424,35 @@ func convertValue(v Value, srcType, dstType types.Type) Value {
 	}
 
 	return v // all other conversions pass through unchanged
+}
+
+// intTruncationInfo reports whether an explicit integer→integer conversion
+// discards significant bits (does not round-trip). It returns the original and
+// converted values (as int64) and truncated=true only when v carries a
+// concrete integer whose value changes under the conversion — Go's defined
+// wrap-around. Non-integer conversions, opaque/absent values, and value-
+// preserving conversions return truncated=false.
+func intTruncationInfo(v Value, srcType, dstType types.Type) (orig, result int64, truncated bool) {
+	srcBasic, ok := srcType.Underlying().(*types.Basic)
+	if !ok || srcBasic.Info()&types.IsInteger == 0 {
+		return 0, 0, false
+	}
+	dstBasic, ok := dstType.Underlying().(*types.Basic)
+	if !ok || dstBasic.Info()&types.IsInteger == 0 {
+		return 0, 0, false
+	}
+	// Only meaningful when the source value is a concrete integer. toInt64
+	// coerces absent/opaque values to 0, which would be indistinguishable from
+	// a real 0 — so require an integer Raw kind explicitly.
+	switch v.Raw.(type) {
+	case int64, int, int32, uint64:
+	default:
+		return 0, 0, false
+	}
+	orig = toInt64(v)
+	converted := convertValue(v, srcType, dstType)
+	result = toInt64(converted)
+	return orig, result, orig != result
 }
 
 // typeAssertSucceeds reports whether a type assertion from concreteType to

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Integer-overflow-on-conversion detector** (#223): explicit narrowing or
+  sign-changing integer conversions that silently discard significant bits
+  (e.g. `int8(300)` wrapping to `44`) are now reported as `integer-truncation`
+  (severity: warning). Opt-in via the `-truncation` CLI flag or
+  `Config.TrackTruncation`; off by default because Go's integer wrap-around is
+  well-defined and widely relied upon. New `IntegerTruncationError` in
+  `pkg/shadow`.
+- Integration tests `integer_truncation` (1 violation) and
+  `integer_truncation_valid` (0 violations — guards against false positives on
+  value-preserving conversions). 262 integration + 14 showcase = 276 total.
+
 ## [0.92.0] - 2026-03-07
 
 ### Added
