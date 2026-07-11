@@ -267,6 +267,15 @@ func classifyError(err error) Finding {
 			Hint:     "Close a channel only once. Use a sync.Once or a done channel pattern to avoid double-close.",
 		}
 
+	case *shadow.ResourceDoubleCloseError:
+		return Finding{
+			Severity: SeverityWarning,
+			Category: "double-close",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "Close each resource once. A stray Close often comes from a defer racing an explicit Close — close on the error path only, or guard with sync.Once. If intentional, this detector is opt-in and can be disabled.",
+		}
+
 	case *shadow.NilMapWriteError:
 		return Finding{
 			Severity: SeverityError,
