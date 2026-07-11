@@ -111,6 +111,7 @@ var (
 	flagRace   = flag.Bool("race", false, "Enable data race detector only")
 	flagInit   = flag.Bool("init", false, "Enable uninitialized read detector")
 	flagTrunc  = flag.Bool("truncation", false, "Enable integer-overflow-on-conversion detector (opt-in; not included in -all)")
+	flagDClose = flag.Bool("double-close", false, "Enable double-close detection for os.File/net.Conn (opt-in; not included in -all)")
 
 	// Scheduling flags
 	flagStrategy = flag.String("strategy", "roundrobin", "Scheduling strategy: roundrobin, random, pct")
@@ -302,6 +303,10 @@ func buildConfig(pc *projectConfig) interpreter.Config {
 	// Integer truncation is opt-in and independent of -all (noisy by design).
 	if *flagTrunc {
 		config.TrackTruncation = true
+	}
+	// Double-close is opt-in and independent of -all (defined behavior, not UB).
+	if *flagDClose {
+		config.TrackDoubleClose = true
 	}
 
 	// Scheduling

@@ -1301,6 +1301,28 @@ var integrationTests = []struct {
 			return cfg
 		}(),
 	},
+	{
+		name:           "double close file",
+		dir:            "double_close_file",
+		wantViolations: 1,
+		wantCategory:   "double-close",
+		config: func() interpreter.Config {
+			cfg := interpreter.DefaultConfig()
+			cfg.TrackDoubleClose = true // opt-in detector
+			return cfg
+		}(),
+	},
+	{
+		name:           "double close valid",
+		dir:            "double_close_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config: func() interpreter.Config {
+			cfg := interpreter.DefaultConfig()
+			cfg.TrackDoubleClose = true
+			return cfg
+		}(),
+	},
 	// v0.35.0 regression tests
 	{
 		name:           "nil channel close",

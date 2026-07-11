@@ -17,7 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pkg/shadow`.
 - Integration tests `integer_truncation` (1 violation) and
   `integer_truncation_valid` (0 violations — guards against false positives on
-  value-preserving conversions). 262 integration + 14 showcase = 276 total.
+  value-preserving conversions).
+- **Double-close detector for closeable resources** (#223): calling `Close()`
+  more than once on the same `os.File` / `net.Conn` handle is now reported as
+  `double-close` (severity: warning). Opt-in via the `-double-close` CLI flag or
+  `Config.TrackDoubleClose`; off by default because a second Close on these
+  types is defined behavior (returns `os.ErrClosed`), not a panic like a channel
+  double-close. Constructors mint a unique `closeableHandle` so distinct
+  resources are never conflated. New `ResourceDoubleCloseError` in `pkg/shadow`.
+- Integration tests `double_close_file` (1 violation) and `double_close_valid`
+  (0 violations — two distinct files each closed once).
+  264 integration + 14 showcase = 278 total.
 
 ## [0.92.0] - 2026-03-07
 

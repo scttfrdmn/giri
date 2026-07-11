@@ -151,6 +151,62 @@ func isStdlibOrKnownExternalPkg(pkgPath string) bool {
 // It is separated from execStdlibCall so the caller can apply a smart fallback
 // for any call not explicitly handled (#222).
 func (interp *Interpreter) dispatchStdlibCall(gid int64, site, pkgPath, name string, args []Value) (Value, bool) {
+	// Double-close detection (#223), opt-in. Two hooks, both no-ops unless
+	// Config.TrackDoubleClose is set:
+	//   1. Close() on a resource: record it and flag a repeat close.
+	//   2. A closeable constructor (os.Open, net.Dial, …): mint a unique handle
+	//      in place of the shared opaque sentinel so identity can be tracked.
+	if interp.config.TrackDoubleClose {
+		if name == "Close" && len(args) > 0 {
+			// Side effect only; fall through so the normal handler still
+			// produces the (error) return value.
+			interp.checkResourceClose(gid, args[0], site)
+		}
+		if kind := closeableConstructorKind(pkgPath, name); kind != "" {
+			if v, ok := interp.dispatchStdlibCallInner(gid, site, pkgPath, name, args); ok {
+				return interp.tagCloseableResult(v, kind), true
+			}
+		}
+	}
+	return interp.dispatchStdlibCallInner(gid, site, pkgPath, name, args)
+}
+
+// closeableConstructorKind returns a resource description if (pkgPath, name)
+// names a constructor that yields a closeable resource whose double-close we
+// track, or "" otherwise (#223). Kept intentionally narrow: only the common
+// (resource, error) two-return constructors are covered.
+func closeableConstructorKind(pkgPath, name string) string {
+	switch pkgPath {
+	case "os":
+		switch name {
+		case "Open", "Create", "OpenFile", "CreateTemp", "NewFile":
+			return "os.File"
+		}
+	case "net":
+		switch name {
+		case "Dial", "DialTimeout", "DialTCP", "DialUDP", "DialUnix", "DialIP", "Accept":
+			return "net.Conn"
+		}
+	}
+	return ""
+}
+
+// tagCloseableResult replaces the resource slot of a constructor's return value
+// with a freshly minted closeable handle so the resource carries a unique
+// identity (#223). Constructors return either a bare resource or a
+// (resource, error) two-tuple; in the tuple case the resource is slot 0.
+func (interp *Interpreter) tagCloseableResult(v Value, kind string) Value {
+	handle := interp.newCloseable(kind)
+	if tuple, ok := v.Raw.([]Value); ok && len(tuple) >= 1 {
+		out := make([]Value, len(tuple))
+		copy(out, tuple)
+		out[0] = handle
+		return Value{Raw: out}
+	}
+	return handle
+}
+
+func (interp *Interpreter) dispatchStdlibCallInner(gid int64, site, pkgPath, name string, args []Value) (Value, bool) {
 	switch pkgPath {
 	case "strings":
 		return interp.handleStringsCall(name, args)

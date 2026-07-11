@@ -301,6 +301,27 @@ func (e *DoubleCloseError) Error() string {
 	)
 }
 
+// ResourceDoubleCloseError is reported when a closeable resource other than a
+// channel — an os.File, net.Conn, etc. — has Close() called more than once.
+// Unlike a channel double-close (which panics), a second Close on these types
+// is defined in Go: it returns an error such as os.ErrClosed. It is not
+// undefined behavior, but it is a reliable bug smell (usually a stray Close or
+// a defer racing an explicit Close), so it is reported as a warning by the
+// opt-in double-close detector.
+type ResourceDoubleCloseError struct {
+	Kind      string // resource description, e.g. "os.File", "net.Conn"
+	Site      string // where the second Close occurred
+	FirstSite string // where the first (valid) Close occurred
+	GID       int64
+}
+
+func (e *ResourceDoubleCloseError) Error() string {
+	return fmt.Sprintf(
+		"double close of %s (goroutine %d) at %s; already closed at %s",
+		e.Kind, e.GID, e.Site, e.FirstSite,
+	)
+}
+
 // IntegerTruncationError is reported when an explicit integer conversion
 // silently discards significant bits — e.g. int8(300) yields 44, or a
 // negative value converted to an unsigned type wraps to a large positive.

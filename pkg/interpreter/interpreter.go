@@ -313,6 +313,27 @@ type chanEntry struct {
 	pendingCount    int   // number of buffered values currently held (#44)
 }
 
+// CloseableID uniquely identifies an interpreted closeable resource
+// (os.File, net.Conn, etc.) for double-close detection (#223).
+type CloseableID uint64
+
+// closeableHandle is the Raw payload of a Value returned by a closeable-resource
+// constructor when double-close tracking is enabled. It replaces the shared
+// stdlibOpaque sentinel so each resource carries a distinct identity, letting
+// the interpreter tell "closed the same file twice" apart from "closed two
+// different files". Method dispatch is by static package+name and does not
+// inspect this shape, so it is transparent to all other intercepts.
+type closeableHandle struct {
+	id   CloseableID
+	kind string // resource description for the report, e.g. "os.File"
+}
+
+// closeableState records the close lifecycle of one closeable resource.
+type closeableState struct {
+	closed    bool
+	firstSite string // where Close() was first called (for the report)
+}
+
 // mutexState tracks synchronization state for sync.Mutex and sync.WaitGroup (#33).
 type mutexState struct {
 	locked          bool
@@ -375,6 +396,14 @@ type Interpreter struct {
 	// Sync primitive state for sync.Mutex and sync.WaitGroup (#33).
 	// Key is the AllocID of the mutex/waitgroup's shadow memory allocation.
 	mutexes map[shadow.AllocID]*mutexState
+
+	// Closeable-resource state for double-close detection (#223).
+	// Each os.File/net.Conn/etc. constructor mints a closeableHandle carrying a
+	// unique CloseableID; closeables maps that ID to its close-state so a second
+	// Close() on the same handle can be flagged. Only populated when
+	// Config.TrackDoubleClose is set.
+	closeables    map[CloseableID]*closeableState
+	nextCloseable atomic.Uint64
 
 	// Total SSA instructions executed (checked against Config.MaxSteps)
 	steps uint64
@@ -511,6 +540,12 @@ type Config struct {
 	// relied upon (hashing, ring buffers), so this is opt-in to avoid noise.
 	TrackTruncation bool
 
+	// TrackDoubleClose enables double-close detection for closeable resources
+	// (os.File, net.Conn, etc.). Off by default: a second Close on these types
+	// is defined behavior (returns os.ErrClosed), not a panic like a channel
+	// double-close, so it is reported as a warning only when opted in.
+	TrackDoubleClose bool
+
 	// Verbose enables detailed execution tracing.
 	Verbose bool
 
@@ -566,6 +601,7 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 		channelSenders:   make(map[ChanID]bool),
 		channelReceivers: make(map[ChanID]bool),
 		mutexes:          make(map[shadow.AllocID]*mutexState),
+		closeables:       make(map[CloseableID]*closeableState),
 		onceState:        make(map[shadow.AllocID]bool),
 		valueStore:       make(map[shadow.AllocID]Value),
 		cancelFuncs:      make(map[cancelFuncID]cancelRecord),
@@ -630,6 +666,7 @@ func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Inter
 		channelSenders:   make(map[ChanID]bool),
 		channelReceivers: make(map[ChanID]bool),
 		mutexes:          make(map[shadow.AllocID]*mutexState),
+		closeables:       make(map[CloseableID]*closeableState),
 		onceState:        make(map[shadow.AllocID]bool),
 		valueStore:       make(map[shadow.AllocID]Value),
 		cancelFuncs:      make(map[cancelFuncID]cancelRecord),
@@ -1350,6 +1387,44 @@ func (interp *Interpreter) handleChannelClose(gid int64, chanID ChanID, site str
 		}
 		ch.closed = true
 	}
+}
+
+// newCloseable mints a fresh closeable-resource handle for double-close
+// detection (#223). It is called by closeable constructors (os.Open, net.Dial,
+// …) only when Config.TrackDoubleClose is enabled; otherwise the caller uses
+// the shared stdlibOpaque sentinel and no identity is tracked. The returned
+// Value carries the handle as its Raw payload so it survives being stored in a
+// variable and reloaded (valueStore preserves Raw at offset 0).
+func (interp *Interpreter) newCloseable(kind string) Value {
+	id := CloseableID(interp.nextCloseable.Add(1))
+	interp.closeables[id] = &closeableState{}
+	return Value{Raw: closeableHandle{id: id, kind: kind}}
+}
+
+// checkResourceClose records a Close() on a closeable resource and reports a
+// warning if the same handle was already closed (#223). It is a no-op unless
+// the receiver carries a closeableHandle (i.e. tracking was on when the
+// resource was constructed).
+func (interp *Interpreter) checkResourceClose(gid int64, receiver Value, site string) {
+	h, ok := receiver.Raw.(closeableHandle)
+	if !ok {
+		return
+	}
+	st, ok := interp.closeables[h.id]
+	if !ok {
+		return
+	}
+	if st.closed {
+		interp.recordViolation(gid, &shadow.ResourceDoubleCloseError{
+			Kind:      h.kind,
+			Site:      site,
+			FirstSite: st.firstSite,
+			GID:       gid,
+		})
+		return
+	}
+	st.closed = true
+	st.firstSite = site
 }
 
 // handleChannelSend interprets a channel send and checks for escapes.
