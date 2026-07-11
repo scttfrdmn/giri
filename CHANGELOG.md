@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.93.0] - 2026-07-11
+
 ### Added
 - **Integer-overflow-on-conversion detector** (#223): explicit narrowing or
   sign-changing integer conversions that silently discard significant bits
