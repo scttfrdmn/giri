@@ -283,3 +283,45 @@ func TestClassify_ContextCancelLeak(t *testing.T) {
 		t.Errorf("severity: want WARNING, got %v", f.Severity)
 	}
 }
+
+// TestCategoryOfMatchesReport guards the invariant that shadow.CategoryOf (used
+// by the interpreter for //giri:ignore category filtering, #229) produces the
+// same category slug as report.CategoryFor for every violation error type. If a
+// new error type is added, extend both classifiers and this table together.
+func TestCategoryOfMatchesReport(t *testing.T) {
+	errs := []error{
+		&shadow.UseAfterFreeError{AccessSite: "m.go:1"},
+		&shadow.DoubleFreeError{SecondFree: "m.go:1"},
+		&shadow.OutOfBoundsError{Site: "m.go:1"},
+		&shadow.UnsafePointerViolation{Rule: shadow.RuleConversion, Site: "m.go:1"},
+		&shadow.UninitializedReadError{Site: "m.go:1"},
+		&shadow.EscapedPointerError{EscapeSite: "m.go:1"},
+		&shadow.DataRaceError{Write2Site: "m.go:1"},
+		&shadow.NilPointerDerefError{Site: "m.go:1"},
+		&shadow.TypeAssertionError{Site: "m.go:1"},
+		&shadow.GoroutineLeakError{BlockSite: "m.go:1"},
+		&shadow.DeadlockError{},
+		&shadow.WaitGroupNegativeError{Site: "m.go:1"},
+		&shadow.DoubleCloseError{Site: "m.go:1"},
+		&shadow.ResourceDoubleCloseError{Site: "m.go:1"},
+		&shadow.NilMapWriteError{Site: "m.go:1"},
+		&shadow.DivisionByZeroError{Site: "m.go:1"},
+		&shadow.ContextCancelLeakError{Site: "m.go:1"},
+		&shadow.MutexUnlockError{Site: "m.go:1"},
+		&shadow.NegativeShiftError{Site: "m.go:1"},
+		&shadow.IntegerTruncationError{Site: "m.go:1"},
+		&shadow.NilChannelError{Site: "m.go:1"},
+		&shadow.InvalidMakeArgError{Site: "m.go:1"},
+		&shadow.InvalidUnsafeArgError{Site: "m.go:1"},
+	}
+	for _, err := range errs {
+		got := shadow.CategoryOf(err)
+		want := report.CategoryFor(err)
+		if got != want {
+			t.Errorf("%T: CategoryOf=%q, report.CategoryFor=%q", err, got, want)
+		}
+		if got == "" {
+			t.Errorf("%T: CategoryOf returned empty; not classified", err)
+		}
+	}
+}

@@ -477,3 +477,98 @@ func (e *InvalidUnsafeArgError) Error() string {
 		e.Op, e.Value, e.GID, e.Site,
 	)
 }
+
+// knownCategories is the set of fixed, single-token category slugs that a
+// //giri:ignore directive may name (#229). The dynamic "unsafe-pointer-<rule>"
+// categories are intentionally excluded: their String() form contains spaces,
+// so they are not addressable as a directive token and are covered by a bare
+// (suppress-all) //giri:ignore instead.
+var knownCategories = map[string]bool{
+	"use-after-free":         true,
+	"double-free":            true,
+	"out-of-bounds":          true,
+	"uninitialized-read":     true,
+	"arena-escape":           true,
+	"data-race":              true,
+	"nil-pointer-deref":      true,
+	"type-assertion-failure": true,
+	"goroutine-leak":         true,
+	"deadlock":               true,
+	"waitgroup":              true,
+	"closed-channel":         true,
+	"double-close":           true,
+	"nil-map-write":          true,
+	"division-by-zero":       true,
+	"context-cancel-leak":    true,
+	"mutex-unlock":           true,
+	"negative-shift":         true,
+	"integer-truncation":     true,
+	"nil-channel":            true,
+	"make-invalid":           true,
+	"unsafe-slice":           true,
+}
+
+// IsKnownCategory reports whether s is a recognized single-token violation
+// category slug usable in a //giri:ignore directive (#229).
+func IsKnownCategory(s string) bool {
+	return knownCategories[s]
+}
+
+// CategoryOf returns the hyphenated category slug for a violation error, or ""
+// if err is not a recognized shadow error type. The returned strings MUST match
+// the categories produced by report.classifyError; the two are kept in sync and
+// guarded by a test (TestCategoryOfMatchesReport). This lives in pkg/shadow so
+// the interpreter can classify a violation for //giri:ignore category filtering
+// (#229) without importing pkg/report (which would create an import cycle).
+func CategoryOf(err error) string {
+	switch e := err.(type) { //nolint:errorlint
+	case *UseAfterFreeError:
+		return "use-after-free"
+	case *DoubleFreeError:
+		return "double-free"
+	case *OutOfBoundsError:
+		return "out-of-bounds"
+	case *UnsafePointerViolation:
+		return "unsafe-pointer-" + e.Rule.String()
+	case *UninitializedReadError:
+		return "uninitialized-read"
+	case *EscapedPointerError:
+		return "arena-escape"
+	case *DataRaceError:
+		return "data-race"
+	case *NilPointerDerefError:
+		return "nil-pointer-deref"
+	case *TypeAssertionError:
+		return "type-assertion-failure"
+	case *GoroutineLeakError:
+		return "goroutine-leak"
+	case *DeadlockError:
+		return "deadlock"
+	case *WaitGroupNegativeError:
+		return "waitgroup"
+	case *DoubleCloseError:
+		return "closed-channel"
+	case *ResourceDoubleCloseError:
+		return "double-close"
+	case *NilMapWriteError:
+		return "nil-map-write"
+	case *DivisionByZeroError:
+		return "division-by-zero"
+	case *ContextCancelLeakError:
+		return "context-cancel-leak"
+	case *MutexUnlockError:
+		return "mutex-unlock"
+	case *NegativeShiftError:
+		return "negative-shift"
+	case *IntegerTruncationError:
+		return "integer-truncation"
+	case *NilChannelError:
+		return "nil-channel"
+	case *InvalidMakeArgError:
+		return "make-invalid"
+	case *InvalidUnsafeArgError:
+		return "unsafe-slice"
+	default:
+		return ""
+	}
+}

@@ -428,9 +428,14 @@ type Interpreter struct {
 	// deferred closures may have modified named-return allocs (#49).
 	valueStore map[shadow.AllocID]Value
 
-	// suppressions maps "file:line" → true for each //giri:ignore comment in
-	// the source. Violations whose currentSite matches an entry are dropped (#58).
-	suppressions map[string]bool
+	// suppressions maps "file:line" → the categories each //giri:ignore comment
+	// suppresses (#58, #229). Empty list = suppress-all on that line; non-empty =
+	// only those categories. Checked against currentSite in recordViolation.
+	suppressions map[string][]string
+
+	// suppressedCount counts violations dropped by a //giri:ignore directive.
+	// Reported via RunResult.SuppressedCount so suppressions stay visible (#229).
+	suppressedCount int
 
 	// currentSite is the posString of the SSA instruction currently executing.
 	// Updated at the start of each instruction in execBlock; read by
@@ -745,10 +750,16 @@ func (interp *Interpreter) captureStack(gid int64) []StackFrame {
 // If the current instruction's site matches a //giri:ignore suppression, the
 // violation is silently dropped (#58).
 func (interp *Interpreter) recordViolation(gid int64, err error) {
-	// Check suppression before allocating the wrapper.
+	// Check suppression before allocating the wrapper (#58, #229). A directive
+	// with no categories suppresses any violation on the line; a category-scoped
+	// directive suppresses only matching categories. Suppressed violations are
+	// counted (not recorded) so -v can report them.
 	if interp.currentSite != "" && len(interp.suppressions) > 0 {
-		if interp.suppressions[interp.currentSite] {
-			return
+		if cats, ok := interp.suppressions[interp.currentSite]; ok {
+			if len(cats) == 0 || containsStr(cats, shadow.CategoryOf(err)) {
+				interp.suppressedCount++
+				return
+			}
 		}
 	}
 	var spawnSite string
@@ -762,6 +773,16 @@ func (interp *Interpreter) recordViolation(gid int64, err error) {
 		Frames:    interp.captureStack(gid),
 	}
 	interp.violations = append(interp.violations, wrapped)
+}
+
+// containsStr reports whether s is present in xs.
+func containsStr(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Goroutine Management ---
