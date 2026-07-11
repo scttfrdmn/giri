@@ -2367,7 +2367,7 @@ func (interp *Interpreter) handleRegexpCall(gid int64, name string, args []Value
 		// (expr string) *Regexp
 		return Value{Raw: struct{}{}}, true
 
-	// v0.73.0: POSIX-flavour constructors.
+	// v0.73.0: POSIX-flavor constructors.
 	case "CompilePOSIX":
 		// (expr string) (*Regexp, error)
 		return Value{Raw: []Value{{Raw: struct{}{}}, {}}}, true
@@ -6865,7 +6865,7 @@ func (interp *Interpreter) handleSlicesCall(gid int64, name string, args []Value
 
 	case "ContainsFunc":
 		// slices.ContainsFunc(s []E, f func(E) bool) bool
-		if s := asSlice(0); s != nil && len(s) > 0 {
+		if s := asSlice(0); len(s) > 0 {
 			probeCallback(1, []Value{s[0]})
 		} else {
 			probeCallback(1, []Value{{}})
@@ -6878,7 +6878,7 @@ func (interp *Interpreter) handleSlicesCall(gid int64, name string, args []Value
 
 	case "IndexFunc":
 		// slices.IndexFunc(s []E, f func(E) bool) int
-		if s := asSlice(0); s != nil && len(s) > 0 {
+		if s := asSlice(0); len(s) > 0 {
 			probeCallback(1, []Value{s[0]})
 		} else {
 			probeCallback(1, []Value{{}})
@@ -9844,7 +9844,7 @@ func (interp *Interpreter) handleGoBuildConstraintCall(name string, args []Value
 		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true
 	case "AndExpr", "OrExpr", "NotExpr", "TagExpr", "IsSatisfied":
 		return opaque, true
-	// Expr.String — shares "String" case above (no separate entry needed).
+		// Expr.String — shares "String" case above (no separate entry needed).
 	}
 	return Value{}, true
 }
@@ -9911,7 +9911,7 @@ func (interp *Interpreter) handleDebugGosymCall(name string, args []Value) (Valu
 		return opaque, true
 	case "Syms":
 		return Value{Raw: []Value{}}, true
-	// *LineTable methods share PCToLine/LineToPC cases above.
+		// *LineTable methods share PCToLine/LineToPC cases above.
 	}
 	return Value{}, true
 }
@@ -10029,7 +10029,7 @@ func (interp *Interpreter) handleASCII85Call(name string, args []Value) (Value, 
 	case "MaxEncodedLen":
 		if len(args) > 0 {
 			n := toInt64(args[0])
-			return Value{Raw: int64(n/4*5 + 5)}, true
+			return Value{Raw: n/4*5 + 5}, true
 		}
 		return Value{Raw: int64(0)}, true
 	case "NewEncoder":
@@ -10470,7 +10470,7 @@ func (interp *Interpreter) handleX509PKIXCall(name string, args []Value) (Value,
 		return Value{}, true
 	case "AppendPKCS7":
 		return Value{Raw: []Value{}}, true
-	// RDNSequence.String shares the "String" case above.
+		// RDNSequence.String shares the "String" case above.
 	}
 	return Value{}, true
 }
