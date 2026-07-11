@@ -332,7 +332,7 @@ func (e *DivisionByZeroError) Error() string {
 // ContextCancelLeakError is reported when a context cancel function (from
 // context.WithCancel, WithTimeout, or WithDeadline) was created but never
 // called. Failing to call the cancel function leaks the associated resources
-// until the parent context is cancelled or the program exits.
+// until the parent context is canceled or the program exits.
 type ContextCancelLeakError struct {
 	Site string // where the cancel function was created (context.WithCancel call site)
 	GID  int64  // goroutine that created the context
@@ -365,7 +365,7 @@ func (e *MutexUnlockError) Error() string {
 // negative shift count. In Go 1.13+, this panics at runtime:
 // "runtime error: negative shift count".
 type NegativeShiftError struct {
-	Count int64  // the negative shift count
+	Count int64 // the negative shift count
 	Site  string
 	GID   int64
 }

@@ -3,6 +3,14 @@
 *.test
 *.exe
 
+# Stray `go build`/`go run` artifacts (named after their source dir)
+/*_complete
+/map_race
+/div_zero
+/context_cancel_leak
+/test_check
+pkg/interpreter/testdata/integration/*/*_complete
+
 # Coverage
 coverage.out
 coverage.html

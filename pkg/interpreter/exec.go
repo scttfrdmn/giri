@@ -15,6 +15,7 @@
 package interpreter
 
 import (
+	"errors"
 	"fmt"
 	"go/constant"
 	"go/token"
@@ -33,8 +34,8 @@ import (
 // TestFunc identifies a single TestXxx function found in a _test.go file.
 // Populated by ssautil.LoadTestPrograms; consumed by RunTests.
 type TestFunc struct {
-	Name string         // e.g. "TestMyRace"
-	Fn   *ssa.Function  // the SSA function object
+	Name string        // e.g. "TestMyRace"
+	Fn   *ssa.Function // the SSA function object
 }
 
 // Program represents a loaded Go program ready for interpretation.
@@ -227,7 +228,8 @@ func RunN(prog *Program, config Config, n int, seed int64) *RunResult {
 				seen[key] = true
 				// Tag the violation with the seed that found it so callers
 				// can reproduce the exact run with -strategy pct -seed N.
-				if vws, ok := v.(*ViolationWithStack); ok {
+				var vws *ViolationWithStack
+				if errors.As(v, &vws) {
 					vws.ReproSeed = c.RandomSeed
 				}
 				all = append(all, v)
