@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.94.0] - 2026-07-11
+
 ### Added
 - **Category-scoped `//giri:ignore`** (#229): a `//giri:ignore` directive may now
   name a violation category (e.g. `//giri:ignore integer-truncation`) to suppress
