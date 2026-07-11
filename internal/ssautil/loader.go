@@ -14,6 +14,7 @@ import (
 	"golang.org/x/tools/go/ssa/ssautil"
 
 	"github.com/scttfrdmn/giri/pkg/interpreter"
+	"github.com/scttfrdmn/giri/pkg/shadow"
 )
 
 // buildSSAFrom builds an SSA program from a set of already-loaded packages.
@@ -181,37 +182,55 @@ func LoadTest(pattern string) (*interpreter.Program, []string, error) {
 	}, testNames, nil
 }
 
-// ParseSuppressions scans source files for //giri:ignore comments and returns
-// a set of "file:line" positions that should suppress violations (#58).
+// ParseSuppressions scans source files for //giri:ignore comments and returns a
+// map from "file:line" position to the list of violation categories that
+// directive suppresses (#58, #229).
+//
+// The category list semantics (consumed by Interpreter.recordViolation):
+//   - empty slice  → suppress ANY violation on that line (bare //giri:ignore,
+//     or a free-text directive like "//giri:ignore rule 1" whose tokens are not
+//     recognized category slugs — preserves backward compatibility)
+//   - non-empty    → suppress only violations whose category is in the list
+//     (e.g. "//giri:ignore integer-truncation")
 //
 // Suppression applies to:
 //   - the line of the //giri:ignore comment itself (for inline use)
 //   - the immediately following line (for preceding-line use)
 //
-// Example — inline:
+// Example — inline, category-scoped:
 //
-//	_ = *(*uint32)(unsafe.Pointer(&b[1])) //giri:ignore rule 1
+//	_ = int8(big) //giri:ignore integer-truncation
 //
-// Example — preceding line:
+// Example — preceding line, suppress-all:
 //
-//	//giri:ignore rule 1
+//	//giri:ignore
 //	_ = *(*uint32)(unsafe.Pointer(&b[1]))
-func ParseSuppressions(fset *token.FileSet, pkgs []*packages.Package) map[string]bool {
-	seen := make(map[string]bool)
+func ParseSuppressions(fset *token.FileSet, pkgs []*packages.Package) map[string][]string {
+	seen := make(map[string][]string)
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Syntax {
 			for _, cg := range file.Comments {
 				for _, c := range cg.List {
 					text := strings.TrimSpace(strings.TrimPrefix(c.Text, "//"))
-					if strings.HasPrefix(text, "giri:ignore") {
-						pos := fset.Position(c.Pos())
-						filename := pos.Filename
-						line := pos.Line
-						// Suppress the comment line (inline) and the next line
-						// (preceding-line directive).
-						seen[fmt.Sprintf("%s:%d", filename, line)] = true
-						seen[fmt.Sprintf("%s:%d", filename, line+1)] = true
+					if !strings.HasPrefix(text, "giri:ignore") {
+						continue
 					}
+					// Collect any recognized category slugs following the
+					// directive. Unrecognized tokens (e.g. "rule 1", prose) are
+					// ignored, leaving the list empty → suppress-all.
+					var cats []string
+					for _, tok := range strings.Fields(strings.TrimPrefix(text, "giri:ignore")) {
+						if shadow.IsKnownCategory(tok) {
+							cats = append(cats, tok)
+						}
+					}
+					pos := fset.Position(c.Pos())
+					filename := pos.Filename
+					line := pos.Line
+					// Suppress the comment line (inline) and the next line
+					// (preceding-line directive).
+					seen[fmt.Sprintf("%s:%d", filename, line)] = cats
+					seen[fmt.Sprintf("%s:%d", filename, line+1)] = cats
 				}
 			}
 		}

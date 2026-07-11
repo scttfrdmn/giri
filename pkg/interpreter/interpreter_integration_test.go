@@ -1917,6 +1917,28 @@ var integrationTests = []struct {
 		config:         interpreter.DefaultConfig(),
 	},
 	{
+		name:           "suppress category match",
+		dir:            "suppress_category_match",
+		wantViolations: 0,
+		wantCategory:   "",
+		config: func() interpreter.Config {
+			cfg := interpreter.DefaultConfig()
+			cfg.TrackTruncation = true
+			return cfg
+		}(),
+	},
+	{
+		name:           "suppress category mismatch",
+		dir:            "suppress_category_mismatch",
+		wantViolations: 1,
+		wantCategory:   "integer-truncation",
+		config: func() interpreter.Config {
+			cfg := interpreter.DefaultConfig()
+			cfg.TrackTruncation = true
+			return cfg
+		}(),
+	},
+	{
 		name:           "multi pkg",
 		dir:            "multi_pkg",
 		wantViolations: 1,

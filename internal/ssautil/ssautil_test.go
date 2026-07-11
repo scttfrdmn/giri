@@ -56,11 +56,74 @@ func normal() {}
 	key := fmt.Sprintf("%s:%d", filename, commentLine)
 	keyNext := fmt.Sprintf("%s:%d", filename, commentLine+1)
 
-	if !result[key] {
+	cats, ok := result[key]
+	if !ok {
 		t.Errorf("expected suppression for comment line %d (%q); map=%v", commentLine, key, result)
 	}
-	if !result[keyNext] {
+	if len(cats) != 0 {
+		t.Errorf("bare //giri:ignore should suppress all (empty category list), got %v", cats)
+	}
+	if _, ok := result[keyNext]; !ok {
 		t.Errorf("expected suppression for line after directive %d (%q); map=%v", commentLine+1, keyNext, result)
+	}
+}
+
+// TestParseSuppressions_Category checks that a recognized category slug after
+// //giri:ignore is captured, scoping suppression to that category (#229).
+func TestParseSuppressions_Category(t *testing.T) {
+	const src = `package main
+
+//giri:ignore integer-truncation
+func ignored() {}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "test.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	result := ssautil.ParseSuppressions(fset, []*packages.Package{
+		{Syntax: []*ast.File{f}},
+	})
+
+	pos := fset.Position(f.Comments[0].List[0].Pos())
+	key := fmt.Sprintf("%s:%d", pos.Filename, pos.Line)
+	cats, ok := result[key]
+	if !ok {
+		t.Fatalf("expected suppression entry for %q; map=%v", key, result)
+	}
+	if len(cats) != 1 || cats[0] != "integer-truncation" {
+		t.Errorf("expected [integer-truncation], got %v", cats)
+	}
+}
+
+// TestParseSuppressions_UnknownToken verifies that free-text tokens that are
+// not recognized categories (e.g. the legacy "rule 1" form) leave the category
+// list empty → suppress-all (backward compatibility with #58).
+func TestParseSuppressions_UnknownToken(t *testing.T) {
+	const src = `package main
+
+//giri:ignore rule 1
+func ignored() {}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "test.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	result := ssautil.ParseSuppressions(fset, []*packages.Package{
+		{Syntax: []*ast.File{f}},
+	})
+
+	pos := fset.Position(f.Comments[0].List[0].Pos())
+	key := fmt.Sprintf("%s:%d", pos.Filename, pos.Line)
+	cats, ok := result[key]
+	if !ok {
+		t.Fatalf("expected suppression entry for %q; map=%v", key, result)
+	}
+	if len(cats) != 0 {
+		t.Errorf("legacy free-text directive should suppress all (empty list), got %v", cats)
 	}
 }
 

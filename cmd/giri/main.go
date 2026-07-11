@@ -253,6 +253,10 @@ func main() {
 				fmt.Fprintf(os.Stderr, "    %s\n", c)
 			}
 		}
+		if *flagVerbose && result.SuppressedCount > 0 {
+			fmt.Fprintf(os.Stderr, "  %d violation(s) suppressed by //giri:ignore\n",
+				result.SuppressedCount)
+		}
 	}
 
 	// Build report

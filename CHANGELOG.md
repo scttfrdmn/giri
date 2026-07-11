@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Category-scoped `//giri:ignore`** (#229): a `//giri:ignore` directive may now
+  name a violation category (e.g. `//giri:ignore integer-truncation`) to suppress
+  only that category on the annotated line. A bare `//giri:ignore` — or a
+  free-text form like `//giri:ignore rule 1` — still suppresses all violations on
+  the line (backward compatible with #58). New `shadow.CategoryOf` /
+  `shadow.IsKnownCategory`; `Program.Suppressions` is now
+  `map[string][]string` (site → categories).
+- Suppressed violations are now counted rather than silently dropped:
+  `RunResult.SuppressedCount` reports the total, and `giri -v` prints
+  `N violation(s) suppressed by //giri:ignore`.
+- Integration tests `suppress_category_match` (0 violations) and
+  `suppress_category_mismatch` (1 — wrong category does not suppress); unit tests
+  for category-token parsing and a `CategoryOf`↔`report.CategoryFor` agreement
+  guard. 266 integration + 14 showcase = 280 total.
+
 ## [0.93.0] - 2026-07-11
 
 ### Added

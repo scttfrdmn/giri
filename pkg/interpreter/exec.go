@@ -44,10 +44,12 @@ type Program struct {
 	Main *ssa.Package
 	Fset *token.FileSet
 
-	// Suppressions maps "file:line" → true for each //giri:ignore comment
-	// found in the source files. Violations whose current-instruction site
-	// matches an entry here are silently dropped by recordViolation (#58).
-	Suppressions map[string]bool
+	// Suppressions maps "file:line" → the list of violation categories each
+	// //giri:ignore comment suppresses (#58, #229). An empty list means
+	// suppress-all on that line; a non-empty list scopes suppression to those
+	// categories. Matched against the current instruction site by
+	// recordViolation.
+	Suppressions map[string][]string
 
 	// TestFuncs lists the TestXxx functions to run when this Program was
 	// loaded in test mode (via ssautil.LoadTestPrograms). Nil for non-test
@@ -65,6 +67,10 @@ type RunResult struct {
 	Violations []error
 	Stats      ExecutionStats
 	MemStats   shadow.MemoryStats
+	// SuppressedCount is the number of violations that were detected but
+	// dropped because their site+category matched a //giri:ignore directive
+	// (#229). Surfaced via -v so suppressions remain visible rather than silent.
+	SuppressedCount int
 	// UnmodeledCalls is a sorted, deduplicated list of "pkg/path.FuncName"
 	// strings for external functions that had no stdlib intercept and no
 	// interpretable SSA body. Each such call returned an opaque zero value.
@@ -194,9 +200,10 @@ func Run(prog *Program, config Config) *RunResult {
 		sort.Strings(unmodeledList)
 
 		return &RunResult{
-			Violations:     finalErrs,
-			MemStats:       interp.Memory.Stats(),
-			UnmodeledCalls: unmodeledList,
+			Violations:      finalErrs,
+			MemStats:        interp.Memory.Stats(),
+			UnmodeledCalls:  unmodeledList,
+			SuppressedCount: interp.suppressedCount,
 		}
 	})
 }
@@ -217,6 +224,7 @@ func RunN(prog *Program, config Config, n int, seed int64) *RunResult {
 	seen := make(map[string]bool)
 	seenUnmodeled := make(map[string]struct{})
 	var all []error
+	maxSuppressed := 0
 	for i := 0; i < n; i++ {
 		c := config
 		c.ScheduleStrategy = SchedulePCT
@@ -238,13 +246,18 @@ func RunN(prog *Program, config Config, n int, seed int64) *RunResult {
 		for _, u := range r.UnmodeledCalls {
 			seenUnmodeled[u] = struct{}{}
 		}
+		// Each run re-detects the same suppressions; take the max rather than
+		// summing to avoid N× inflation of a single run's suppressed count.
+		if r.SuppressedCount > maxSuppressed {
+			maxSuppressed = r.SuppressedCount
+		}
 	}
 	unmodeledList := make([]string, 0, len(seenUnmodeled))
 	for k := range seenUnmodeled {
 		unmodeledList = append(unmodeledList, k)
 	}
 	sort.Strings(unmodeledList)
-	return &RunResult{Violations: all, UnmodeledCalls: unmodeledList}
+	return &RunResult{Violations: all, UnmodeledCalls: unmodeledList, SuppressedCount: maxSuppressed}
 }
 
 // TestRunResult is the result of interpreting a single TestXxx function.
@@ -349,7 +362,7 @@ func runTestFn(prog *Program, tf TestFunc, config Config) *TestRunResult {
 		}
 
 		finalErrs := interp.Finish()
-		return &RunResult{Violations: finalErrs, MemStats: interp.Memory.Stats()}
+		return &RunResult{Violations: finalErrs, MemStats: interp.Memory.Stats(), SuppressedCount: interp.suppressedCount}
 	})
 	return &TestRunResult{
 		Name:       tf.Name,
