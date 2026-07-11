@@ -1279,6 +1279,28 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	{
+		name:           "integer truncation",
+		dir:            "integer_truncation",
+		wantViolations: 1,
+		wantCategory:   "integer-truncation",
+		config: func() interpreter.Config {
+			cfg := interpreter.DefaultConfig()
+			cfg.TrackTruncation = true // opt-in detector
+			return cfg
+		}(),
+	},
+	{
+		name:           "integer truncation valid",
+		dir:            "integer_truncation_valid",
+		wantViolations: 0,
+		wantCategory:   "",
+		config: func() interpreter.Config {
+			cfg := interpreter.DefaultConfig()
+			cfg.TrackTruncation = true
+			return cfg
+		}(),
+	},
 	// v0.35.0 regression tests
 	{
 		name:           "nil channel close",

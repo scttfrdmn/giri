@@ -312,6 +312,15 @@ func classifyError(err error) Finding {
 			Hint:     "Shift count must be non-negative. Guard with: if n >= 0 { x << n }. Consider using unsigned types for shift counts.",
 		}
 
+	case *shadow.IntegerTruncationError:
+		return Finding{
+			Severity: SeverityWarning,
+			Category: "integer-truncation",
+			Message:  e.Error(),
+			Location: e.Site,
+			Hint:     "The converted value does not fit the destination type and wraps around. Validate the range before converting, or use a wider type. If the wrap-around is intentional, this detector is opt-in and can be disabled.",
+		}
+
 	case *shadow.NilChannelError:
 		return Finding{
 			Severity: SeverityError,

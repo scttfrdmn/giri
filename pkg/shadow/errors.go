@@ -301,6 +301,28 @@ func (e *DoubleCloseError) Error() string {
 	)
 }
 
+// IntegerTruncationError is reported when an explicit integer conversion
+// silently discards significant bits — e.g. int8(300) yields 44, or a
+// negative value converted to an unsigned type wraps to a large positive.
+// Go defines this as wrap-around, so it is not a panic; it is a frequent
+// source of logic bugs, hence reported only when the truncation detector is
+// enabled.
+type IntegerTruncationError struct {
+	Site     string
+	GID      int64
+	SrcType  string // source type name, e.g. "int"
+	DstType  string // destination type name, e.g. "int8"
+	Original int64  // value before conversion (as int64)
+	Result   int64  // value after conversion (as int64)
+}
+
+func (e *IntegerTruncationError) Error() string {
+	return fmt.Sprintf(
+		"integer conversion %s(%d) truncates: %s value %d does not fit %s, wraps to %d (goroutine %d) at %s",
+		e.DstType, e.Original, e.SrcType, e.Original, e.DstType, e.Result, e.GID, e.Site,
+	)
+}
+
 // NilMapWriteError is reported when a write is attempted on a nil map.
 // In Go this panics at runtime: "assignment to entry in nil map".
 type NilMapWriteError struct {

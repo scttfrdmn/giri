@@ -506,6 +506,11 @@ type Config struct {
 	// TrackInit enables uninitialized memory read detection.
 	TrackInit bool
 
+	// TrackTruncation enables integer-overflow-on-conversion detection.
+	// Off by default: Go's integer wrap-around is well-defined and widely
+	// relied upon (hashing, ring buffers), so this is opt-in to avoid noise.
+	TrackTruncation bool
+
 	// Verbose enables detailed execution tracing.
 	Verbose bool
 
