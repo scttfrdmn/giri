@@ -437,6 +437,12 @@ type Interpreter struct {
 	// Reported via RunResult.SuppressedCount so suppressions stay visible (#229).
 	suppressedCount int
 
+	// suppressedViolations retains the actual violations suppressed by a
+	// //giri:ignore directive (wrapped in *ViolationWithStack), so the reporter
+	// can emit them flagged-as-suppressed (SARIF suppressions objects, JSON
+	// suppressed:true) rather than silently dropping them (#230).
+	suppressedViolations []error
+
 	// currentSite is the posString of the SSA instruction currently executing.
 	// Updated at the start of each instruction in execBlock; read by
 	// recordViolation to check against suppressions.
@@ -750,18 +756,6 @@ func (interp *Interpreter) captureStack(gid int64) []StackFrame {
 // If the current instruction's site matches a //giri:ignore suppression, the
 // violation is silently dropped (#58).
 func (interp *Interpreter) recordViolation(gid int64, err error) {
-	// Check suppression before allocating the wrapper (#58, #229). A directive
-	// with no categories suppresses any violation on the line; a category-scoped
-	// directive suppresses only matching categories. Suppressed violations are
-	// counted (not recorded) so -v can report them.
-	if interp.currentSite != "" && len(interp.suppressions) > 0 {
-		if cats, ok := interp.suppressions[interp.currentSite]; ok {
-			if len(cats) == 0 || containsStr(cats, shadow.CategoryOf(err)) {
-				interp.suppressedCount++
-				return
-			}
-		}
-	}
 	var spawnSite string
 	if g := interp.goroutines[gid]; g != nil {
 		spawnSite = g.SpawnSite
@@ -771,6 +765,22 @@ func (interp *Interpreter) recordViolation(gid int64, err error) {
 		GID:       gid,
 		SpawnSite: spawnSite,
 		Frames:    interp.captureStack(gid),
+	}
+
+	// Suppression check (#58, #229, #230). A directive with no categories
+	// suppresses any violation on the line; a category-scoped directive
+	// suppresses only matching categories. Suppressed violations are counted and
+	// retained separately (not added to interp.violations) so the reporter can
+	// still surface them as suppressed (SARIF suppressions / JSON suppressed:true)
+	// without affecting the active violation set or the exit code.
+	if interp.currentSite != "" && len(interp.suppressions) > 0 {
+		if cats, ok := interp.suppressions[interp.currentSite]; ok {
+			if len(cats) == 0 || containsStr(cats, shadow.CategoryOf(err)) {
+				interp.suppressedCount++
+				interp.suppressedViolations = append(interp.suppressedViolations, wrapped)
+				return
+			}
+		}
 	}
 	interp.violations = append(interp.violations, wrapped)
 }

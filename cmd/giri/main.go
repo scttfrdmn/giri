@@ -119,8 +119,9 @@ var (
 	flagDepth    = flag.Int("depth", 3, "Bug depth for PCT strategy")
 
 	// Output flags
-	flagFormat  = flag.String("format", "text", "Output format: text, json, sarif, html")
-	flagVerbose = flag.Bool("v", false, "Verbose output (show all SSA instructions)")
+	flagFormat        = flag.String("format", "text", "Output format: text, json, sarif, html")
+	flagVerbose       = flag.Bool("v", false, "Verbose output (show all SSA instructions)")
+	flagMaxViolations = flag.Int("max-violations", 0, "Cap active findings shown in text/html output (0 = unlimited); JSON/SARIF always emit all")
 
 	// Execution flags
 	flagMaxSteps      = flag.Uint64("max-steps", 10_000_000, "Maximum SSA instructions to execute")
@@ -192,6 +193,7 @@ func main() {
 			}
 		}
 		rpt := report.Build(allViolations, nil)
+		rpt.MaxViolations = *flagMaxViolations
 		format := report.FormatText
 		switch *flagFormat {
 		case "json":
@@ -228,6 +230,7 @@ func main() {
 
 	// Run interpretation across all programs, collecting violations.
 	var allViolations []error
+	var allSuppressed []error
 	var lastMemStats shadow.MemoryStats
 	for _, prog := range progs {
 		goVer := ""
@@ -245,6 +248,7 @@ func main() {
 			result = interpreter.Run(prog, config)
 		}
 		allViolations = append(allViolations, result.Violations...)
+		allSuppressed = append(allSuppressed, result.SuppressedViolations...)
 		lastMemStats = result.MemStats
 		if *flagVerbose && len(result.UnmodeledCalls) > 0 {
 			fmt.Fprintf(os.Stderr, "  Unmodeled external calls (%d, returned opaque zero value):\n",
@@ -261,6 +265,8 @@ func main() {
 
 	// Build report
 	rpt := report.Build(allViolations, &lastMemStats)
+	rpt.AddSuppressed(allSuppressed)
+	rpt.MaxViolations = *flagMaxViolations
 
 	// Output
 	format := report.FormatText

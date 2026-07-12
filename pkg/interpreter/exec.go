@@ -71,6 +71,11 @@ type RunResult struct {
 	// dropped because their site+category matched a //giri:ignore directive
 	// (#229). Surfaced via -v so suppressions remain visible rather than silent.
 	SuppressedCount int
+	// SuppressedViolations holds the actual suppressed violations (#230), so the
+	// reporter can emit them flagged-as-suppressed (SARIF suppressions / JSON
+	// suppressed:true). Kept separate from Violations: they do not affect the
+	// exit code or the active-violation count.
+	SuppressedViolations []error
 	// UnmodeledCalls is a sorted, deduplicated list of "pkg/path.FuncName"
 	// strings for external functions that had no stdlib intercept and no
 	// interpretable SSA body. Each such call returned an opaque zero value.
@@ -200,10 +205,11 @@ func Run(prog *Program, config Config) *RunResult {
 		sort.Strings(unmodeledList)
 
 		return &RunResult{
-			Violations:      finalErrs,
-			MemStats:        interp.Memory.Stats(),
-			UnmodeledCalls:  unmodeledList,
-			SuppressedCount: interp.suppressedCount,
+			Violations:           finalErrs,
+			MemStats:             interp.Memory.Stats(),
+			UnmodeledCalls:       unmodeledList,
+			SuppressedCount:      interp.suppressedCount,
+			SuppressedViolations: interp.suppressedViolations,
 		}
 	})
 }
@@ -223,7 +229,9 @@ func RunN(prog *Program, config Config, n int, seed int64) *RunResult {
 	rng := rand.New(rand.NewSource(seed))
 	seen := make(map[string]bool)
 	seenUnmodeled := make(map[string]struct{})
+	seenSuppressed := make(map[string]bool)
 	var all []error
+	var allSuppressed []error
 	maxSuppressed := 0
 	for i := 0; i < n; i++ {
 		c := config
@@ -251,13 +259,22 @@ func RunN(prog *Program, config Config, n int, seed int64) *RunResult {
 		if r.SuppressedCount > maxSuppressed {
 			maxSuppressed = r.SuppressedCount
 		}
+		// Union suppressed violations across runs, deduped by message (mirrors
+		// the Violations dedup) so the reporter sees the full suppressed set.
+		for _, v := range r.SuppressedViolations {
+			key := v.Error()
+			if !seenSuppressed[key] {
+				seenSuppressed[key] = true
+				allSuppressed = append(allSuppressed, v)
+			}
+		}
 	}
 	unmodeledList := make([]string, 0, len(seenUnmodeled))
 	for k := range seenUnmodeled {
 		unmodeledList = append(unmodeledList, k)
 	}
 	sort.Strings(unmodeledList)
-	return &RunResult{Violations: all, UnmodeledCalls: unmodeledList, SuppressedCount: maxSuppressed}
+	return &RunResult{Violations: all, UnmodeledCalls: unmodeledList, SuppressedCount: maxSuppressed, SuppressedViolations: allSuppressed}
 }
 
 // TestRunResult is the result of interpreting a single TestXxx function.
@@ -362,7 +379,7 @@ func runTestFn(prog *Program, tf TestFunc, config Config) *TestRunResult {
 		}
 
 		finalErrs := interp.Finish()
-		return &RunResult{Violations: finalErrs, MemStats: interp.Memory.Stats(), SuppressedCount: interp.suppressedCount}
+		return &RunResult{Violations: finalErrs, MemStats: interp.Memory.Stats(), SuppressedCount: interp.suppressedCount, SuppressedViolations: interp.suppressedViolations}
 	})
 	return &TestRunResult{
 		Name:       tf.Name,
