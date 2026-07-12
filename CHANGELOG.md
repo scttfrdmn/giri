@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.95.0] - 2026-07-11
+
 ### Added
 - **Suppressed findings in SARIF/JSON output** (#230): violations matched by a
   `//giri:ignore` directive are no longer silently dropped — they are retained

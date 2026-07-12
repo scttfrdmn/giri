@@ -173,7 +173,7 @@ jobs:
       security-events: write   # required for SARIF upload
     steps:
       - uses: actions/checkout@v4
-      - uses: scttfrdmn/giri/.github/actions/giri@v0.94.0
+      - uses: scttfrdmn/giri/.github/actions/giri@v0.95.0
         with:
           packages: './...'
           upload-sarif: 'true'
