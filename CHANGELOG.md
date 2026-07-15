@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.96.0] - 2026-07-15
+
 ### Added
 - **Incremental / cached analysis** (#231): `giri ./...` now caches analysis
   results per program (per main package) and skips re-interpreting when nothing
