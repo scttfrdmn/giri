@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.97.0] - 2026-07-15
+
 ### Added
 - **LSP server / editor diagnostics** (#232): new `giri lsp` subcommand runs a
   Language Server over stdio that publishes Giri's findings as inline editor
