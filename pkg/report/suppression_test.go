@@ -155,6 +155,38 @@ func TestText_Grouping(t *testing.T) {
 	}
 }
 
+// TestAddFindings_SummaryAccounting verifies replayed (cached) findings update
+// the summary exactly like freshly-built ones and that a cached+replayed report
+// equals a freshly built one (#231).
+func TestAddFindings_SummaryAccounting(t *testing.T) {
+	// Fresh build from errors.
+	fresh := report.Build([]error{
+		&shadow.OutOfBoundsError{AllocID: 1, Offset: 10, AllocSize: 4, Site: "a.go:5"},
+	}, nil)
+	fresh.AddSuppressed([]error{&shadow.NilChannelError{Site: "a.go:9"}})
+
+	// Replay the same findings via AddFindings (simulating a cache hit).
+	active := report.FindingsFrom([]error{
+		&shadow.OutOfBoundsError{AllocID: 1, Offset: 10, AllocSize: 4, Site: "a.go:5"},
+	})
+	suppressed := report.FindingsFrom([]error{&shadow.NilChannelError{Site: "a.go:9"}})
+	replayed := report.Build(nil, nil)
+	replayed.AddFindings(active, suppressed)
+
+	if replayed.Summary.TotalFindings != fresh.Summary.TotalFindings {
+		t.Errorf("TotalFindings: fresh=%d replayed=%d", fresh.Summary.TotalFindings, replayed.Summary.TotalFindings)
+	}
+	if replayed.Summary.Suppressed != fresh.Summary.Suppressed {
+		t.Errorf("Suppressed: fresh=%d replayed=%d", fresh.Summary.Suppressed, replayed.Summary.Suppressed)
+	}
+	if replayed.Summary.BySeverity["ERROR"] != fresh.Summary.BySeverity["ERROR"] {
+		t.Errorf("BySeverity[ERROR]: fresh=%d replayed=%d", fresh.Summary.BySeverity["ERROR"], replayed.Summary.BySeverity["ERROR"])
+	}
+	if replayed.ExitCode() != fresh.ExitCode() {
+		t.Errorf("ExitCode: fresh=%d replayed=%d", fresh.ExitCode(), replayed.ExitCode())
+	}
+}
+
 // TestText_MaxViolations verifies the active-finding cap and the "N more" line.
 func TestText_MaxViolations(t *testing.T) {
 	rpt := report.Build([]error{

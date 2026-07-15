@@ -3,10 +3,14 @@
 package ssautil
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"go/token"
 	"go/types"
+	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -292,6 +296,7 @@ func LoadAllPrograms(patterns []string) ([]*interpreter.Program, error) {
 				Fset:         fset,
 				Suppressions: suppressions,
 				GoVersion:    goVer,
+				SourceHash:   sourceHashForMain(pkg, initial),
 			})
 		}
 	}
@@ -458,6 +463,111 @@ func extractGoVersion(pkgs []*packages.Package) string {
 		}
 	}
 	return ""
+}
+
+// transitiveSourceHash computes a content hash over the Go source files of root
+// and every package reachable through its import graph, excluding the standard
+// library (#231). Stdlib is pinned by the Go version, which is a separate cache
+// key component, so hashing thousands of unchanging stdlib files is both wasteful
+// and unnecessary. The hash covers each file's path and byte content, in sorted
+// order, so it is stable across runs and changes when any reachable file changes.
+// Returns "" if root is nil or no files could be hashed.
+func transitiveSourceHash(root *packages.Package) string {
+	if root == nil {
+		return ""
+	}
+	// Collect the deduplicated set of source files across the import closure.
+	// The root package is always hashed; the stdlib skip applies only to
+	// imported dependencies (a local module path like "myapp" has no dot and
+	// would otherwise be misclassified as stdlib and dropped).
+	files := make(map[string]struct{})
+	visited := make(map[string]bool)
+	var walk func(p *packages.Package, isRoot bool)
+	walk = func(p *packages.Package, isRoot bool) {
+		if p == nil || visited[p.PkgPath] {
+			return
+		}
+		visited[p.PkgPath] = true
+		if !isRoot && isStdlibPkgPath(p.PkgPath) {
+			return // skip stdlib and its subtree (pinned by Go version)
+		}
+		for _, f := range p.CompiledGoFiles {
+			files[f] = struct{}{}
+		}
+		for _, imp := range p.Imports {
+			walk(imp, false)
+		}
+	}
+	walk(root, true)
+
+	if len(files) == 0 {
+		return ""
+	}
+	sorted := make([]string, 0, len(files))
+	for f := range files {
+		sorted = append(sorted, f)
+	}
+	sort.Strings(sorted)
+
+	h := sha256.New()
+	for _, path := range sorted {
+		f, err := os.Open(path)
+		if err != nil {
+			// A file we can't read makes the hash unreliable; fold the error into
+			// the hash so a subsequent successful read produces a different key.
+			// (hash.Hash.Write never returns an error.)
+			_, _ = io.WriteString(h, "ERR:"+path+"\n")
+			continue
+		}
+		_, _ = io.WriteString(h, "F:"+path+"\n")
+		_, _ = io.Copy(h, f)
+		_ = f.Close()
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// isStdlibPkgPath reports whether importPath belongs to the Go standard library.
+// Stdlib import paths have no dot in their first path segment (e.g. "fmt",
+// "net/http"), whereas module paths do ("github.com/...", "golang.org/x/...").
+func isStdlibPkgPath(importPath string) bool {
+	if importPath == "" {
+		return false
+	}
+	first := importPath
+	if i := strings.IndexByte(importPath, '/'); i >= 0 {
+		first = importPath[:i]
+	}
+	return !strings.Contains(first, ".")
+}
+
+// sourceHashForMain finds the *packages.Package matching the SSA main package by
+// import path and returns its transitive source hash (#231). initial holds the
+// root packages; their .Imports closure is walked to reach dependencies.
+func sourceHashForMain(mainPkg *ssa.Package, initial []*packages.Package) string {
+	if mainPkg == nil || mainPkg.Pkg == nil {
+		return ""
+	}
+	want := mainPkg.Pkg.Path()
+	var match *packages.Package
+	var find func(p *packages.Package)
+	seen := make(map[string]bool)
+	find = func(p *packages.Package) {
+		if p == nil || match != nil || seen[p.PkgPath] {
+			return
+		}
+		seen[p.PkgPath] = true
+		if p.PkgPath == want {
+			match = p
+			return
+		}
+		for _, imp := range p.Imports {
+			find(imp)
+		}
+	}
+	for _, p := range initial {
+		find(p)
+	}
+	return transitiveSourceHash(match)
 }
 
 // DumpSSA prints the SSA for a package (useful for debugging).
