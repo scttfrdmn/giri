@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **LSP server / editor diagnostics** (#232): new `giri lsp` subcommand runs a
+  Language Server over stdio that publishes Giri's findings as inline editor
+  diagnostics on file open and save. Editor-agnostic (works with any LSP client
+  — Neovim's built-in LSP, VS Code generic clients, etc.). It analyzes the
+  workspace's main packages (the `giri ./...` equivalent), reuses the on-disk
+  analysis cache (#231) for fast on-save re-analysis, maps each `report.Finding`
+  to an LSP `Diagnostic` (category as the code, severity preserved, `giri` as
+  the source), and skips `//giri:ignore`-suppressed findings so squiggles stay
+  dismissable (#229). New `pkg/lsp` package (self-contained JSON-RPC 2.0 + LSP,
+  no new dependency). Flags: `giri lsp -no-cache`, `giri lsp -v`.
+  Completes the ergonomics umbrella #224.
+- Editor integration docs in the README (Neovim/VS Code setup, the
+  `GOEXPERIMENT=arenas` launch requirement).
+
+### Fixed
+- `report.ParseLocation` (extracted from `splitFileLine`) now parses the
+  `file:line` location form the interpreter actually emits; previously only
+  `file:line:col` parsed, so SARIF results silently omitted the `region`
+  (start line) for interpreter findings. SARIF output now includes line regions.
+
 ## [0.96.0] - 2026-07-15
 
 ### Added
