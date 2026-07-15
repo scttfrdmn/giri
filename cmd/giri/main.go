@@ -35,6 +35,9 @@
 //
 //	# Run on test suite
 //	giri -test ./pkg/mypackage
+//
+//	# Run as an LSP server for editor diagnostics
+//	giri lsp
 package main
 
 import (
@@ -46,6 +49,7 @@ import (
 	"github.com/scttfrdmn/giri/internal/ssautil"
 	"github.com/scttfrdmn/giri/pkg/cache"
 	"github.com/scttfrdmn/giri/pkg/interpreter"
+	"github.com/scttfrdmn/giri/pkg/lsp"
 	"github.com/scttfrdmn/giri/pkg/report"
 	"github.com/scttfrdmn/giri/pkg/shadow"
 )
@@ -136,6 +140,13 @@ var (
 )
 
 func main() {
+	// The `lsp` subcommand runs the editor diagnostics server (#232). It has its
+	// own flag set and never returns, so dispatch it before the default flag
+	// parsing below.
+	if len(os.Args) > 1 && os.Args[1] == "lsp" {
+		os.Exit(runLSP(os.Args[2:]))
+	}
+
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Giri - Go IR Interpreter for Undefined Behavior Detection\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: giri [flags] [packages]\n\n")
@@ -154,6 +165,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  giri -format sarif ./... > r.sarif  GitHub code scanning\n")
 		fmt.Fprintf(os.Stderr, "  giri -strategy pct -runs 100 ./...  PCT multi-run concurrency testing\n")
 		fmt.Fprintf(os.Stderr, "  giri -strategy pct -seed 42 ./...   Reproduce a specific PCT run\n")
+		fmt.Fprintf(os.Stderr, "  giri lsp                            Run the LSP diagnostics server (editor integration)\n")
 	}
 
 	flag.Parse()
@@ -348,6 +360,39 @@ func main() {
 	}
 
 	os.Exit(rpt.ExitCode())
+}
+
+// runLSP runs the `giri lsp` editor-diagnostics server (#232). It parses the
+// subcommand's own flags, builds the default analysis configuration (equivalent
+// to `giri` with -all), and serves the LSP protocol over stdio until the client
+// disconnects. It returns the process exit code.
+func runLSP(argv []string) int {
+	fs := flag.NewFlagSet("giri lsp", flag.ExitOnError)
+	noCache := fs.Bool("no-cache", false, "Disable the analysis result cache (always re-interpret)")
+	verbose := fs.Bool("v", false, "Log server activity to stderr")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: giri lsp [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "Run Giri as a Language Server Protocol server over stdio, publishing\n")
+		fmt.Fprintf(os.Stderr, "undefined-behavior findings as editor diagnostics on file open and save.\n\n")
+		fmt.Fprintf(os.Stderr, "Launch this from your editor's LSP client. Arena programs require the\n")
+		fmt.Fprintf(os.Stderr, "server to be started with GOEXPERIMENT=arenas in its environment.\n\n")
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		fs.PrintDefaults()
+	}
+	_ = fs.Parse(argv)
+
+	// The LSP server always runs deterministic single-run analysis (roundrobin),
+	// so its results are cacheable and shared with the CLI's cache. Detector
+	// selection matches `giri` with -all (unsafe/arena/race on, init off).
+	config := interpreter.DefaultConfig()
+
+	var logf func(string, ...interface{})
+	if !*verbose {
+		logf = func(string, ...interface{}) {} // quiet unless -v
+	}
+
+	srv := lsp.NewServer(config, *noCache, logf)
+	return srv.Serve(os.Stdin, os.Stdout)
 }
 
 func buildConfig(pc *projectConfig) interpreter.Config {

@@ -771,32 +771,41 @@ func parseSARIFLocation(site string) *sarifLocation {
 
 // splitFileLine parses "file:line" or "file:line:col" into (file, line).
 func splitFileLine(s string) (string, int) {
-	// Strip trailing column if present (file:line:col).
+	file, line, _ := ParseLocation(s)
+	return file, line
+}
+
+// ParseLocation parses a finding location string into its file, line, and
+// (1-based) column components. It accepts both "file:line" and "file:line:col"
+// forms; when no column is present, col is 0. On any parse failure it returns
+// ("", 0, 0). Callers that only need the line (e.g. SARIF) can ignore col.
+//
+// This is the shared parser for Giri's finding locations — the LSP server
+// (pkg/lsp) reuses it to build diagnostic ranges, so location handling stays in
+// one place.
+func ParseLocation(s string) (file string, line, col int) {
+	// Work right-to-left. The last numeric segment is either the column
+	// (file:line:col) or the line (file:line). Interpreter sites are "file:line"
+	// (see posString), but SARIF/tooling may pass "file:line:col" too; both are
+	// disambiguated by whether a second numeric segment precedes it.
 	lastColon := strings.LastIndex(s, ":")
 	if lastColon < 0 {
-		return "", 0
+		return "", 0, 0
 	}
-	tail := s[lastColon+1:]
-	col, err := strconv.Atoi(tail)
-	if err != nil || col <= 0 {
-		// Not a column — treat as line.
-		line, err2 := strconv.Atoi(tail)
-		if err2 != nil || line <= 0 {
-			return "", 0
-		}
-		return s[:lastColon], line
+	lastNum, err := strconv.Atoi(s[lastColon+1:])
+	if err != nil || lastNum <= 0 {
+		return "", 0, 0
 	}
-	// tail is a column; strip it and look for line.
 	rest := s[:lastColon]
 	prevColon := strings.LastIndex(rest, ":")
-	if prevColon < 0 {
-		return "", 0
+	if prevColon >= 0 {
+		if prevNum, err := strconv.Atoi(rest[prevColon+1:]); err == nil && prevNum > 0 {
+			// file:line:col — the earlier number is the line, the later the column.
+			return rest[:prevColon], prevNum, lastNum
+		}
 	}
-	line, err := strconv.Atoi(rest[prevColon+1:])
-	if err != nil || line <= 0 {
-		return "", 0
-	}
-	return rest[:prevColon], line
+	// file:line — no column present.
+	return rest, lastNum, 0
 }
 
 func sarifSeverityLevel(s Severity) string {

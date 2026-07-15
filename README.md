@@ -208,6 +208,50 @@ The action builds and runs Giri, then uploads the SARIF report to GitHub Code Sc
 
 See [`.github/workflows/sarif.yml`](.github/workflows/sarif.yml) for the full workflow used on this repository.
 
+### Editor Integration (LSP)
+
+Giri ships a Language Server that surfaces findings inline as editor diagnostics
+(squiggles). It speaks LSP over stdio and works with any LSP client:
+
+```bash
+# Run the server (an editor launches this for you; see below)
+GOEXPERIMENT=arenas giri lsp
+```
+
+The server analyzes the workspace's main packages (the `giri ./...` equivalent)
+when a Go file is opened or saved, and publishes one diagnostic per finding —
+category as the diagnostic code, `giri` as the source. It reuses the on-disk
+analysis cache, so re-analysis on save is fast, and findings you suppress with
+`//giri:ignore` never appear as squiggles.
+
+**`GOEXPERIMENT=arenas` is required.** Giri's own build and its package loading
+both need it, so the editor must launch the server with `GOEXPERIMENT=arenas` in
+its environment. Without it, arena-importing programs are skipped and the server
+logs a warning; other programs are still analyzed.
+
+**Neovim** (built-in LSP, no plugin needed):
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "go",
+  callback = function()
+    vim.lsp.start({
+      name = "giri",
+      cmd = { "giri", "lsp" },
+      cmd_env = { GOEXPERIMENT = "arenas" },
+      root_dir = vim.fs.dirname(vim.fs.find({ "go.mod" }, { upward = true })[1]),
+    })
+  end,
+})
+```
+
+**VS Code** — use any generic LSP client extension (e.g. *Generic LSP Client*)
+and point it at the `giri lsp` command with `GOEXPERIMENT=arenas` set in the
+launch environment. A dedicated packaged extension is a planned follow-up.
+
+Flags: `giri lsp -no-cache` disables the result cache; `giri lsp -v` logs server
+activity to stderr.
+
 ## Example Output
 
 ```
