@@ -16,7 +16,7 @@ import (
 
 // Version is the Giri version reported in machine-readable output (e.g. the
 // SARIF tool driver). Keep in step with the CHANGELOG / release tag.
-const Version = "0.95.0"
+const Version = "0.96.0"
 
 // Format controls output format.
 type Format int
@@ -169,6 +169,40 @@ func (r *Report) AddSuppressed(violations []error) {
 		f := findingFromError(err)
 		f.Suppressed = true
 		f.SuppressReason = "//giri:ignore"
+		r.Findings = append(r.Findings, f)
+		r.Summary.Suppressed++
+	}
+}
+
+// FindingsFrom renders a slice of interpreter violations into Findings without
+// building a full Report (#231). Used to capture a single program's findings for
+// the analysis cache. The suppressed flag/reason are NOT set here — callers mark
+// suppressed findings separately (they come from a distinct violation slice).
+func FindingsFrom(violations []error) []Finding {
+	out := make([]Finding, 0, len(violations))
+	for _, err := range violations {
+		out = append(out, findingFromError(err))
+	}
+	return out
+}
+
+// AddFindings merges pre-rendered findings into the report, updating the summary
+// counts exactly as Build/AddSuppressed do (#231). It is used to replay findings
+// loaded from the analysis cache so a cached program contributes identically to
+// a freshly interpreted one. active findings bump the severity/category counts;
+// suppressed findings bump Summary.Suppressed only.
+func (r *Report) AddFindings(active, suppressed []Finding) {
+	for _, f := range active {
+		r.Findings = append(r.Findings, f)
+		r.Summary.TotalFindings++
+		r.Summary.BySeverity[f.Severity.String()]++
+		r.Summary.ByCategory[f.Category]++
+	}
+	for _, f := range suppressed {
+		f.Suppressed = true
+		if f.SuppressReason == "" {
+			f.SuppressReason = "//giri:ignore"
+		}
 		r.Findings = append(r.Findings, f)
 		r.Summary.Suppressed++
 	}

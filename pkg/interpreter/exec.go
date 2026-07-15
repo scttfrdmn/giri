@@ -60,6 +60,12 @@ type Program struct {
 	// (e.g. "go1.23"). Empty for non-module programs or when NeedModule is
 	// not available. Informational only — used in CLI output and reports.
 	GoVersion string
+
+	// SourceHash is a hash of this program's transitive non-stdlib source
+	// closure (the main package plus every reachable imported package's Go
+	// files). It is the content component of the analysis cache key (#231).
+	// Empty when hashing was unavailable (e.g. LoadProgram single-file mode).
+	SourceHash string
 }
 
 // RunResult holds the results of interpreting a program.

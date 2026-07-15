@@ -44,6 +44,7 @@ import (
 	"os"
 
 	"github.com/scttfrdmn/giri/internal/ssautil"
+	"github.com/scttfrdmn/giri/pkg/cache"
 	"github.com/scttfrdmn/giri/pkg/interpreter"
 	"github.com/scttfrdmn/giri/pkg/report"
 	"github.com/scttfrdmn/giri/pkg/shadow"
@@ -122,6 +123,7 @@ var (
 	flagFormat        = flag.String("format", "text", "Output format: text, json, sarif, html")
 	flagVerbose       = flag.Bool("v", false, "Verbose output (show all SSA instructions)")
 	flagMaxViolations = flag.Int("max-violations", 0, "Cap active findings shown in text/html output (0 = unlimited); JSON/SARIF always emit all")
+	flagNoCache       = flag.Bool("no-cache", false, "Disable the analysis result cache (always re-interpret)")
 
 	// Execution flags
 	flagMaxSteps      = flag.Uint64("max-steps", 10_000_000, "Maximum SSA instructions to execute")
@@ -228,28 +230,89 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Run interpretation across all programs, collecting violations.
-	var allViolations []error
-	var allSuppressed []error
+	// Resolve the analysis cache (#231). Caching is only sound for deterministic
+	// single-run analysis: PCT/random scheduling yields a seed-dependent union of
+	// violations that legitimately varies run to run.
+	deterministic := *flagRuns <= 1 && *flagStrategy == "roundrobin"
+	cacheDir, cacheOK := "", false
+	if !*flagNoCache && deterministic {
+		cacheDir, cacheOK = cache.Dir()
+	}
+	cfgFingerprint := cache.Fingerprint(config)
+
+	// Build the report incrementally so cached and freshly-interpreted programs
+	// contribute identically. Memory stats reflect only live (non-cached) runs;
+	// they stay nil on an all-cache-hit run rather than reporting misleading zeros.
 	var lastMemStats shadow.MemoryStats
+	haveMemStats := false
+	rpt := report.Build(nil, nil)
+	rpt.MaxViolations = *flagMaxViolations
+
 	for _, prog := range progs {
 		goVer := ""
 		if prog.GoVersion != "" {
 			goVer = " (" + prog.GoVersion + ")"
 		}
+		name := prog.Main.Pkg.Name()
+
+		// Cache lookup (deterministic single-run only).
+		var key string
+		if cacheOK && prog.SourceHash != "" {
+			key = cache.Key(prog.SourceHash, cfgFingerprint, report.Version, prog.GoVersion)
+			if entry, hit := cache.Load(cacheDir, key); hit {
+				rpt.AddFindings(entry.Active, entry.Suppressed)
+				lastMemStats = entry.MemStats
+				haveMemStats = true // cached mem stats stand in for a live run
+				if *flagVerbose {
+					fmt.Fprintf(os.Stderr, "Interpreting %s%s... cache: hit\n", name, goVer)
+				}
+				continue
+			}
+		}
+
 		var result *interpreter.RunResult
 		if *flagRuns > 1 {
 			fmt.Fprintf(os.Stderr, "Interpreting %s%s with PCT scheduler (%d runs, seed=%d)...\n",
-				prog.Main.Pkg.Name(), goVer, *flagRuns, *flagSeed)
+				name, goVer, *flagRuns, *flagSeed)
 			result = interpreter.RunN(prog, config, *flagRuns, *flagSeed)
 		} else {
-			fmt.Fprintf(os.Stderr, "Interpreting %s%s with %s scheduler (seed=%d)...\n",
-				prog.Main.Pkg.Name(), goVer, *flagStrategy, *flagSeed)
+			cacheNote := ""
+			if *flagVerbose {
+				switch {
+				case *flagNoCache:
+					cacheNote = " (cache: disabled)"
+				case !deterministic:
+					cacheNote = " (cache: disabled — non-deterministic scheduling)"
+				case !cacheOK:
+					cacheNote = " (cache: unavailable)"
+				default:
+					cacheNote = " (cache: miss)"
+				}
+			}
+			fmt.Fprintf(os.Stderr, "Interpreting %s%s with %s scheduler (seed=%d)...%s\n",
+				name, goVer, *flagStrategy, *flagSeed, cacheNote)
 			result = interpreter.Run(prog, config)
 		}
-		allViolations = append(allViolations, result.Violations...)
-		allSuppressed = append(allSuppressed, result.SuppressedViolations...)
+
+		active := report.FindingsFrom(result.Violations)
+		suppressed := report.FindingsFrom(result.SuppressedViolations)
+		rpt.AddFindings(active, suppressed)
 		lastMemStats = result.MemStats
+		haveMemStats = true
+
+		// Populate the cache for a future run (best-effort).
+		if cacheOK && key != "" {
+			entry := &cache.Entry{
+				Active:          active,
+				Suppressed:      suppressed,
+				SuppressedCount: result.SuppressedCount,
+				MemStats:        result.MemStats,
+			}
+			if err := cache.Store(cacheDir, key, entry); err != nil && *flagVerbose {
+				fmt.Fprintf(os.Stderr, "  cache: store failed: %v\n", err)
+			}
+		}
+
 		if *flagVerbose && len(result.UnmodeledCalls) > 0 {
 			fmt.Fprintf(os.Stderr, "  Unmodeled external calls (%d, returned opaque zero value):\n",
 				len(result.UnmodeledCalls))
@@ -263,10 +326,10 @@ func main() {
 		}
 	}
 
-	// Build report
-	rpt := report.Build(allViolations, &lastMemStats)
-	rpt.AddSuppressed(allSuppressed)
-	rpt.MaxViolations = *flagMaxViolations
+	// Attach memory stats only when at least one program was interpreted live.
+	if haveMemStats {
+		rpt.Stats = &lastMemStats
+	}
 
 	// Output
 	format := report.FormatText

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Incremental / cached analysis** (#231): `giri ./...` now caches analysis
+  results per program (per main package) and skips re-interpreting when nothing
+  changed. On a cache hit the report is reproduced byte-for-byte without running
+  the interpreter. The cache key is the SHA-256 of the program's transitive
+  non-stdlib source closure plus the analysis config, the Giri version, and the
+  Go version, so any change to a reachable file or an analysis-affecting flag
+  invalidates it. Cache location: `$GIRI_CACHE` or `os.UserCacheDir()/giri/`.
+  New `-no-cache` flag to force full re-analysis. New `pkg/cache` package.
+- Caching is **deterministic-only**: it is bypassed for `-runs > 1` and for the
+  `random`/`pct` strategies (whose per-run violation set legitimately varies).
+  `-test` mode is not cached (documented follow-up).
+
 ## [0.95.0] - 2026-07-11
 
 ### Added

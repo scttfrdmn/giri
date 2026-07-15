@@ -9,6 +9,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"golang.org/x/tools/go/packages"
@@ -146,4 +148,55 @@ func foo() {}
 	if len(result) != 0 {
 		t.Errorf("expected no suppressions for regular comments, got %v", result)
 	}
+}
+
+// TestSourceHash_ChangesWithContent verifies the transitive source hash on
+// LoadAllPrograms is stable across loads and changes when a source file changes (#231).
+func TestSourceHash_ChangesWithContent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module giritest\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mainGo := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(mainGo, []byte("package main\n\nfunc main() {\n\tx := 300\n\t_ = int8(x)\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hash1 := loadMainHash(t, dir)
+	if hash1 == "" {
+		t.Fatal("expected non-empty SourceHash for a normal module")
+	}
+	// Reload unchanged → same hash.
+	if got := loadMainHash(t, dir); got != hash1 {
+		t.Errorf("hash must be stable across loads: %q vs %q", hash1, got)
+	}
+	// Change content → different hash.
+	if err := os.WriteFile(mainGo, []byte("package main\n\nfunc main() {\n\tx := 400\n\t_ = int8(x)\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadMainHash(t, dir); got == hash1 {
+		t.Error("hash must change when a source file changes")
+	}
+}
+
+func loadMainHash(t *testing.T, dir string) string {
+	t.Helper()
+	// LoadAllPrograms resolves patterns relative to the process CWD, so chdir.
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(old) }()
+
+	progs, err := ssautil.LoadAllPrograms([]string{"."})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(progs) == 0 {
+		t.Fatal("no programs loaded")
+	}
+	return progs[0].SourceHash
 }
