@@ -981,7 +981,13 @@ func (interp *Interpreter) executeDeferred(gid int64, d DeferredCall) {
 
 	// stdlib intercept (strings, strconv, fmt, time, …): modeled directly.
 	if d.PkgPath != "" && d.FuncName != "" && d.Callee != nil {
-		if _, ok := interp.execStdlibCall(gid, d.Site, d.PkgPath, d.FuncName, d.Args); ok {
+		// A deferred call's return value is discarded, so the result shape does
+		// not matter here; pass the signature for consistency (#225).
+		var results *types.Tuple
+		if sig := d.Callee.Signature; sig != nil {
+			results = sig.Results()
+		}
+		if _, ok := interp.execStdlibCall(gid, d.Site, d.PkgPath, d.FuncName, d.Args, results); ok {
 			return
 		}
 	}

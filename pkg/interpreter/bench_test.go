@@ -26,7 +26,7 @@ func BenchmarkStdlibDispatchHit(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _ = interp.execStdlibCall(1, "bench:site", "strings", "Contains", args)
+		_, _ = interp.execStdlibCall(1, "bench:site", "strings", "Contains", args, nil)
 	}
 }
 
@@ -46,7 +46,7 @@ func BenchmarkStdlibDispatchMiss(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _ = interp.execStdlibCall(1, "bench:site", "unknown/pkg", "Func", nil)
+		_, _ = interp.execStdlibCall(1, "bench:site", "unknown/pkg", "Func", nil, nil)
 	}
 }
 

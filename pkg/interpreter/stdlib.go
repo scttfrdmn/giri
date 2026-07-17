@@ -20,6 +20,7 @@ import (
 	"encoding/pem"
 	"encoding/xml"
 	"fmt"
+	"go/types"
 	"html"
 	"math"
 	"math/bits"
@@ -45,6 +46,96 @@ import (
 // represent an opaque non-nil result (e.g. an un-modeled struct or interface
 // pointer). Using a package-level var avoids 100+ identical local declarations.
 var stdlibOpaque = Value{Raw: struct{}{}}
+
+// zeroResultValue shapes the return Value for an unmodeled stdlib/x call from its
+// static result tuple (#225). This makes the #222 smart fallback signature-aware:
+// instead of always returning a single opaque scalar, it returns a value whose
+// shape matches the call's arity so the SSA tuple-unpack (ssa.Extract) at the
+// call site sees the components it expects.
+//
+//   - nil tuple → a single stdlibOpaque. This covers both "signature
+//     unavailable" (test/deferred callers pass nil) and void functions, whose
+//     sig.Results() is itself a nil *types.Tuple; an opaque return for a void
+//     call is harmless since the result is unused. Preserves the original #222
+//     conservative single-value behavior.
+//   - 1 result  → the typed zero for that result (a scalar, not wrapped: single
+//     returns are consumed directly without an Extract).
+//   - N results → Value{Raw: []Value{...}} with each slot typed-zeroed, matching
+//     the hand-written multi-return convention (e.g. (T, error) → {opaque, nil}).
+//
+// Fixes a latent bug in the original fallback: for an unmodeled (T, error) call
+// it returned a single struct{}{} opaque, so tuple.Raw.([]Value) failed at
+// Extract and BOTH components came back nil — reintroducing the nil-deref false
+// positives #222 set out to eliminate, for the multi-return case.
+func zeroResultValue(results *types.Tuple) Value {
+	if results == nil {
+		return stdlibOpaque
+	}
+	switch results.Len() {
+	case 0:
+		return Value{}
+	case 1:
+		return zeroForType(results.At(0).Type())
+	default:
+		vals := make([]Value, results.Len())
+		for i := range vals {
+			vals[i] = zeroForType(results.At(i).Type())
+		}
+		return Value{Raw: vals}
+	}
+}
+
+// zeroForType returns the interpreter Value representing the zero/opaque value of
+// a result type for an auto-generated stub (#225). Scalars get their concrete
+// zero so arithmetic and comparisons behave; pointers/interfaces/composites get
+// the non-nil stdlibOpaque sentinel so nil-checks and field/method access on the
+// unmodeled value do not false-positive. The error interface is the deliberate
+// exception: it gets a nil Value so `if err != nil` is false, matching every
+// hand-written (T, error) stub whose error slot is {}.
+func zeroForType(t types.Type) Value {
+	if t == nil {
+		return stdlibOpaque
+	}
+	// The error interface models as a nil error (the successful-path zero).
+	if isErrorType(t) {
+		return Value{}
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		info := u.Info()
+		switch {
+		case info&types.IsBoolean != 0:
+			return Value{Raw: false}
+		case info&types.IsString != 0:
+			return Value{Raw: ""}
+		case info&types.IsComplex != 0:
+			return Value{Raw: complex128(0)}
+		case info&types.IsFloat != 0:
+			return Value{Raw: float64(0)}
+		case info&types.IsInteger != 0:
+			// Covers signed/unsigned integers and uintptr; the interpreter
+			// represents all integral values as int64.
+			return Value{Raw: int64(0)}
+		default:
+			// UnsafePointer, UntypedNil, Invalid, etc. → opaque non-nil.
+			return stdlibOpaque
+		}
+	default:
+		// Pointer, Interface, Signature, Chan, Map, Slice, Struct, Array, Named,
+		// Tuple: an opaque non-nil value avoids spurious nil dereferences.
+		return stdlibOpaque
+	}
+}
+
+// isErrorType reports whether t is the predeclared error interface.
+func isErrorType(t types.Type) bool {
+	named, ok := t.(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	return obj != nil && obj.Pkg() == nil && obj.Name() == "error"
+}
 
 // execStdlibCall intercepts standard library function calls in packages
 // "strings", "strconv", "fmt", "time", "os", "math/rand", "bytes",
@@ -91,7 +182,12 @@ var stdlibOpaque = Value{Raw: struct{}{}}
 //
 // gid and site are required by handlers that invoke user callbacks
 // (e.g. sort.Slice calls the less function via execFunction).
-func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string, args []Value) (Value, bool) {
+//
+// results is the callee's static result tuple (may be nil when unavailable, e.g.
+// from the deferred-call path or tests). It is used only by the smart fallback
+// (#225) to shape an auto-generated stub for an unmodeled call; explicit handlers
+// and user intercepts ignore it.
+func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string, args []Value, results *types.Tuple) (Value, bool) {
 	// User-registered intercepts (#113) take priority over built-in handlers,
 	// allowing overrides of both external libraries and stdlib functions.
 	if fns, ok := interp.config.Intercepts[pkgPath]; ok {
@@ -125,7 +221,10 @@ func (interp *Interpreter) execStdlibCall(gid int64, site, pkgPath, name string,
 	// surfaces coverage gaps (e.g. math.Erfinv) for users inspecting with -v.
 	if isStdlibOrKnownExternalPkg(pkgPath) {
 		interp.recordUnmodeled(pkgPath, name)
-		return stdlibOpaque, true
+		// Shape the stub from the callee's result tuple (#225) so multi-value
+		// returns unpack correctly and scalar returns get concrete zeros. Falls
+		// back to a single opaque when the signature is unavailable.
+		return zeroResultValue(results), true
 	}
 	return Value{}, false
 }
