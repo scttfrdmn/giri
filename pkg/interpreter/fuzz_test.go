@@ -69,7 +69,7 @@ func FuzzExecStdlibCall(f *testing.F) {
 				t.Errorf("panic in execStdlibCall(%q, %q): %v", pkgPath, name, r)
 			}
 		}()
-		_, _ = interp.execStdlibCall(1, "fuzz:site", pkgPath, name, nil)
+		_, _ = interp.execStdlibCall(1, "fuzz:site", pkgPath, name, nil, nil)
 	})
 }
 

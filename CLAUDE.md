@@ -70,7 +70,7 @@ ls testdata/showcase/ | grep -v README | wc -l
 grep -n '^var showcaseTests' pkg/interpreter/interpreter_integration_test.go
 # then: sed -n '14,<that_line-1>p' ... | grep -c 'dir:'
 ```
-**Current baseline**: 260 integration + 14 showcase = 274 total (as of v0.91.0)
+**Current baseline**: 267 integration + 14 showcase = 281 total (as of v0.98.0)
 
 ### 2. CHANGELOG entry format
 ```markdown

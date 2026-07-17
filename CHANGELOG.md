@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Signature-aware smart fallback / auto-stub** (#225): the fallback for
+  unmodeled stdlib and `golang.org/x/*` calls (#222) now shapes its return value
+  from the callee's static result signature instead of always returning a single
+  opaque scalar. A function returning `(T, error)` gets `{opaque, nil}`, a
+  `(int, T, error)` gets `{int64(0), opaque, nil}`, a single scalar gets its
+  typed zero, and pointer/interface/composite results get the non-nil opaque
+  sentinel. No package enumeration, no generated file, no startup cost — the
+  callee signature is already available at the dispatch point and shaping happens
+  lazily per call. Coverage gaps are still recorded (`RunResult.UnmodeledCalls`,
+  `-v`); explicit handlers and user intercepts still take precedence.
+- Integration test `autostub_multiret` and unit tests for the new `zeroForType`
+  / `zeroResultValue` helpers.
+
+### Fixed
+- Multi-value unmodeled calls previously returned a single opaque scalar, so the
+  SSA tuple unpack (`ssa.Extract`) failed and **every** result slot came back as
+  a nil value — reintroducing the nil-value hazards #222 addressed, for the
+  multi-return case. The signature-shaped return fixes this.
+
 ## [0.97.0] - 2026-07-15
 
 ### Added
