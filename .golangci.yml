@@ -62,6 +62,12 @@ linters:
           - errcheck
           - errorlint
 
+      # pkg/exec test fixtures: kernels interpreted and called natively by
+      # pkg/exec tests; doc comments on each would only restate the name.
+      - path: 'pkg/exec/internal/'
+        linters:
+          - revive
+
       # SSA dispatch files contain purposely large switch tables; gocyclo
       # does not apply to these architectural dispatch functions.
       - path: 'pkg/interpreter/exec\.go$'

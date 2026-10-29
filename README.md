@@ -252,6 +252,17 @@ launch environment. A dedicated packaged extension is a planned follow-up.
 Flags: `giri lsp -no-cache` disables the result cache; `giri lsp -v` logs server
 activity to stderr.
 
+### Library API (`pkg/exec`)
+
+Giri can also be embedded as an evaluator. `exec.Run(fn, args, opts)` interprets
+any SSA function (loaded with `exec.LoadDir`) on Go-valued argument sets: integers,
+bools, floats, strings and slices of those. It returns the function's outputs,
+which match native execution, together with deterministic instrumentation: step
+counts by instruction class, detector violations, per-value execution traces, and
+a value-cache hook for pure instructions. Functions run in a value-faithful
+interpreter mode that the CLI never uses, so CLI behavior is unaffected. The API
+is additive and versioned with giri; see [docs/exec-api.md](docs/exec-api.md).
+
 ## Example Output
 
 ```
@@ -319,6 +330,7 @@ giri/
 │   │   └── errors.go       # UB error types with structured diagnostics
 │   ├── detector/       # Composable safety checkers
 │   │   └── detector.go     # Arena, bounds, unsafe, race detectors
+│   ├── exec/           # Library entry point: run a function on argument sets
 │   ├── scheduler/      # Goroutine scheduling strategies
 │   │   └── scheduler.go    # RoundRobin, Random, PCT
 │   └── report/         # Output formatting
