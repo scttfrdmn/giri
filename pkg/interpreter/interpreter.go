@@ -469,6 +469,24 @@ type Interpreter struct {
 	// and no interpretable SSA body. Populated by execCall; surfaced via
 	// RunResult.UnmodeledCalls and the -v CLI flag. Nil until first entry.
 	unmodeledCalls map[string]struct{}
+
+	// Library call mode (NewSession, used by pkg/exec). All zero for the CLI,
+	// whose behavior is unaffected by these fields.
+	concrete   bool              // value-faithful semantics (concrete.go)
+	skipChecks bool              // SkipDetectors: no shadow checks or detectors
+	elems      map[elemKey]Value // concrete-mode element store
+	cs         *callState        // per-session instrumentation (session.go)
+}
+
+// allocate registers an allocation with shadow memory. When detector checks
+// are skipped (SkipDetectors) it only mints an ID: concrete mode still needs
+// allocation identity to key element values, but nothing reads the metadata.
+func (interp *Interpreter) allocate(kind shadow.AllocKind, size int, typeName, site string) shadow.AllocID {
+	if interp.skipChecks {
+		interp.cs.nextAlloc++
+		return shadow.AllocID(interp.cs.nextAlloc)
+	}
+	return interp.Memory.Allocate(kind, size, typeName, site)
 }
 
 // recordUnmodeled records an external function with no model (no stdlib intercept
@@ -901,6 +919,9 @@ func (interp *Interpreter) popFrame(gid int64) {
 	// surviving external references, so poisoning is always safe and never
 	// produces false-positive UseAfterFreeErrors in well-formed programs.
 	poisonSite := frame.Site + " (stack frame exited)"
+	if interp.skipChecks {
+		frame.StackAllocs = nil // no shadow metadata to poison
+	}
 	for _, id := range frame.StackAllocs {
 		interp.Memory.Poison(id, poisonSite)
 		if interp.valueStore != nil {
@@ -1186,7 +1207,7 @@ func (interp *Interpreter) handleFieldAddr(gid int64, base Value, fieldOffset in
 		return Value{}
 	}
 
-	derived := interp.Memory.DerivePointer(base.Provenance, fieldOffset)
+	derived := interp.derive(base.Provenance, fieldOffset)
 	return Value{
 		Raw:        derived,
 		Provenance: derived,
@@ -1199,7 +1220,7 @@ func (interp *Interpreter) handleIndexAddr(gid int64, base Value, index, elemSiz
 		return Value{}
 	}
 
-	derived := interp.Memory.DerivePointer(base.Provenance, index*elemSize)
+	derived := interp.derive(base.Provenance, index*elemSize)
 	return Value{
 		Raw:        derived,
 		Provenance: derived,

@@ -469,6 +469,12 @@ func (interp *Interpreter) execBlock(gid int64, fn *ssa.Function, block *ssa.Bas
 // execInstruction interprets a single SSA instruction. Returns non-nil
 // if the instruction is a branch/jump (next block to execute).
 func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ssa.Instruction) *ssa.BasicBlock {
+	// Library call mode has its own prologue: per-class step accounting, the
+	// value-cache hook, tracing, and budget exhaustion without a violation.
+	if interp.cs != nil {
+		return interp.execInstructionSession(gid, fn, instr)
+	}
+
 	// Enforce execution step limit (#17)
 	if interp.config.MaxSteps > 0 {
 		interp.steps++
@@ -487,6 +493,12 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 
 	site := interp.posString(instr.Pos())
 	interp.currentSite = site // for //giri:ignore suppression checks (#58)
+	return interp.execOp(gid, fn, instr, site)
+}
+
+// execOp performs the effect of a single SSA instruction. Returns non-nil if
+// the instruction is a branch/jump (next block to execute).
+func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruction, site string) *ssa.BasicBlock {
 	frame := interp.currentFrame(gid)
 
 	switch inst := instr.(type) {
@@ -502,7 +514,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		if inst.Heap {
 			kind = shadow.AllocHeap
 		}
-		allocID := interp.Memory.Allocate(kind, size, typeName, site)
+		allocID := interp.allocate(kind, size, typeName, site)
 		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
 		frame.Locals[inst.Name()] = Value{Raw: ptr, Provenance: ptr}
 		// Track stack allocs for poisoning when the frame exits (#51).
@@ -514,6 +526,12 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		addr := interp.resolveValue(frame, inst.Addr)
 		val := interp.resolveValue(frame, inst.Val)
 		size := interp.typeSizeOf(inst.Val.Type())
+		if interp.concrete {
+			if err := interp.storeConcrete(gid, addr, val, size, site); err != nil {
+				interp.recordViolation(gid, err)
+			}
+			break
+		}
 		if err := interp.handleStore(gid, addr, val, size, site); err != nil {
 			interp.recordViolation(gid, err)
 		}
@@ -523,6 +541,14 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		switch inst.Op {
 		case token.MUL: // Dereference (load)
 			size := interp.typeSizeOf(inst.Type())
+			if interp.concrete {
+				result, err := interp.loadConcrete(gid, operand, inst.Type(), size, site)
+				if err != nil {
+					interp.recordViolation(gid, err)
+				}
+				frame.Locals[inst.Name()] = result
+				break
+			}
 			result, err := interp.handleLoad(gid, operand, size, site)
 			if err != nil {
 				interp.recordViolation(gid, err)
@@ -571,6 +597,12 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 				frame.Locals[inst.Name()] = Value{}
 			}
 		case token.SUB:
+			if interp.concrete {
+				if r, ok := concreteUnOp(inst.Op, operand, inst.Type()); ok {
+					frame.Locals[inst.Name()] = r
+					break
+				}
+			}
 			if v, ok := operand.Raw.(int64); ok {
 				frame.Locals[inst.Name()] = Value{Raw: -v}
 			} else if v, ok := operand.Raw.(float64); ok {
@@ -587,6 +619,12 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 				frame.Locals[inst.Name()] = operand
 			}
 		case token.XOR:
+			if interp.concrete {
+				if r, ok := concreteUnOp(inst.Op, operand, inst.Type()); ok {
+					frame.Locals[inst.Name()] = r
+					break
+				}
+			}
 			if v, ok := operand.Raw.(int64); ok {
 				frame.Locals[inst.Name()] = Value{Raw: ^v}
 			} else {
@@ -599,6 +637,10 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 	case *ssa.BinOp:
 		x := interp.resolveValue(frame, inst.X)
 		y := interp.resolveValue(frame, inst.Y)
+		if interp.concrete {
+			frame.Locals[inst.Name()] = interp.binOpConcrete(gid, inst, x, y, site)
+			break
+		}
 		// Division/modulo by zero: statically-known zero divisor (#55).
 		if inst.Op == token.QUO || inst.Op == token.REM {
 			if yi, ok := y.Raw.(int64); ok && yi == 0 {
@@ -727,8 +769,16 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 				elemSize = interp.typeSizeOf(t.Elem())
 			}
 			if sv.Backing != nil {
-				elemPtr := interp.Memory.DerivePointer(sv.Backing, idxInt*elemSize)
+				elemPtr := interp.derive(sv.Backing, idxInt*elemSize)
 				addrVal := Value{Raw: elemPtr, Provenance: elemPtr}
+				if interp.concrete {
+					result, err := interp.loadConcrete(gid, addrVal, inst.Type(), elemSize, site)
+					if err != nil {
+						interp.recordViolation(gid, err)
+					}
+					frame.Locals[inst.Name()] = result
+					break
+				}
 				result, err := interp.handleLoad(gid, addrVal, elemSize, site)
 				if err != nil {
 					interp.recordViolation(gid, err)
@@ -856,7 +906,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		if allocSize <= 0 {
 			allocSize = elemSize
 		}
-		allocID := interp.Memory.Allocate(shadow.AllocHeap, allocSize, inst.Type().String(), site)
+		allocID := interp.allocate(shadow.AllocHeap, allocSize, inst.Type().String(), site)
 		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
 		sv := arenaNew(interp.arena, SliceValue{Backing: ptr, Len: lenN, Cap: capN})
 		frame.Locals[inst.Name()] = Value{Raw: sv, Provenance: ptr}
@@ -881,6 +931,10 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		// inst.X may be:
 		//   (a) []T — already a SliceValue (reslice)
 		//   (b) *[N]T — pointer to array (make([]T,n) lowered to Alloc+Slice)
+		if s, ok := base.Raw.(string); ok && interp.concrete {
+			frame.Locals[inst.Name()] = interp.sliceStringConcrete(gid, s, lowVal, highVal, site)
+			break
+		}
 		var sv *SliceValue
 		elemSize := 1
 		if existingSV, ok := base.Raw.(*SliceValue); ok {
@@ -922,7 +976,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			} else {
 				var newPtr *shadow.Pointer
 				if sv.Backing != nil {
-					newPtr = interp.Memory.DerivePointer(sv.Backing, lowVal*elemSize)
+					newPtr = interp.derive(sv.Backing, lowVal*elemSize)
 				}
 				newSv := arenaNew(interp.arena, SliceValue{
 					Backing: newPtr,
@@ -958,7 +1012,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 		}
 		// Allocate a shadow pointer for the map so race detection can track
 		// concurrent reads and writes to the same map (#46).
-		allocID := interp.Memory.Allocate(shadow.AllocHeap, 8, inst.Type().String(), site)
+		allocID := interp.allocate(shadow.AllocHeap, 8, inst.Type().String(), site)
 		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
 		frame.Locals[inst.Name()] = Value{Raw: make(map[interface{}]Value), Provenance: ptr}
 
@@ -978,7 +1032,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 
 	case *ssa.Range:
 		base := interp.resolveValue(frame, inst.X)
-		ri := &rangeIter{val: base, idx: 0}
+		ri := &rangeIter{val: base, idx: 0, sortKeys: interp.concrete}
 		// For range-over-array ([N]T or *[N]T), store N so advance() knows when to stop.
 		// Without this, the iterator falls through to default and returns false immediately,
 		// silently skipping all loop iterations (#137).
@@ -1340,6 +1394,12 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 			}
 			frame.Locals[inst.Name()] = result
 		} else {
+			if interp.concrete {
+				if r, ok := interp.concreteConvert(val, inst.X.Type(), inst.Type(), site); ok {
+					frame.Locals[inst.Name()] = r
+					break
+				}
+			}
 			// Apply concrete type conversion for string↔bytes and numeric types (#74).
 			frame.Locals[inst.Name()] = convertValue(val, inst.X.Type(), inst.Type())
 			// Integer overflow on explicit conversion (#223): report when a
@@ -1416,6 +1476,11 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 
 	// Handle SSA builtins (unsafe.Add, len, cap, append, etc.) — not GC points.
 	if b, ok := call.Call.Value.(*ssa.Builtin); ok {
+		if interp.concrete {
+			if v, ok := interp.concreteBuiltin(gid, b.Name(), &call.Call, args, site); ok {
+				return v
+			}
+		}
 		return interp.execBuiltin(gid, b, args, site)
 	}
 
@@ -1425,6 +1490,10 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 		if cv, ok := calleeVal.Raw.(*ClosureValue); ok {
 			allArgs := append(args, cv.FreeVars...)
 			return interp.execFunction(gid, cv.Fn, allArgs)
+		}
+		// Concrete mode: a plain function value (not a closure) called dynamically.
+		if f, ok := calleeVal.Raw.(*ssa.Function); ok && interp.concrete && call.Call.StaticCallee() == nil && f.Blocks != nil {
+			return interp.execFunction(gid, f, args)
 		}
 		// Intercept context cancel functions (#120): calling cancel() removes
 		// the entry from the outstanding set, suppressing the leak report.
@@ -1567,6 +1636,11 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 					results = sig.Results()
 				} else if origin := callee.Origin(); origin != nil && origin.Signature != nil {
 					results = origin.Signature.Results()
+				}
+				if interp.concrete {
+					if impl := lookupConcrete(pkg.Path(), genericBaseName(interceptName)); impl != nil {
+						return impl.call(interp, gid, args)
+					}
 				}
 				if result, ok := interp.execStdlibCall(gid, site, pkg.Path(), interceptName, args, results); ok {
 					return result
@@ -1979,6 +2053,9 @@ func (interp *Interpreter) resolveValue(frame *Frame, v ssa.Value) Value {
 
 	// Constants
 	if c, ok := v.(*ssa.Const); ok {
+		if interp.concrete {
+			return concreteConst(c)
+		}
 		return interp.constToValue(c)
 	}
 
@@ -1989,6 +2066,10 @@ func (interp *Interpreter) resolveValue(frame *Frame, v ssa.Value) Value {
 			if val, found := interp.globals[g]; found {
 				return val
 			}
+		}
+		// Sessions allocate globals on first use instead of up front.
+		if interp.cs != nil {
+			return interp.sessionGlobal(g)
 		}
 		// Fallback for globals not yet registered (shouldn't happen after Run init)
 		return Value{Raw: g.Name()}
@@ -2269,6 +2350,7 @@ type rangeIter struct {
 	idx      int
 	mapKeys  []interface{} // lazily populated for map iteration
 	arrayLen int           // > 0 for range-over-array ([N]T or *[N]T); 0 otherwise (#137)
+	sortKeys bool          // concrete mode: iterate map keys in sorted order
 }
 
 // advance returns the next (ok, key, value) triple from the iterator.
@@ -2307,6 +2389,9 @@ func (ri *rangeIter) advance() (bool, Value, Value) {
 			ri.mapKeys = make([]interface{}, 0, len(sv))
 			for mk := range sv {
 				ri.mapKeys = append(ri.mapKeys, mk)
+			}
+			if ri.sortKeys {
+				sortMapKeys(ri.mapKeys)
 			}
 		}
 		if ri.idx >= len(ri.mapKeys) {
