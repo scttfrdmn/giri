@@ -121,3 +121,22 @@ detector finding.
 
 `Result.CacheHits` and `Result.PureExecuted` are additions, so a caller can
 verify cache effectiveness.
+
+## Req 5 — concreteness query
+
+**The concrete set is a new, explicit table, not a reading of the existing
+intercepts.** giri's CLI intercepts (`stdlib.go`) can't be trusted as
+"concrete" without auditing each one. Some are no-ops (`sort.Ints` does not
+sort), and some are wrong for narrow widths (`bits.LeadingZeros32`,
+`RotateLeft32`, `Reverse32`, `TrailingZeros8(0)` all call the 64-bit
+function). `pkg/interpreter/concrete_intercepts.go` lists every concretely
+modelled function, and each entry wraps the real stdlib function, so a
+listed function is correct by construction. In concrete mode the table
+takes precedence over the CLI intercepts; under the CLI nothing changes.
+v0 covers `math`, `math/bits`, `strings`, `strconv`, `unicode`,
+`unicode/utf8` and `sort` (the scalar-signature functions, plus the typed
+`sort` slice helpers). The CLI-side width bugs are tracked separately.
+
+`exec.ConcreteFuncs()` exposes the set, as the requirement asks. `IsConcrete`
+is false for methods and for functions of the loaded package, which are
+interpreted from source rather than intercepted.
