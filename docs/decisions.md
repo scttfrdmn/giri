@@ -274,7 +274,9 @@ noise.
 
 **`Result.ArgsAfter` mirrors `Outputs`:** one entry per set, one value per
 parameter, typed as the parameter's underlying Go type, with `nil` for
-non-slice parameters and nil slices. It's reported only for `Returned` sets,
+non-slice parameters. A nil slice argument comes back as a typed nil
+(`[]uint64(nil)`), which is what native code sees and what
+`reflect.DeepEqual` compares against. It's reported only for `Returned` sets,
 like `Outputs`.
 
 **A slice that ends up holding an unrepresentable value makes the set

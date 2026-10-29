@@ -8,14 +8,21 @@ import (
 )
 
 // nativeArgsAfter runs f natively on a copy of args and returns the copy's
-// slice contents afterwards, in ArgsAfter's shape (nil for non-slices and
-// nil slices).
+// slice contents afterwards, in ArgsAfter's shape (nil for non-slices; a nil
+// slice stays a typed nil).
 func nativeArgsAfter(f any, args []any) []any {
 	c := cloneArgs(args)
+	// An untyped nil argument becomes the parameter's typed nil natively.
+	ft := reflect.TypeOf(f)
+	for i, a := range c {
+		if a == nil && ft.In(i).Kind() == reflect.Slice {
+			c[i] = reflect.Zero(ft.In(i)).Interface()
+		}
+	}
 	nativeCall(f, c)
 	out := make([]any, len(c))
 	for i, a := range c {
-		if rv := reflect.ValueOf(a); a != nil && rv.Kind() == reflect.Slice && !rv.IsNil() {
+		if rv := reflect.ValueOf(a); a != nil && rv.Kind() == reflect.Slice {
 			out[i] = a
 		}
 	}
@@ -99,5 +106,20 @@ func TestArgsAfterOpaque(t *testing.T) {
 	}
 	if res.Outcomes[0] != Opaque || res.Outputs[0] != nil || res.ArgsAfter[0] != nil {
 		t.Errorf("outcome %v outputs %v ArgsAfter %v", res.Outcomes[0], res.Outputs[0], res.ArgsAfter[0])
+	}
+}
+
+// TestArgsAfterNilSliceIsTyped: a nil slice argument comes back as the
+// parameter's typed nil, which is what native code sees.
+func TestArgsAfterNilSliceIsTyped(t *testing.T) {
+	res, err := Run(kernelFunc(t, "PopClobber"), [][]any{{nil}, {[]uint64(nil)}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range res.ArgsAfter {
+		got, ok := res.ArgsAfter[i][0].([]uint64)
+		if !ok || got != nil {
+			t.Errorf("set %d: ArgsAfter %#v, want []uint64(nil)", i, res.ArgsAfter[i][0])
+		}
 	}
 }

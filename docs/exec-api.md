@@ -88,7 +88,7 @@ arena, bounds and race detection.
 |---|---|
 | `Outputs [][]any` | Per set run: one Go value per result. `nil` unless the outcome is `Returned`. |
 | `Outcomes []Outcome` | `Returned`; `Panicked` (unrecovered panic, including giri-raised index-out-of-range, nil dereference and divide-by-zero); `Exhausted`; `Opaque` (returned a value no concrete model produced). |
-| `ArgsAfter [][]any` | Per set run: each slice argument's contents after the call, typed like `Outputs`; `nil` for non-slice parameters, for a `nil` slice, and for sets that didn't return. A function that doesn't write into an argument reports its input. The caller's slices are never modified. Each slice argument has its own backing array, so aliasing between arguments isn't modelled. |
+| `ArgsAfter [][]any` | Per set run: each slice argument's contents after the call, typed like `Outputs` (a `nil` slice is a typed nil, as natively); `nil` for non-slice parameters and for sets that didn't return. A function that doesn't write into an argument reports its input. The caller's slices are never modified. Each slice argument has its own backing array, so aliasing between arguments isn't modelled. |
 | `Steps`, `StepsPerSet` | Instructions executed, callees included, in total and per set. |
 | `StepsByClass map[Class]uint64` | `Steps` by instruction class; every class present; sums to `Steps`. |
 | `Violations []Violation` | Detector findings in detection order: `Set`, `Category` (report category), `Message`, `Err`. |

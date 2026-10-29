@@ -124,8 +124,8 @@ type Result struct {
 
 	// ArgsAfter holds, for each argument set that was run, the contents of
 	// its slice arguments after the call: one entry per parameter, typed like
-	// Outputs (the parameter's underlying Go type), nil for non-slice
-	// parameters and for a nil slice. A function that writes into a slice
+	// Outputs (the parameter's underlying Go type; a nil slice is a typed
+	// nil such as []uint64(nil)), and nil for non-slice parameters. A function that writes into a slice
 	// argument reports what it wrote; one that doesn't reports its input.
 	// An entry is nil unless that set's Outcome is Returned. The slices
 	// passed to Run are never modified. Each slice argument gets its own
@@ -376,10 +376,7 @@ func argsAfter(s *interpreter.Session, sig *types.Signature, vals []Value) ([]an
 		if !ok {
 			return nil, false
 		}
-		if rv := reflect.ValueOf(got); rv.Kind() == reflect.Slice && rv.IsNil() {
-			got = nil // a nil slice argument stays nil
-		}
-		after[i] = got
+		after[i] = got // a nil slice comes back as a typed nil, as natively
 	}
 	return after, true
 }
