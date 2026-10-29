@@ -3,6 +3,7 @@
 package kernels
 
 import (
+	"image"
 	"math"
 	"math/bits"
 	"math/rand"
@@ -323,4 +324,46 @@ func mkpair(x int) pair2       { return pair2{x, x * 2} }
 func PurityMix(x int, b bool, f float64) (int, int, bool, celsius, int, int, int) {
 	q, r := divmod7(x)
 	return -x, ^x, !b, celsius(f), q + r, triple(x)[1], mkpair(x).b
+}
+
+// PopClobber returns the population count of xs and, like the genomes
+// tumble's E0 selected, also writes into its argument (#266).
+func PopClobber(xs []uint64) int {
+	n := 0
+	for _, x := range xs {
+		n += bits.OnesCount64(x)
+	}
+	if len(xs) > 1 {
+		xs[1] = 0x16
+	}
+	return n
+}
+
+// PrefixSum32 returns its whole answer through out, as tumble's E2
+// prefixsum kernel does.
+func PrefixSum32(xs, out []int32) {
+	var acc int32
+	for i, x := range xs {
+		acc += x
+		if i < len(out) {
+			out[i] = acc
+		}
+	}
+}
+
+// MixedArgs has slice and scalar parameters; it appends to s, which a
+// caller can't see, and writes through b, which it can.
+func MixedArgs(n int, s []string, b []bool) int {
+	s = append(s, "extra")
+	for i := range b {
+		b[i] = !b[i]
+	}
+	return n + len(s)
+}
+
+// OpaqueIntoArg stores a value giri can't compute (a field of an intercept
+// placeholder) into its slice argument.
+func OpaqueIntoArg(xs []int) int {
+	xs[0] = image.Pt(3, 4).X
+	return len(xs)
 }

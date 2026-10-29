@@ -334,6 +334,7 @@ func TestCacheNeverChangesResults(t *testing.T) {
 		{kernelFunc(t, "SqrtSum"), [][]any{{[]float64{4, 9}}, {[]float64{2, 4}}}},
 		{kernelFunc(t, "Pop"), [][]any{{uint64(3)}, {uint64(0xFFFF)}}},
 		{kernelFunc(t, "Strs"), [][]any{{"héllo"}, {"abc"}}},
+		{kernelFunc(t, "PrefixSum32"), [][]any{{[]int32{1, 2, 3}, make([]int32, 3)}, {[]int32{4, 5}, make([]int32, 2)}}},
 		{kernelFunc(t, "StructValues"), [][]any{{1.5, int32(3)}, {1.5, int32(4)}}},
 		{unsafek.Func("GCPoint"), [][]any{{4.0, false}, {4.0, true}}},
 		{unsafek.Func("PtrArith"), [][]any{{1}, {6}, {2}}},
@@ -343,8 +344,8 @@ func TestCacheNeverChangesResults(t *testing.T) {
 		for _, x := range r.Violations {
 			v = append(v, fmt.Sprintf("%d %s %s", x.Set, x.Category, x.Message))
 		}
-		return fmt.Sprintf("out=%v outcomes=%v steps=%d %v classes=%v viol=%v",
-			r.Outputs, r.Outcomes, r.Steps, r.StepsPerSet, r.StepsByClass, v)
+		return fmt.Sprintf("out=%v after=%v outcomes=%v steps=%d %v classes=%v viol=%v",
+			r.Outputs, r.ArgsAfter, r.Outcomes, r.Steps, r.StepsPerSet, r.StepsByClass, v)
 	}
 	reverse := func(a [][]any) [][]any {
 		out := make([][]any, len(a))

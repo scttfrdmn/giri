@@ -33,6 +33,7 @@ func canonical(t *testing.T, r Result) []byte {
 	}
 	b, err := json.Marshal(struct {
 		Outputs      [][]any
+		ArgsAfter    [][]any
 		Outcomes     []Outcome
 		Steps        uint64
 		StepsPerSet  []uint64
@@ -42,7 +43,7 @@ func canonical(t *testing.T, r Result) []byte {
 		Traces       [][]traceEntry
 		CacheHits    uint64
 		PureExecuted uint64
-	}{r.Outputs, r.Outcomes, r.Steps, r.StepsPerSet, classMap(r.StepsByClass), viols,
+	}{r.Outputs, r.ArgsAfter, r.Outcomes, r.Steps, r.StepsPerSet, classMap(r.StepsByClass), viols,
 		r.Exhausted, traces, r.CacheHits, r.PureExecuted})
 	if err != nil {
 		t.Fatal(err)
@@ -68,6 +69,7 @@ func TestDeterministicResults(t *testing.T) {
 		{"Accum", [][]any{{50}}},
 		{"OOB", [][]any{{[]int{1}, 3}}}, // with a violation
 		{"Strs", [][]any{{"déterminisme"}}},
+		{"PrefixSum32", [][]any{{[]int32{3, 1, 4, 1, 5}, make([]int32, 5)}}},
 	}
 	for _, c := range cases {
 		t.Run(c.fn, func(t *testing.T) {

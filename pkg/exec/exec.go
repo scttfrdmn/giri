@@ -122,6 +122,16 @@ type Result struct {
 	Outputs  [][]any
 	Outcomes []Outcome
 
+	// ArgsAfter holds, for each argument set that was run, the contents of
+	// its slice arguments after the call: one entry per parameter, typed like
+	// Outputs (the parameter's underlying Go type; a nil slice is a typed
+	// nil such as []uint64(nil)), and nil for non-slice parameters. A function that writes into a slice
+	// argument reports what it wrote; one that doesn't reports its input.
+	// An entry is nil unless that set's Outcome is Returned. The slices
+	// passed to Run are never modified. Each slice argument gets its own
+	// backing array, so aliasing between arguments is not modeled (#266).
+	ArgsAfter [][]any
+
 	// Steps is the number of SSA instructions executed across all argument
 	// sets (callees included); StepsPerSet breaks it down by set, and
 	// StepsByClass by instruction class (every class is present, possibly 0).
@@ -272,6 +282,7 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 				res.Traces = append(res.Traces, Traces{})
 			}
 			res.Outputs = append(res.Outputs, nil)
+			res.ArgsAfter = append(res.ArgsAfter, nil)
 			res.Outcomes = append(res.Outcomes, Exhausted)
 			res.StepsPerSet = append(res.StepsPerSet, 0)
 			res.Exhausted = true
@@ -281,6 +292,8 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 		for i, v := range a {
 			vals[i] = marshal(sess, sig.Params().At(i).Type(), v)
 		}
+		// marshal copies slice arguments into interpreter memory, so vals
+		// keeps pointing at them after the call: read back from there.
 		if tr != nil {
 			tr.traces = make(Traces)
 			res.Traces = append(res.Traces, tr.traces)
@@ -318,7 +331,15 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 				outputs[i] = v
 			}
 		}
+		var after []any
+		if outcome == Returned {
+			var ok bool
+			if after, ok = argsAfter(sess, sig, vals); !ok {
+				outcome, outputs, after = Opaque, nil, nil
+			}
+		}
 		res.Outputs = append(res.Outputs, outputs)
+		res.ArgsAfter = append(res.ArgsAfter, after)
 		res.Outcomes = append(res.Outcomes, outcome)
 		if outcome == Exhausted {
 			res.Exhausted = true
@@ -339,6 +360,25 @@ func category(err error) string {
 		err = vws.Err
 	}
 	return shadow.CategoryOf(err)
+}
+
+// argsAfter reads each slice argument back from interpreter memory after a
+// call. ok is false if a slice now holds a value with no concrete
+// representation (the set is then Opaque, like an unrepresentable result).
+func argsAfter(s *interpreter.Session, sig *types.Signature, vals []Value) ([]any, bool) {
+	after := make([]any, len(vals))
+	for i, v := range vals {
+		t := sig.Params().At(i).Type()
+		if _, isSlice := t.Underlying().(*types.Slice); !isSlice {
+			continue
+		}
+		got, ok := unmarshal(s, t, v)
+		if !ok {
+			return nil, false
+		}
+		after[i] = got // a nil slice comes back as a typed nil, as natively
+	}
+	return after, true
 }
 
 // --- Marshaling ---
