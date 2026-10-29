@@ -444,7 +444,7 @@ func (interp *Interpreter) dispatchStdlibCallInner(gid int64, site, pkgPath, nam
 	case "iter":
 		return interp.handleIterCall(name, args)
 	case "math/bits":
-		return interp.handleMathBitsCall(name, args)
+		return interp.handleMathBitsCall(gid, name, args)
 	case "math/cmplx":
 		return interp.handleMathCmplxCall(name, args)
 	case "html":
@@ -7442,7 +7442,14 @@ func (interp *Interpreter) handleIterCall(name string, args []Value) (Value, boo
 // handleMathBitsCall models math/bits.* functions (#155).
 // All functions operate on concrete uint values; concrete arguments use real
 // stdlib calls for accuracy. Non-concrete arguments return a non-zero sentinel.
-func (interp *Interpreter) handleMathBitsCall(name string, args []Value) (Value, bool) {
+func (interp *Interpreter) handleMathBitsCall(gid int64, name string, args []Value) (Value, bool) {
+	// Concrete integer arguments: call the real math/bits function of the
+	// right width through the concrete table (#250). The width-generic
+	// fallbacks below served LeadingZeros8/16/32, RotateLeft32, Reverse32,
+	// Add32, … with the 64-bit function and returned wrong values.
+	if impl := lookupConcrete("math/bits", name); impl != nil && allInt64(args) {
+		return impl.call(interp, gid, args), true
+	}
 	u0, u0ok := stdlibArgUint(args, 0)
 	u1, u1ok := stdlibArgUint(args, 1)
 
@@ -7530,6 +7537,16 @@ func (interp *Interpreter) handleMathBitsCall(name string, args []Value) (Value,
 		return Value{Raw: []Value{{Raw: int64(1)}, {Raw: int64(0)}}}, true
 	}
 	return Value{}, true
+}
+
+// allInt64 reports whether every argument is a concrete integer.
+func allInt64(args []Value) bool {
+	for _, a := range args {
+		if _, ok := a.Raw.(int64); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // toUint64 converts a Value to uint64, returns (val, ok).

@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI now tests Go 1.27 alongside 1.25 and 1.26.
 
 ### Fixed
+- **`math/bits` intercepts honor operand width** (#250): on the CLI path the
+  8/16/32-bit variants (`LeadingZeros32`, `TrailingZeros8`, `RotateLeft16`,
+  `Reverse32`, `Add32`/`Sub32`/`Mul32`/`Div32`, …) were served by the 64-bit
+  function and returned wrong values, which could steer interpretation down
+  the wrong branch. Concrete integer arguments now go through the native
+  `math/bits` function of the right width. CLI-path `sort` intercepts remain
+  placeholders until CLI memory is value-faithful (#260).
+- Integration test `math_bits_widths`; 0 violations (268 integration + 14
+  showcase = 282 total).
 - `pkg/exec` concrete mode: `unsafe.Pointer(uintptr(p) + n)` now addresses
   `p`'s allocation `n` bytes on instead of dereferencing nil, and the value-cache
   hook is never offered non-scalar operands (#255). Arrays and structs are now
