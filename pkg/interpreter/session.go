@@ -452,8 +452,7 @@ func IsPure(instr ssa.Instruction) bool {
 		if callee == nil {
 			return false
 		}
-		pkg, name := calleePkgName(callee)
-		impl := lookupConcrete(pkg, name)
+		impl := concreteCallee(callee)
 		if impl == nil || !impl.pure {
 			return false
 		}
@@ -474,6 +473,20 @@ func isScalarType(t types.Type) bool {
 		return false
 	}
 	return b.Info()&(types.IsBoolean|types.IsNumeric|types.IsString) != 0
+}
+
+// concreteCallee returns the concrete implementation of a static callee, or
+// nil. The table is keyed by package-level function name, so methods never
+// match: strings.(*Replacer).Replace is not strings.Replace (#257).
+func concreteCallee(callee *ssa.Function) *concreteImpl {
+	if callee == nil || callee.Signature.Recv() != nil {
+		return nil
+	}
+	pkg, name := calleePkgName(callee)
+	if pkg == "" {
+		return nil
+	}
+	return lookupConcrete(pkg, name)
 }
 
 // calleePkgName returns the package path and (generic-stripped) name of a

@@ -1645,7 +1645,7 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 					results = origin.Signature.Results()
 				}
 				if interp.concrete {
-					if impl := lookupConcrete(pkg.Path(), genericBaseName(interceptName)); impl != nil {
+					if impl := concreteCallee(callee); impl != nil {
 						return impl.call(interp, gid, args)
 					}
 				}
