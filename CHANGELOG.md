@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.0] - 2026-10-29
+
 ### Added
+- 6 new integration tests (272 integration + 14 showcase = 286 total).
 - **`pkg/exec` library entry point** (tumble requirements #238–#248): `exec.Run`
   interprets any SSA function on Go-valued argument sets (all integer widths,
   bool, floats, string, slices of those) and returns outputs that match native
