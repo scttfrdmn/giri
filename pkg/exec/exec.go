@@ -91,9 +91,12 @@ type Result struct {
 	Outcomes []Outcome
 
 	// Steps is the number of SSA instructions executed across all argument
-	// sets; StepsPerSet breaks it down by set.
-	Steps       uint64
-	StepsPerSet []uint64
+	// sets (callees included); StepsPerSet breaks it down by set, and
+	// StepsByClass by instruction class (every class is present, possibly 0).
+	// The sum of StepsByClass is Steps.
+	Steps        uint64
+	StepsPerSet  []uint64
+	StepsByClass map[Class]uint64
 
 	// Violations lists detector findings in detection order.
 	Violations []Violation
@@ -104,6 +107,27 @@ type Result struct {
 
 // Value is giri's interpreter value representation.
 type Value = interpreter.Value
+
+// Class is the cost class of an executed instruction. See interpreter.ClassOf
+// for which SSA instructions fall in each class.
+type Class = interpreter.InstrClass
+
+// Instruction classes.
+const (
+	ClassArithmetic      = interpreter.ClassArithmetic
+	ClassCompare         = interpreter.ClassCompare
+	ClassLoad            = interpreter.ClassLoad
+	ClassStore           = interpreter.ClassStore
+	ClassIndex           = interpreter.ClassIndex
+	ClassCallIntercepted = interpreter.ClassCallIntercepted
+	ClassCallInterpreted = interpreter.ClassCallInterpreted
+	ClassBuiltin         = interpreter.ClassBuiltin
+	ClassBranch          = interpreter.ClassBranch
+	ClassPhi             = interpreter.ClassPhi
+	ClassAlloc           = interpreter.ClassAlloc
+	ClassOther           = interpreter.ClassOther
+	NumClasses           = interpreter.NumClasses
+)
 
 // UnsupportedTypeError reports a parameter or result type that v0
 // marshalling does not cover (only integers, bools, floats, strings and
@@ -181,6 +205,7 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 	}
 
 	var res Result
+	var classes interpreter.ClassCounts
 	remaining := budget
 	for set, a := range args {
 		if remaining == 0 {
@@ -198,6 +223,9 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 		remaining -= min(out.Steps, remaining)
 
 		res.Steps += out.Steps
+		for c := range classes {
+			classes[c] += out.Classes[c]
+		}
 		res.StepsPerSet = append(res.StepsPerSet, out.Steps)
 		for _, err := range out.Violations {
 			res.Violations = append(res.Violations, Violation{
@@ -228,6 +256,10 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 			res.Exhausted = true
 			break
 		}
+	}
+	res.StepsByClass = make(map[Class]uint64, NumClasses)
+	for c := Class(0); c < NumClasses; c++ {
+		res.StepsByClass[c] = classes[c]
 	}
 	return res, nil
 }

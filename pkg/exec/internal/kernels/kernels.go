@@ -197,3 +197,23 @@ func MinMax(a, b, c uint64) (uint64, uint64) { return min(a, b, c), max(a, b, c)
 func TakesMap(m map[string]int) int { return len(m) }
 
 func ReturnsArray() [2]int { return [2]int{1, 2} }
+
+// ClassBranchy and ClassMem have hand-counted instruction mixes
+// (see TestStepsByClass).
+func ClassBranchy(a, b int) int {
+	c := a + b
+	if c > 10 {
+		c = c * 2
+	}
+	return c
+}
+
+func ClassMem(xs []int) int {
+	ys := make([]int, len(xs))
+	for i := 0; i < len(xs); i++ {
+		ys[i] = xs[i] << 1
+	}
+	return helper(ys[0]) + bits.OnesCount64(uint64(len(ys)))
+}
+
+func helper(x int) int { return x - 1 }

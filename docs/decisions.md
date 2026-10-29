@@ -60,3 +60,19 @@ than native. `len` and contents are exact.
 structs (element and field access works), maps as arguments or results,
 interface method calls into the standard library, and calls into non-stdlib
 dependencies of the loaded package (their bodies are not built).
+
+## Req 4 — cost counters by instruction class
+
+**Two classes beyond the requested list: `builtin` and `other`.** Calls to
+builtins (`len`, `append`, `copy`, `min`, …) are neither intercepted stdlib
+calls nor interpreted calls, and their native cost differs from both by
+orders of magnitude, so lumping them into either call class would skew
+calibration. `other` collects conversions, `Extract`, `Return`, `Panic`,
+`MakeInterface`-free bookkeeping and so on. The set is append-only.
+
+**Callee instructions count toward the caller's run.** `Steps` is every
+instruction executed during a call, including interpreted callees, which is
+what a cost model compares against native `ns/op`.
+
+**The CLI prints nothing new, even with `-v`.** Class counters exist only in
+library sessions; the CLI never creates one.
