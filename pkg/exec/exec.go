@@ -22,8 +22,13 @@ import (
 	"golang.org/x/tools/go/ssa"
 
 	"github.com/scttfrdmn/giri/pkg/interpreter"
+	"github.com/scttfrdmn/giri/pkg/report"
 	"github.com/scttfrdmn/giri/pkg/shadow"
 )
+
+// Version is the giri release this API ships with. pkg/exec is versioned with
+// giri: changes are additive within the 0.x series (docs/exec-api.md).
+const Version = report.Version
 
 // DefaultMaxSteps is the step budget used when Options.MaxSteps is zero.
 const DefaultMaxSteps = 10_000_000

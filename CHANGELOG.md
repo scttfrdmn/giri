@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`pkg/exec` library entry point** (tumble requirements #238–#248): `exec.Run`
+  interprets any SSA function on Go-valued argument sets (all integer widths,
+  bool, floats, string, slices of those) and returns outputs that match native
+  execution, per-set outcomes, step counts by instruction class, violations,
+  per-value traces, a value-cache hook for pure instructions (`exec.IsPure`),
+  a concreteness query (`exec.IsConcrete`, `exec.ConcreteFuncs`), `LoadDir`,
+  `Seed`, and `SingleGoroutine` / `SkipDetectors` fast paths. Backed by a new
+  value-faithful interpreter mode (`interpreter.NewSession`) that the CLI never
+  uses. Docs: `docs/exec-api.md`, `docs/decisions.md`, `docs/perf.md`.
 - **Signature-aware smart fallback / auto-stub** (#225): the fallback for
   unmodeled stdlib and `golang.org/x/*` calls (#222) now shapes its return value
   from the callee's static result signature instead of always returning a single
@@ -31,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`internal/poll/splice_linux.go`), which x/tools v0.41.0 could not build.
   Bumped `golang.org/x/tools` to v0.52.0; the other `golang.org/x/*` modules
   move to the versions it requires.
+- Same-module calls in modules with a dotless path (`module probe`) and in
+  file-loaded `command-line-arguments` packages were stubbed as unmodeled stdlib
+  calls returning zero; they are now interpreted (#249).
 - Multi-value unmodeled calls previously returned a single opaque scalar, so the
   SSA tuple unpack (`ssa.Extract`) failed and **every** result slot came back as
   a nil value — reintroducing the nil-value hazards #222 addressed, for the

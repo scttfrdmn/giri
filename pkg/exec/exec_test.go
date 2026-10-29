@@ -185,3 +185,9 @@ func TestUnsupportedTypes(t *testing.T) {
 		}
 	}
 }
+
+func TestVersion(t *testing.T) {
+	if Version == "" || Version[0] != '0' {
+		t.Errorf("Version = %q, want a 0.x giri release", Version)
+	}
+}
