@@ -259,8 +259,9 @@ any SSA function (loaded with `exec.LoadDir`) on Go-valued argument sets: intege
 bools, floats, strings and slices of those. It returns the function's outputs,
 which match native execution, together with deterministic instrumentation: step
 counts by instruction class, detector violations, per-value execution traces, and
-a value-cache hook for pure instructions. Functions run in a value-faithful
-interpreter mode that the CLI never uses, so CLI behavior is unaffected. The API
+a value-cache hook for pure instructions. Functions run in a concrete
+interpreter mode (typed arithmetic on top of the value-faithful memory the CLI
+also uses), so outputs match native code. The API
 is additive and versioned with giri; see [docs/exec-api.md](docs/exec-api.md).
 
 ## Example Output

@@ -23,10 +23,11 @@ store, element-carrying `append`/`copy`/`clear`/string slicing/conversions,
 exact constants, and integer divide-by-zero as a halting panic. CLI entry
 points (`Run`, `RunN`, `RunTests`) never set it, so CLI output, exit codes and
 detector semantics are unchanged; the full integration suite is the regression
-check. This also delivers tumble req 11 (#248), scoped to `pkg/exec` only. The
-CLI path is not made value-faithful, because that would change which branches
-existing programs take, and so which findings they report. (Discussed on #238
-and #248.)
+check. This also delivers tumble req 11 (#248). It was first scoped to
+`pkg/exec` only, for fear of changing CLI findings. #260 later turned the
+memory half on for the CLI as well (see below), after measuring that no
+finding changed on any of the 285 integration and showcase programs. Typed
+arithmetic stays `pkg/exec`-only.
 
 **Result is per-argument-set aware.** Beyond the fields in the requirements,
 `Result` has `Outcomes []Outcome` (`Returned`, `Panicked`, `Exhausted`,
@@ -253,3 +254,18 @@ the detectors exist to flag. The recovered panic value is a string-typed
 interface (`"runtime error: …"`), not a `runtime.Error`, so code that
 type-asserts it to `error` sees a failed assertion.
 
+
+
+## Value-faithful memory on the CLI path (#260)
+
+**The CLI now uses the element store.** Loads return the value last stored at
+every offset, arrays and structs are values, `append`/`copy`/`clear` and
+string↔slice conversions carry elements, and `sort.*` runs the real functions.
+Typed arithmetic, string slicing, exact constants and the uintptr encoding
+stay `pkg/exec`-only. The CLI's unsafe-pointer detectors read pointer
+provenance off uintptr values, and the encoding would change that.
+
+**Measured impact:** on all 285 integration and showcase programs, CLI findings
+(category and location) are identical to `main`. On a store-heavy program
+(200k element writes), peak RSS rises by about 3% and wall time is within
+noise.

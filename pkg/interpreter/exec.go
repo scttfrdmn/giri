@@ -544,7 +544,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		addr := interp.resolveValue(frame, inst.Addr)
 		val := interp.resolveValue(frame, inst.Val)
 		size := interp.typeSizeOf(inst.Val.Type())
-		if interp.concrete {
+		if interp.faithful {
 			if err := interp.storeConcrete(gid, addr, val, inst.Val.Type(), size, site); err != nil {
 				interp.recordViolation(gid, err)
 			}
@@ -559,7 +559,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		switch inst.Op {
 		case token.MUL: // Dereference (load)
 			size := interp.typeSizeOf(inst.Type())
-			if interp.concrete {
+			if interp.faithful {
 				result, err := interp.loadConcrete(gid, operand, inst.Type(), size, site)
 				if err != nil {
 					interp.recordViolation(gid, err)
@@ -768,7 +768,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 
 	case *ssa.Field:
 		base := interp.resolveValue(frame, inst.X)
-		if interp.concrete {
+		if interp.faithful {
 			frame.Locals[interp.vname(inst)] = interp.fieldConcrete(inst, base)
 			break
 		}
@@ -782,7 +782,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		x := interp.resolveValue(frame, inst.X)
 		idx := interp.resolveValue(frame, inst.Index)
 		idxInt := int(toInt64(idx))
-		if _, isArr := inst.X.Type().Underlying().(*types.Array); isArr && interp.concrete {
+		if _, isArr := inst.X.Type().Underlying().(*types.Array); isArr && interp.faithful {
 			frame.Locals[interp.vname(inst)] = interp.indexArrayConcrete(gid, inst, x, idxInt, site)
 			break
 		}
@@ -797,7 +797,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			if sv.Backing != nil {
 				elemPtr := interp.derive(sv.Backing, idxInt*elemSize)
 				addrVal := Value{Raw: elemPtr, Provenance: elemPtr}
-				if interp.concrete {
+				if interp.faithful {
 					result, err := interp.loadConcrete(gid, addrVal, inst.Type(), elemSize, site)
 					if err != nil {
 						interp.recordViolation(gid, err)
@@ -1159,7 +1159,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 
 	case *ssa.SliceToArrayPointer:
 		base := interp.resolveValue(frame, inst.X)
-		if interp.concrete {
+		if interp.faithful {
 			// (*[N]T)(s) and [N]T(s) panic when len(s) < N.
 			n := int(inst.Type().Underlying().(*types.Pointer).Elem().Underlying().(*types.Array).Len())
 			sv, _ := base.Raw.(*SliceValue)
@@ -1440,8 +1440,8 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			}
 			frame.Locals[interp.vname(inst)] = result
 		} else {
-			if interp.concrete {
-				if r, ok := interp.concreteConvert(val, inst.X.Type(), inst.Type(), site); ok {
+			if interp.faithful {
+				if r, ok := interp.concreteConvert(val, inst.X.Type(), inst.Type(), site, interp.concrete); ok {
 					frame.Locals[interp.vname(inst)] = r
 					break
 				}
@@ -1539,8 +1539,8 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 
 	// Handle SSA builtins (unsafe.Add, len, cap, append, etc.) — not GC points.
 	if b, ok := call.Call.Value.(*ssa.Builtin); ok {
-		if interp.concrete {
-			if v, ok := interp.concreteBuiltin(gid, b.Name(), &call.Call, args, site); ok {
+		if interp.faithful {
+			if v, ok := interp.concreteBuiltin(gid, b.Name(), &call.Call, args, site, interp.concrete); ok {
 				return v
 			}
 		}
@@ -1695,10 +1695,12 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 				} else if origin := callee.Origin(); origin != nil && origin.Signature != nil {
 					results = origin.Signature.Results()
 				}
-				if interp.concrete {
-					if impl := concreteCallee(callee); impl != nil {
-						return impl.call(interp, gid, args)
-					}
+				// Concrete mode uses the native-backed table for every concrete
+				// function. The CLI uses it for sort, whose slice argument
+				// lives in the element store (#260); elsewhere the CLI keeps
+				// its own intercepts, which tolerate opaque arguments.
+				if impl := concreteCallee(callee); impl != nil && (interp.concrete || (interp.faithful && pkg.Path() == "sort" && sortArgsConcrete(args))) {
+					return impl.call(interp, gid, args)
 				}
 				if result, ok := interp.execStdlibCall(gid, site, pkg.Path(), interceptName, args, results); ok {
 					return result

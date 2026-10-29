@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI now tests Go 1.27 alongside 1.25 and 1.26.
 
 ### Fixed
+- **Value-faithful memory on the CLI path** (#260, the CLI half of #248): loads
+  return the value last stored at every offset (slice and array elements,
+  struct fields), not only offset 0. Arrays and structs are values, `append` /
+  `copy` / `clear` and string↔slice conversions carry elements, and `sort.*`
+  runs the real functions (the `sort` half of #250). The interpretation now
+  takes the branches native code takes where they depend on memory contents.
+  On all 285 integration and showcase programs, findings are unchanged. Typed
+  arithmetic stays `pkg/exec`-only.
+- Integration test `faithful_memory`; 0 violations (272 integration + 14
+  showcase = 286 total).
 - **`math/bits` intercepts honor operand width** (#250): on the CLI path the
   8/16/32-bit variants (`LeadingZeros32`, `TrailingZeros8`, `RotateLeft16`,
   `Reverse32`, `Add32`/`Sub32`/`Mul32`/`Div32`, …) were served by the 64-bit

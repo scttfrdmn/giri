@@ -109,10 +109,8 @@ type callState struct {
 	cacheHits    uint64
 	pureExecuted uint64
 	sites        map[token.Pos]string
-	nextAlloc    uint64                  // SkipDetectors allocation IDs
-	layouts      map[types.Type][]leaf   // array/struct leaf layouts
-	encoded      map[shadow.AllocID]bool // allocations converted to uintptr
-	hb           map[int64]uint64        // clocks of finished calls (happens-before)
+	nextAlloc    uint64           // SkipDetectors allocation IDs
+	hb           map[int64]uint64 // clocks of finished calls (happens-before)
 	single       bool
 }
 
@@ -164,17 +162,14 @@ func NewSession(fn *ssa.Function, opts SessionOptions) (*Session, error) {
 	interp := New(fn.Prog.Fset, cfg)
 	interp.prog = fn.Prog
 	interp.concrete = true
-	interp.elems = make(map[elemKey]Value)
 	interp.names = make(map[unsafe.Pointer]string)
 	interp.globals = make(map[*ssa.Global]Value)
 	interp.cs = &callState{
-		cache:   opts.Cache,
-		tracer:  opts.Tracer,
-		sites:   make(map[token.Pos]string),
-		layouts: make(map[types.Type][]leaf),
-		encoded: make(map[shadow.AllocID]bool),
-		hb:      make(map[int64]uint64),
-		single:  opts.SingleGoroutine,
+		cache:  opts.Cache,
+		tracer: opts.Tracer,
+		sites:  make(map[token.Pos]string),
+		hb:     make(map[int64]uint64),
+		single: opts.SingleGoroutine,
 	}
 	if opts.Cache != nil {
 		interp.cs.pure = make(map[ssa.Instruction]bool)
