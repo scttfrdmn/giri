@@ -169,3 +169,45 @@ export data written by go1.27, so every import came back without types.
 `LoadDir` uses `NeedDeps`, like `internal/ssautil`, but builds SSA bodies only
 for the target package. Upgrading x/tools would allow the export-data path
 and cut load time for packages with many imports.
+
+## Req 8 — determinism
+
+**Audit of interpreter-introduced nondeterminism** (intercepts reachable from
+kernel code, and the interpreter itself):
+
+| Source | Status |
+|---|---|
+| `range` over a map | Go randomizes the order. Concrete mode iterates keys in sorted order (bool, int, float, string, then other by text). The CLI path is unchanged. |
+| `math/rand`, `math/rand/v2` | Drawn from the interpreter's generator, seeded from `Options.Seed`. |
+| Random/PCT schedulers | Seeded from `Options.Seed`; with `SingleGoroutine` there is no scheduler. |
+| `time.Now`, `Since`, `Until`, timers | Intercepts return fixed values; already deterministic. |
+| `crypto/rand.Read` | Returns the length without filling the buffer; deterministic. Not concrete. |
+| `os.Getpid/Getuid/Getgid`, `os.Getenv`, `syscall.Getenv`, `os.Getwd`, `os.Hostname` | Host-dependent, deterministic within a host. None is concrete, so tumble's grammar never admits them. |
+| Interpreter bookkeeping maps (goroutines, channels, mutexes) | Never iterated in a way that reaches a Result: sessions do not run the CLI's end-of-program `Finish` checks, and violations are kept in detection order. |
+| Goroutine IDs in violation messages | Per-session counters; deterministic. |
+
+`TestDeterministicResults` serializes every field of `Result`, traces
+included, and requires byte-identical output across six runs.
+
+**Across machines, two things legitimately differ.** First, violation
+messages contain absolute source paths. Second, results of `math` functions
+with architecture-specific assembly (e.g. `math.Exp` on amd64 versus arm64)
+follow the host, as requirement 8 allows. Basic float arithmetic is never
+fused (see req 1), and `int`/`uint` are 64-bit on every supported host.
+
+**Sessions skip end-of-program checks.** Goroutine leaks, deadlocks, arena
+leaks and unreleased context cancels are reported by the CLI's `Finish` once
+`main` returns. A session calls one function repeatedly and has no "end of
+program", so those checks do not run. Findings raised during a call are all
+reported.
+
+## Req 9 — budget behaviour
+
+**`MaxSteps` is one budget for the whole Run**, shared across argument sets
+in order, not a per-set limit. That bounds the cost of evaluating one
+candidate. When it runs out, the Run stops: `Outputs` and `Outcomes` are
+shorter than `args`, the last outcome is `Exhausted`, `Result.Exhausted` is
+set, and steps, class counters and traces cover everything executed. No
+violation is recorded for exhaustion, unlike the CLI's step-limit error.
+`MaxSteps == 0` means `DefaultMaxSteps` (10M, giri's CLI default), not
+unlimited, because evolved candidates routinely loop forever.

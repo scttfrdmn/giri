@@ -60,6 +60,11 @@ type Options struct {
 	// (index out of range, nil dereference, divide by zero) are still raised.
 	// See docs/perf.md for the measured speedup.
 	SkipDetectors bool
+
+	// Seed seeds every source of randomness the interpreter models: the
+	// math/rand and math/rand/v2 intercepts and the Random/PCT schedulers.
+	// Runs with equal SSA, arguments and Options produce identical Results.
+	Seed int64
 }
 
 // Outcome describes how one argument set's call ended.
@@ -231,6 +236,7 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 	cfg := interpreter.DefaultConfig()
 	cfg.MaxSteps = budget
 	cfg.TrackInit = opts.TrackInit
+	cfg.RandomSeed = opts.Seed
 	var tr *tracer
 	sopts := interpreter.SessionOptions{
 		Config:          cfg,

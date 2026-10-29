@@ -5,7 +5,9 @@ package kernels
 import (
 	"math"
 	"math/bits"
+	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -246,3 +248,20 @@ func Spawns(x int) int {
 
 // OOB indexes out of range when i >= len(xs).
 func OOB(xs []int, i int) int { return xs[i] }
+
+// Noisy draws from math/rand, which giri models with a seeded generator.
+func Noisy(n int) int { return rand.Intn(n) + rand.Intn(n)*n }
+
+// MapOrder's result depends on map iteration order, which Go randomizes and
+// giri's concrete mode makes sorted.
+func MapOrder(xs []int) string {
+	m := map[int]bool{}
+	for _, x := range xs {
+		m[x] = true
+	}
+	s := ""
+	for k := range m {
+		s += strconv.Itoa(k) + ","
+	}
+	return s
+}
