@@ -1557,7 +1557,18 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 		}
 		if interceptPkg != nil {
 			if pkg := interceptPkg.Pkg; pkg != nil {
-				if result, ok := interp.execStdlibCall(gid, site, pkg.Path(), interceptName, args); ok {
+				// The callee's result tuple lets the smart fallback shape an
+				// auto-generated stub for unmodeled calls (#225). For generic
+				// instantiations callee.Signature is still populated, but prefer
+				// Origin's when the callee's is absent, mirroring the pkg/name
+				// resolution above.
+				var results *types.Tuple
+				if sig := callee.Signature; sig != nil {
+					results = sig.Results()
+				} else if origin := callee.Origin(); origin != nil && origin.Signature != nil {
+					results = origin.Signature.Results()
+				}
+				if result, ok := interp.execStdlibCall(gid, site, pkg.Path(), interceptName, args, results); ok {
 					return result
 				}
 			}

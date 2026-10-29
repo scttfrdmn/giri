@@ -566,6 +566,14 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	// #225: signature-aware smart fallback shapes multi-return unmodeled calls.
+	{
+		name:           "autostub multiret",
+		dir:            "autostub_multiret",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 	// v0.66.0 regression tests
 	{
 		name:           "text encoding cjk",
