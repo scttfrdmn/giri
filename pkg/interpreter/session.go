@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"unsafe"
 
 	"golang.org/x/tools/go/ssa"
 
@@ -161,6 +162,7 @@ func NewSession(fn *ssa.Function, opts SessionOptions) (*Session, error) {
 	interp.prog = fn.Prog
 	interp.concrete = true
 	interp.elems = make(map[elemKey]Value)
+	interp.names = make(map[unsafe.Pointer]string)
 	interp.globals = make(map[*ssa.Global]Value)
 	interp.cs = &callState{
 		cache:  opts.Cache,
@@ -338,7 +340,7 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 			interp.steps += steps
 			cs.classes[class] += steps
 			cs.cacheHits++
-			frame.Locals[value.Name()] = res
+			frame.Locals[interp.vname(value)] = res
 			if cs.tracer != nil {
 				cs.tracer.Record(value, res)
 			}
@@ -356,14 +358,14 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 		cs.pureExecuted++
 		g := interp.goroutines[gid]
 		if len(interp.violations) == nviol && g != nil && !g.Panicked && !g.Panicking {
-			if res, ok := frame.Locals[value.Name()]; ok {
+			if res, ok := frame.Locals[interp.vname(value)]; ok {
 				cs.cache.Store(value, operands, res, 1)
 			}
 		}
 	}
 	if cs.tracer != nil {
 		if v, ok := instr.(ssa.Value); ok {
-			if res, ok := frame.Locals[v.Name()]; ok {
+			if res, ok := frame.Locals[interp.vname(v)]; ok {
 				cs.tracer.Record(v, res)
 			}
 		}

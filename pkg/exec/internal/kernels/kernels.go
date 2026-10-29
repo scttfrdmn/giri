@@ -226,3 +226,23 @@ func Accum(n int) int {
 	}
 	return s
 }
+
+// IntLoop is the straight-line integer loop used for ns/instruction
+// measurements (docs/perf.md).
+func IntLoop(n int) int {
+	s := 0
+	for i := 0; i < n; i++ {
+		s = s*31 + i ^ s>>3
+	}
+	return s
+}
+
+// Spawns starts a goroutine (rejected under SingleGoroutine).
+func Spawns(x int) int {
+	done := make(chan int, 1)
+	go func() { done <- x }()
+	return x
+}
+
+// OOB indexes out of range when i >= len(xs).
+func OOB(xs []int, i int) int { return xs[i] }

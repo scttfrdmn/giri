@@ -48,6 +48,18 @@ type Options struct {
 
 	// Cache, if non-nil, is consulted for pure instructions (see CacheHook).
 	Cache CacheHook
+
+	// SingleGoroutine runs with max_goroutines == 1 and no scheduler: a go
+	// statement records a "goroutine limit reached" violation instead of
+	// spawning.
+	SingleGoroutine bool
+
+	// SkipDetectors disables shadow-memory checks and every detector, for a
+	// function the caller has already verified clean with detectors on.
+	// Outputs, step counts and traces are unchanged; run-time panics
+	// (index out of range, nil dereference, divide by zero) are still raised.
+	// See docs/perf.md for the measured speedup.
+	SkipDetectors bool
 }
 
 // Outcome describes how one argument set's call ended.
@@ -220,7 +232,11 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 	cfg.MaxSteps = budget
 	cfg.TrackInit = opts.TrackInit
 	var tr *tracer
-	sopts := interpreter.SessionOptions{Config: cfg}
+	sopts := interpreter.SessionOptions{
+		Config:          cfg,
+		SingleGoroutine: opts.SingleGoroutine,
+		SkipDetectors:   opts.SkipDetectors,
+	}
 	if opts.Cache != nil {
 		sopts.Cache = opts.Cache
 	}

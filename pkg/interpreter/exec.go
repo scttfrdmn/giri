@@ -516,7 +516,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		}
 		allocID := interp.allocate(kind, size, typeName, site)
 		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
-		frame.Locals[inst.Name()] = Value{Raw: ptr, Provenance: ptr}
+		frame.Locals[interp.vname(inst)] = Value{Raw: ptr, Provenance: ptr}
 		// Track stack allocs for poisoning when the frame exits (#51).
 		if kind == shadow.AllocStack {
 			frame.StackAllocs = append(frame.StackAllocs, allocID)
@@ -546,14 +546,14 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				if err != nil {
 					interp.recordViolation(gid, err)
 				}
-				frame.Locals[inst.Name()] = result
+				frame.Locals[interp.vname(inst)] = result
 				break
 			}
 			result, err := interp.handleLoad(gid, operand, size, site)
 			if err != nil {
 				interp.recordViolation(gid, err)
 			}
-			frame.Locals[inst.Name()] = result
+			frame.Locals[interp.vname(inst)] = result
 		case token.ARROW: // Channel receive (<-ch)
 			// Receive from nil channel blocks forever in Go (deadlock) (#122).
 			if operand.Raw == nil {
@@ -592,53 +592,53 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			}
 			interp.handleChannelRecv(gid, chanID, site)
 			if inst.CommaOk {
-				frame.Locals[inst.Name()] = Value{Raw: []Value{{}, {Raw: recvOk}}}
+				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{}, {Raw: recvOk}}}
 			} else {
-				frame.Locals[inst.Name()] = Value{}
+				frame.Locals[interp.vname(inst)] = Value{}
 			}
 		case token.SUB:
 			if interp.concrete {
 				if r, ok := concreteUnOp(inst.Op, operand, inst.Type()); ok {
-					frame.Locals[inst.Name()] = r
+					frame.Locals[interp.vname(inst)] = r
 					break
 				}
 			}
 			if v, ok := operand.Raw.(int64); ok {
-				frame.Locals[inst.Name()] = Value{Raw: -v}
+				frame.Locals[interp.vname(inst)] = Value{Raw: -v}
 			} else if v, ok := operand.Raw.(float64); ok {
-				frame.Locals[inst.Name()] = Value{Raw: -v}
+				frame.Locals[interp.vname(inst)] = Value{Raw: -v}
 			} else if c, ok := operand.Raw.(complex128); ok { // (#144)
-				frame.Locals[inst.Name()] = Value{Raw: -c}
+				frame.Locals[interp.vname(inst)] = Value{Raw: -c}
 			} else {
-				frame.Locals[inst.Name()] = operand
+				frame.Locals[interp.vname(inst)] = operand
 			}
 		case token.NOT:
 			if v, ok := operand.Raw.(bool); ok {
-				frame.Locals[inst.Name()] = Value{Raw: !v}
+				frame.Locals[interp.vname(inst)] = Value{Raw: !v}
 			} else {
-				frame.Locals[inst.Name()] = operand
+				frame.Locals[interp.vname(inst)] = operand
 			}
 		case token.XOR:
 			if interp.concrete {
 				if r, ok := concreteUnOp(inst.Op, operand, inst.Type()); ok {
-					frame.Locals[inst.Name()] = r
+					frame.Locals[interp.vname(inst)] = r
 					break
 				}
 			}
 			if v, ok := operand.Raw.(int64); ok {
-				frame.Locals[inst.Name()] = Value{Raw: ^v}
+				frame.Locals[interp.vname(inst)] = Value{Raw: ^v}
 			} else {
-				frame.Locals[inst.Name()] = operand
+				frame.Locals[interp.vname(inst)] = operand
 			}
 		default:
-			frame.Locals[inst.Name()] = operand
+			frame.Locals[interp.vname(inst)] = operand
 		}
 
 	case *ssa.BinOp:
 		x := interp.resolveValue(frame, inst.X)
 		y := interp.resolveValue(frame, inst.Y)
 		if interp.concrete {
-			frame.Locals[inst.Name()] = interp.binOpConcrete(gid, inst, x, y, site)
+			frame.Locals[interp.vname(inst)] = interp.binOpConcrete(gid, inst, x, y, site)
 			break
 		}
 		// Division/modulo by zero: statically-known zero divisor (#55).
@@ -657,7 +657,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				}
 			}
 		}
-		frame.Locals[inst.Name()] = evalBinOp(inst.Op, x, y)
+		frame.Locals[interp.vname(inst)] = evalBinOp(inst.Op, x, y)
 
 	case *ssa.FieldAddr:
 		base := interp.resolveValue(frame, inst.X)
@@ -671,7 +671,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			}
 		}
 		result := interp.handleFieldAddr(gid, base, fieldOffset, site)
-		frame.Locals[inst.Name()] = result
+		frame.Locals[interp.vname(inst)] = result
 
 	case *ssa.IndexAddr:
 		base := interp.resolveValue(frame, inst.X)
@@ -738,22 +738,22 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			if g := interp.goroutines[gid]; g != nil {
 				g.Panicked = true
 			}
-			frame.Locals[inst.Name()] = Value{}
+			frame.Locals[interp.vname(inst)] = Value{}
 			break
 		}
 		if arrayOOB || sliceOOB {
-			frame.Locals[inst.Name()] = Value{}
+			frame.Locals[interp.vname(inst)] = Value{}
 			break
 		}
 		result := interp.handleIndexAddr(gid, base, indexVal, elemSize, site)
-		frame.Locals[inst.Name()] = result
+		frame.Locals[interp.vname(inst)] = result
 
 	case *ssa.Field:
 		base := interp.resolveValue(frame, inst.X)
 		if m, ok := base.Raw.(map[int]Value); ok {
-			frame.Locals[inst.Name()] = m[inst.Field]
+			frame.Locals[interp.vname(inst)] = m[inst.Field]
 		} else {
-			frame.Locals[inst.Name()] = Value{}
+			frame.Locals[interp.vname(inst)] = Value{}
 		}
 
 	case *ssa.Index:
@@ -776,14 +776,14 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					if err != nil {
 						interp.recordViolation(gid, err)
 					}
-					frame.Locals[inst.Name()] = result
+					frame.Locals[interp.vname(inst)] = result
 					break
 				}
 				result, err := interp.handleLoad(gid, addrVal, elemSize, site)
 				if err != nil {
 					interp.recordViolation(gid, err)
 				}
-				frame.Locals[inst.Name()] = result
+				frame.Locals[interp.vname(inst)] = result
 			} else {
 				// Nil slice (Backing==nil): any element access is out of bounds (#126).
 				interp.recordViolation(gid, &shadow.OutOfBoundsError{
@@ -795,7 +795,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				if g := interp.goroutines[gid]; g != nil {
 					g.Panicked = true
 				}
-				frame.Locals[inst.Name()] = Value{}
+				frame.Locals[interp.vname(inst)] = Value{}
 			}
 		case string:
 			// s[i] returns the byte at byte position i (#73), not a rune.
@@ -811,24 +811,24 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				if g := interp.goroutines[gid]; g != nil {
 					g.Panicked = true
 				}
-				frame.Locals[inst.Name()] = Value{}
+				frame.Locals[interp.vname(inst)] = Value{}
 			} else {
-				frame.Locals[inst.Name()] = Value{Raw: int64(sv[idxInt])}
+				frame.Locals[interp.vname(inst)] = Value{Raw: int64(sv[idxInt])}
 			}
 		case map[interface{}]Value:
 			// Arrays stored as maps (rare but possible)
-			frame.Locals[inst.Name()] = sv[int64(idxInt)]
+			frame.Locals[interp.vname(inst)] = sv[int64(idxInt)]
 		default:
-			frame.Locals[inst.Name()] = Value{}
+			frame.Locals[interp.vname(inst)] = Value{}
 		}
 
 	case *ssa.Extract:
 		// Extract element from a multi-value tuple (e.g. multi-return)
 		tuple := interp.resolveValue(frame, inst.Tuple)
 		if elems, ok := tuple.Raw.([]Value); ok && inst.Index < len(elems) {
-			frame.Locals[inst.Name()] = elems[inst.Index]
+			frame.Locals[interp.vname(inst)] = elems[inst.Index]
 		} else {
-			frame.Locals[inst.Name()] = Value{}
+			frame.Locals[interp.vname(inst)] = Value{}
 		}
 
 	case *ssa.Lookup:
@@ -844,15 +844,15 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			mk := toMapKey(key)
 			val, found := m[mk]
 			if inst.CommaOk {
-				frame.Locals[inst.Name()] = Value{Raw: []Value{val, {Raw: found}}}
+				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{val, {Raw: found}}}
 			} else {
-				frame.Locals[inst.Name()] = val
+				frame.Locals[interp.vname(inst)] = val
 			}
 		} else {
 			if inst.CommaOk {
-				frame.Locals[inst.Name()] = Value{Raw: []Value{{}, {Raw: false}}}
+				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{}, {Raw: false}}}
 			} else {
-				frame.Locals[inst.Name()] = Value{}
+				frame.Locals[interp.vname(inst)] = Value{}
 			}
 		}
 
@@ -909,7 +909,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		allocID := interp.allocate(shadow.AllocHeap, allocSize, inst.Type().String(), site)
 		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
 		sv := arenaNew(interp.arena, SliceValue{Backing: ptr, Len: lenN, Cap: capN})
-		frame.Locals[inst.Name()] = Value{Raw: sv, Provenance: ptr}
+		frame.Locals[interp.vname(inst)] = Value{Raw: sv, Provenance: ptr}
 
 	case *ssa.Slice:
 		base := interp.resolveValue(frame, inst.X)
@@ -932,7 +932,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		//   (a) []T — already a SliceValue (reslice)
 		//   (b) *[N]T — pointer to array (make([]T,n) lowered to Alloc+Slice)
 		if s, ok := base.Raw.(string); ok && interp.concrete {
-			frame.Locals[inst.Name()] = interp.sliceStringConcrete(gid, s, lowVal, highVal, site)
+			frame.Locals[interp.vname(inst)] = interp.sliceStringConcrete(gid, s, lowVal, highVal, site)
 			break
 		}
 		var sv *SliceValue
@@ -972,7 +972,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					TypeName:   inst.X.Type().String(),
 				})
 				// Produce a safe empty slice so execution can continue
-				frame.Locals[inst.Name()] = Value{Raw: arenaNew(interp.arena, SliceValue{Len: 0, Cap: 0})}
+				frame.Locals[interp.vname(inst)] = Value{Raw: arenaNew(interp.arena, SliceValue{Len: 0, Cap: 0})}
 			} else {
 				var newPtr *shadow.Pointer
 				if sv.Backing != nil {
@@ -983,10 +983,10 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					Len:     highVal - lowVal,
 					Cap:     maxVal - lowVal, // 3-index: cap = max - low (#85)
 				})
-				frame.Locals[inst.Name()] = Value{Raw: newSv, Provenance: newPtr}
+				frame.Locals[interp.vname(inst)] = Value{Raw: newSv, Provenance: newPtr}
 			}
 		} else {
-			frame.Locals[inst.Name()] = base
+			frame.Locals[interp.vname(inst)] = base
 		}
 
 	case *ssa.MakeClosure:
@@ -998,7 +998,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		for i, binding := range inst.Bindings {
 			freeVars[i] = interp.resolveValue(frame, binding)
 		}
-		frame.Locals[inst.Name()] = Value{Raw: &ClosureValue{Fn: fn, FreeVars: freeVars}}
+		frame.Locals[interp.vname(inst)] = Value{Raw: &ClosureValue{Fn: fn, FreeVars: freeVars}}
 
 	case *ssa.MakeMap:
 		// Negative size hint panics at runtime: "makemap: size out of range" (#136).
@@ -1014,7 +1014,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		// concurrent reads and writes to the same map (#46).
 		allocID := interp.allocate(shadow.AllocHeap, 8, inst.Type().String(), site)
 		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
-		frame.Locals[inst.Name()] = Value{Raw: make(map[interface{}]Value), Provenance: ptr}
+		frame.Locals[interp.vname(inst)] = Value{Raw: make(map[interface{}]Value), Provenance: ptr}
 
 	case *ssa.MakeChan:
 		// Extract the channel capacity from the instruction operand (#44).
@@ -1028,7 +1028,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			capacity = 0
 		}
 		chanID := interp.createChannel(capacity)
-		frame.Locals[inst.Name()] = Value{Raw: chanID}
+		frame.Locals[interp.vname(inst)] = Value{Raw: chanID}
 
 	case *ssa.Range:
 		base := interp.resolveValue(frame, inst.X)
@@ -1044,7 +1044,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				ri.arrayLen = int(at.Len())
 			}
 		}
-		frame.Locals[inst.Name()] = Value{Raw: ri}
+		frame.Locals[interp.vname(inst)] = Value{Raw: ri}
 
 	case *ssa.Next:
 		iter := interp.resolveValue(frame, inst.Iter)
@@ -1057,10 +1057,10 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 						// Consume one value; return (true, receivedVal, _).
 						val := ch.pendingVal
 						interp.handleChannelRecv(gid, chanID, site)
-						frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: true}, val, {}}}
+						frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: true}, val, {}}}
 					} else if ch.closed {
 						// Channel closed and empty: terminate the range loop.
-						frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: false}, {}, {}}}
+						frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: false}, {}, {}}}
 					} else {
 						// Channel empty and not closed: block goroutine.
 						if g := interp.goroutines[gid]; g != nil {
@@ -1070,14 +1070,14 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 						}
 					}
 				} else {
-					frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: false}, {}, {}}}
+					frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: false}, {}, {}}}
 				}
 			} else {
 				ok2, k, v := ri.advance()
-				frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: ok2}, k, v}}
+				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: ok2}, k, v}}
 			}
 		} else {
-			frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: false}, {}, {}}}
+			frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: false}, {}, {}}}
 		}
 
 	case *ssa.TypeAssert:
@@ -1104,9 +1104,9 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 
 		if inst.CommaOk {
 			if ok {
-				frame.Locals[inst.Name()] = Value{Raw: []Value{concreteVal, {Raw: true}}}
+				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{concreteVal, {Raw: true}}}
 			} else {
-				frame.Locals[inst.Name()] = Value{Raw: []Value{{}, {Raw: false}}}
+				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{}, {Raw: false}}}
 			}
 		} else {
 			if !ok {
@@ -1122,7 +1122,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					GID:          gid,
 				})
 			}
-			frame.Locals[inst.Name()] = concreteVal
+			frame.Locals[interp.vname(inst)] = concreteVal
 		}
 
 	case *ssa.ChangeInterface:
@@ -1130,20 +1130,20 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		if iv, ok := val.Raw.(*InterfaceValue); ok {
 			// Preserve the concrete type through interface widening so TypeAssert
 			// and invoke dispatch can still see the original dynamic type.
-			frame.Locals[inst.Name()] = Value{
+			frame.Locals[interp.vname(inst)] = Value{
 				Raw:        &InterfaceValue{Type: iv.Type, Value: iv.Value},
 				Provenance: val.Provenance,
 			}
 		} else {
-			frame.Locals[inst.Name()] = val
+			frame.Locals[interp.vname(inst)] = val
 		}
 
 	case *ssa.SliceToArrayPointer:
 		base := interp.resolveValue(frame, inst.X)
 		if sv, ok := base.Raw.(*SliceValue); ok {
-			frame.Locals[inst.Name()] = Value{Raw: sv.Backing, Provenance: sv.Backing}
+			frame.Locals[interp.vname(inst)] = Value{Raw: sv.Backing, Provenance: sv.Backing}
 		} else {
-			frame.Locals[inst.Name()] = base
+			frame.Locals[interp.vname(inst)] = base
 		}
 
 	// --- Control Flow ---
@@ -1199,8 +1199,8 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 
 	case *ssa.Call:
 		result := interp.execCall(gid, fn, inst, site)
-		if inst.Name() != "" {
-			frame.Locals[inst.Name()] = result
+		if interp.vname(inst) != "" {
+			frame.Locals[interp.vname(inst)] = result
 		}
 
 	case *ssa.Defer:
@@ -1380,7 +1380,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				}
 			}
 		}
-		frame.Locals[inst.Name()] = Value{Raw: []Value{{Raw: chosenIdx}, {Raw: recvOk}}}
+		frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: chosenIdx}, {Raw: recvOk}}}
 
 	// --- Type Conversions ---
 
@@ -1388,20 +1388,20 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		val := interp.resolveValue(frame, inst.X)
 		// Check for unsafe.Pointer conversions
 		if isUnsafePointerConversion(inst) {
-			result, err := interp.handleUnsafePointer(gid, classifyUnsafeConversion(inst), val, site, inst.Type(), inst.Name())
+			result, err := interp.handleUnsafePointer(gid, classifyUnsafeConversion(inst), val, site, inst.Type(), interp.vname(inst))
 			if err != nil {
 				interp.recordViolation(gid, err)
 			}
-			frame.Locals[inst.Name()] = result
+			frame.Locals[interp.vname(inst)] = result
 		} else {
 			if interp.concrete {
 				if r, ok := interp.concreteConvert(val, inst.X.Type(), inst.Type(), site); ok {
-					frame.Locals[inst.Name()] = r
+					frame.Locals[interp.vname(inst)] = r
 					break
 				}
 			}
 			// Apply concrete type conversion for string↔bytes and numeric types (#74).
-			frame.Locals[inst.Name()] = convertValue(val, inst.X.Type(), inst.Type())
+			frame.Locals[interp.vname(inst)] = convertValue(val, inst.X.Type(), inst.Type())
 			// Integer overflow on explicit conversion (#223): report when a
 			// narrowing/sign conversion silently discards bits.
 			if interp.config.TrackTruncation {
@@ -1420,16 +1420,16 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 
 	case *ssa.ChangeType:
 		val := interp.resolveValue(frame, inst.X)
-		frame.Locals[inst.Name()] = val
+		frame.Locals[interp.vname(inst)] = val
 
 	case *ssa.MakeInterface:
 		val := interp.resolveValue(frame, inst.X)
 		iface := &InterfaceValue{Type: inst.X.Type(), Value: val}
-		frame.Locals[inst.Name()] = Value{Raw: iface, Provenance: val.Provenance}
+		frame.Locals[interp.vname(inst)] = Value{Raw: iface, Provenance: val.Provenance}
 
 	case *ssa.MultiConvert:
 		val := interp.resolveValue(frame, inst.X)
-		frame.Locals[inst.Name()] = val
+		frame.Locals[interp.vname(inst)] = val
 
 	// --- Phi nodes ---
 
@@ -1437,7 +1437,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		// Select the edge value corresponding to the predecessor block we came from.
 		for i, pred := range inst.Block().Preds {
 			if pred == frame.PrevBlock {
-				frame.Locals[inst.Name()] = interp.resolveValue(frame, inst.Edges[i])
+				frame.Locals[interp.vname(inst)] = interp.resolveValue(frame, inst.Edges[i])
 				break
 			}
 		}
@@ -1445,8 +1445,8 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		// This is correct because SSA guarantees edge order matches predecessor order,
 		// and the entry block has no Phi nodes. The previous code skipped zero-valued
 		// edges (int 0, false, nil pointer), producing wrong values in loops (#18).
-		if _, exists := frame.Locals[inst.Name()]; !exists && len(inst.Edges) > 0 {
-			frame.Locals[inst.Name()] = interp.resolveValue(frame, inst.Edges[0])
+		if _, exists := frame.Locals[interp.vname(inst)]; !exists && len(inst.Edges) > 0 {
+			frame.Locals[interp.vname(inst)] = interp.resolveValue(frame, inst.Edges[0])
 		}
 
 	// --- SSA bookkeeping we pass through ---
@@ -2047,7 +2047,7 @@ func (interp *Interpreter) resolveValue(frame *Frame, v ssa.Value) Value {
 	}
 
 	// Check locals first
-	if val, ok := frame.Locals[v.Name()]; ok {
+	if val, ok := frame.Locals[interp.vname(v)]; ok {
 		return val
 	}
 

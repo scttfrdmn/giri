@@ -140,3 +140,32 @@ v0 covers `math`, `math/bits`, `strings`, `strconv`, `unicode`,
 `exec.ConcreteFuncs()` exposes the set, as the requirement asks. `IsConcrete`
 is false for methods and for functions of the loaded package, which are
 interpreted from source rather than intercepted.
+
+## Req 6 — fast paths
+
+**`SkipDetectors` is kept and recommended for memory-touching kernels.** The
+requirement says to measure on a straight-line integer loop and drop the
+option below 2×. On that loop it is 1.0×, because the loop performs no
+memory operations and there is nothing to skip. On a load/store loop it is
+4.3× (`docs/perf.md`). It stays implemented, and the docs say exactly where
+it helps.
+
+**`SkipDetectors` keeps allocation identity.** Concrete mode keys element
+values by allocation, so allocations still get IDs. Bounds metadata, access
+checks, initialization bits, pointer tracking, stack poisoning and all
+detectors are skipped. Run-time panics (index out of range, nil dereference,
+divide by zero) are still raised, so outputs and outcomes are identical to a
+detectors-on run. `TestFastPathsPreserveResults` checks this.
+
+**`SingleGoroutine` gives no speedup.** The scheduler is consulted only on
+`go` statements and goroutine exit. It is kept because it rejects `go`
+statements, which kernels should not contain.
+
+## Req 7 — batch build
+
+**Dependencies are type-checked from source.** The fast path would read
+dependency types from export data. x/tools v0.41's reader cannot read the
+export data written by go1.27, so every import came back without types.
+`LoadDir` uses `NeedDeps`, like `internal/ssautil`, but builds SSA bodies only
+for the target package. Upgrading x/tools would allow the export-data path
+and cut load time for packages with many imports.

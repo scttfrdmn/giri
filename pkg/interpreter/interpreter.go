@@ -27,6 +27,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"unsafe"
 
 	"golang.org/x/tools/go/ssa"
 
@@ -476,6 +477,27 @@ type Interpreter struct {
 	skipChecks bool              // SkipDetectors: no shadow checks or detectors
 	elems      map[elemKey]Value // concrete-mode element store
 	cs         *callState        // per-session instrumentation (session.go)
+	names      map[unsafe.Pointer]string
+}
+
+// vname returns v's SSA name, the key of frame.Locals. ssa.Value.Name formats
+// the name with fmt.Sprintf on every call for most instructions, so sessions
+// memoize it; the CLI calls Name directly.
+//
+// The memo is keyed by the interface's data pointer rather than the interface
+// itself: every ssa.Value implementation is a pointer type, and hashing a
+// pointer is several times cheaper than hashing an interface (type + value).
+func (interp *Interpreter) vname(v ssa.Value) string {
+	if interp.names == nil {
+		return v.Name()
+	}
+	key := (*[2]unsafe.Pointer)(unsafe.Pointer(&v))[1]
+	n, ok := interp.names[key]
+	if !ok {
+		n = v.Name()
+		interp.names[key] = n
+	}
+	return n
 }
 
 // allocate registers an allocation with shadow memory. When detector checks
