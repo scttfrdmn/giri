@@ -250,6 +250,12 @@ func main() {
 	if !*flagNoCache && deterministic {
 		cacheDir, cacheOK = cache.Dir()
 	}
+	// The giri build and Go toolchain are part of the key (#263); if either
+	// can't be identified, don't risk a stale hit.
+	cacheEnv := ""
+	if cacheOK {
+		cacheEnv, cacheOK = cache.Environment(cacheDir)
+	}
 	cfgFingerprint := cache.Fingerprint(config)
 
 	// Build the report incrementally so cached and freshly-interpreted programs
@@ -270,7 +276,7 @@ func main() {
 		// Cache lookup (deterministic single-run only).
 		var key string
 		if cacheOK && prog.SourceHash != "" {
-			key = cache.Key(prog.SourceHash, cfgFingerprint, report.Version, prog.GoVersion)
+			key = cache.Key(prog.SourceHash, cfgFingerprint, report.Version, prog.GoVersion, cacheEnv)
 			if entry, hit := cache.Load(cacheDir, key); hit {
 				rpt.AddFindings(entry.Active, entry.Suppressed)
 				lastMemStats = entry.MemStats

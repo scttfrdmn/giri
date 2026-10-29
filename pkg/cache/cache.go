@@ -2,8 +2,8 @@
 //
 // Giri interprets whole programs starting from a main package, so the cache
 // unit is one entry per program (per main package), keyed by the hash of that
-// program's transitive source closure plus the analysis configuration and the
-// Giri/Go versions. On a cache hit the interpreter is skipped entirely and the
+// program's transitive source closure plus the analysis configuration, the
+// Giri/Go versions, and the giri build and Go toolchain (Environment). On a cache hit the interpreter is skipped entirely and the
 // stored findings are replayed into the report.
 //
 // The cache is only sound for deterministic single-run analysis: PCT/random
@@ -84,14 +84,15 @@ func Fingerprint(cfg interpreter.Config) string {
 }
 
 // Key derives the cache key for a program from its transitive source hash, the
-// analysis config fingerprint, and the Giri and Go versions. Any change to a
-// reachable source file, an analysis-affecting config field, or the tool/Go
-// version yields a different key.
-func Key(sourceHash, configFingerprint, giriVersion, goVersion string) string {
+// analysis config fingerprint, the Giri release and the module's Go version,
+// and env, the giri build and Go toolchain fingerprint from Environment (#263).
+// Any change to a reachable source file, an analysis-affecting config field,
+// giri's code, or the toolchain yields a different key.
+func Key(sourceHash, configFingerprint, giriVersion, goVersion, env string) string {
 	h := sha256.New()
 	// Length-prefix each component so distinct field boundaries can't collide.
 	// (hash.Hash.Write never returns an error.)
-	for _, part := range []string{sourceHash, configFingerprint, giriVersion, goVersion} {
+	for _, part := range []string{sourceHash, configFingerprint, giriVersion, goVersion, env} {
 		_, _ = io.WriteString(h, strconv.Itoa(len(part))+":"+part+"\n")
 	}
 	return hex.EncodeToString(h.Sum(nil))

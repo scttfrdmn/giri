@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI now tests Go 1.27 alongside 1.25 and 1.26.
 
 ### Fixed
+- **Analysis cache key covers the giri build and the Go toolchain** (#263).
+  The key used only the release version (`report.Version`) and the module's
+  `go` directive, so a rebuilt giri, or a different Go toolchain or
+  `GOEXPERIMENT`/`GOFLAGS`, could serve results computed by another
+  interpreter. It now also includes a build fingerprint (a clean VCS build's
+  commit, else the module version, else a memoized hash of the executable) and
+  a toolchain fingerprint from `go env` (GOVERSION, GOROOT, GOOS, GOARCH,
+  GOEXPERIMENT, GOFLAGS). If either can't be determined, the cache is bypassed.
+  Existing entries simply stop matching; no cache wipe is needed.
 - **Value-faithful memory on the CLI path** (#260, the CLI half of #248): loads
   return the value last stored at every offset (slice and array elements,
   struct fields), not only offset 0. Arrays and structs are values, `append` /
