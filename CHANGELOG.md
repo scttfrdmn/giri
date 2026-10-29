@@ -7,11 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.99.0] - 2026-10-29
+
 ### Added
 - **`exec.Result.ArgsAfter`** (#266, tumble req 12): for each argument set, the
   contents of every slice argument after the call, so a kernel's writes into
   its arguments are observable (tumble E2's `prefixsum(xs, out)` returns its
-  answer through `out`). The caller's slices are never modified.
+  answer through `out`). The caller's slices are never modified. A nil slice
+  argument comes back as a typed nil, as natively.
+- No new integration tests (272 integration + 14 showcase = 286 total).
 
 ## [0.98.0] - 2026-10-29
 

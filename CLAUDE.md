@@ -3,7 +3,7 @@
 ## Project Overview
 Giri (Go IR Interpreter) is an undefined behavior detector for Go programs. It interprets Go SSA and validates memory operations against shadow memory, similar to Miri for Rust.
 
-**Current version: v0.98.0** — mature, with 272 integration tests and intercepts for 170+ stdlib packages. `pkg/exec` is the library entry point (docs/exec-api.md).
+**Current version: v0.99.0** — mature, with 272 integration tests and intercepts for 170+ stdlib packages. `pkg/exec` is the library entry point (docs/exec-api.md).
 
 ## Build & Test
 ```bash
@@ -70,7 +70,7 @@ ls testdata/showcase/ | grep -v README | wc -l
 grep -n '^var showcaseTests' pkg/interpreter/interpreter_integration_test.go
 # then: sed -n '14,<that_line-1>p' ... | grep -c 'dir:'
 ```
-**Current baseline**: 272 integration + 14 showcase = 286 total (as of v0.98.0)
+**Current baseline**: 272 integration + 14 showcase = 286 total (as of v0.99.0)
 
 ### 2. CHANGELOG entry format
 ```markdown
