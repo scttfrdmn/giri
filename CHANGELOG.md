@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI now tests Go 1.27 alongside 1.25 and 1.26.
 
 ### Fixed
+- `pkg/exec` concrete mode: `unsafe.Pointer(uintptr(p) + n)` now addresses
+  `p`'s allocation `n` bytes on instead of dereferencing nil, and the value-cache
+  hook is never offered non-scalar operands (#255). Arrays and structs are now
+  values: whole-value copies, `Field`/`Index` on values and `==` match native.
+- `pkg/exec` concrete mode: a stdlib method no longer dispatches to the
+  same-named package function (`strings.(*Replacer).Replace` ran
+  `strings.Replace`) (#257).
 - **Go 1.27 on Linux** (#252): SSA construction panicked (`unexpected expr:
   *ast.KeyValueExpr`) on nearly every program importing `fmt` or `os`. Go 1.27's
   stdlib uses composite-literal keys that name promoted fields
