@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`exec.Result.ArgsAfter`** (#266, tumble req 12): for each argument set, the
+  contents of every slice argument after the call, so a kernel's writes into
+  its arguments are observable (tumble E2's `prefixsum(xs, out)` returns its
+  answer through `out`). The caller's slices are never modified.
+
 ## [0.98.0] - 2026-10-29
 
 ### Added

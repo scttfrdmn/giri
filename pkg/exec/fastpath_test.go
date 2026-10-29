@@ -33,7 +33,7 @@ func TestFastPathsPreserveResults(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(got.Outputs, base.Outputs) || got.Steps != base.Steps ||
+			if !reflect.DeepEqual(got.Outputs, base.Outputs) || !reflect.DeepEqual(got.ArgsAfter, base.ArgsAfter) || got.Steps != base.Steps ||
 				!reflect.DeepEqual(got.StepsByClass, base.StepsByClass) || !reflect.DeepEqual(got.Traces, base.Traces) {
 				t.Errorf("%s with %+v: results differ from the default run", name, o)
 			}

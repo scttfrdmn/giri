@@ -269,3 +269,20 @@ provenance off uintptr values, and the encoding would change that.
 (category and location) are identical to `main`. On a store-heavy program
 (200k element writes), peak RSS rises by about 3% and wall time is within
 noise.
+
+## Req 12 — argument contents after the call (#266)
+
+**`Result.ArgsAfter` mirrors `Outputs`:** one entry per set, one value per
+parameter, typed as the parameter's underlying Go type, with `nil` for
+non-slice parameters and nil slices. It's reported only for `Returned` sets,
+like `Outputs`.
+
+**A slice that ends up holding an unrepresentable value makes the set
+`Opaque`**, as an unrepresentable result already does. The set's observable
+effect isn't concrete, and tumble treats `Opaque` as no fingerprint.
+
+**Arguments don't alias.** Each slice argument is copied into its own backing
+array, so a function given the same Go slice twice sees two independent
+copies. Native code would see one. tumble constructs distinct argument
+slices, so this isn't modelled.
+
