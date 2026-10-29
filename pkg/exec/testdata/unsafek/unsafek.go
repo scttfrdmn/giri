@@ -39,3 +39,13 @@ func PtrDiff(i, j int) int {
 	var a [8]int64
 	return int(uintptr(unsafe.Pointer(&a[j])) - uintptr(unsafe.Pointer(&a[i])))
 }
+
+// Forge turns a plain integer, never derived from a pointer, into a pointer
+// and reads through it. Native code faults; giri must not hand back the
+// value of some live allocation.
+func Forge(n int) int {
+	a := []int{11, 22, 33, 44}
+	_ = a
+	p := (*int)(unsafe.Pointer(uintptr(n)))
+	return *p
+}

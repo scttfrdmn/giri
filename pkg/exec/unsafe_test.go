@@ -99,3 +99,22 @@ func TestUintptrArithmeticOutOfBounds(t *testing.T) {
 	}
 	t.Logf("reported: %s", res.Violations[0].Category)
 }
+
+// TestForgedPointerFaults: an integer that was never a pointer has no
+// provenance when converted to one, so reading through it faults instead of
+// reading a live allocation.
+func TestForgedPointerFaults(t *testing.T) {
+	fn := unsafeFunc(t, "Forge")
+	for _, opts := range []Options{{}, {SkipDetectors: true}} {
+		for k := 1; k <= 4; k++ {
+			res, err := Run(fn, [][]any{{k << 32}}, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Outcomes[0] != Panicked || len(res.Violations) == 0 {
+				t.Errorf("SkipDetectors=%v n=%d<<32: outcome %v outputs %v violations %v",
+					opts.SkipDetectors, k, res.Outcomes[0], res.Outputs[0], res.Violations)
+			}
+		}
+	}
+}

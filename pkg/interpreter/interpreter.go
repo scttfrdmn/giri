@@ -1110,9 +1110,12 @@ func (interp *Interpreter) handleLoad(gid int64, addr Value, size int, site stri
 	}
 
 	g := interp.goroutines[gid]
-	err := interp.Memory.CheckAccess(addr.Provenance, size, shadow.AccessRead, site, g.ID)
-	if err != nil {
-		return Value{}, err
+	// SkipDetectors sessions mint allocation IDs without shadow metadata, so
+	// there is nothing to check against.
+	if !interp.skipChecks {
+		if err := interp.Memory.CheckAccess(addr.Provenance, size, shadow.AccessRead, site, g.ID); err != nil {
+			return Value{}, err
+		}
 	}
 
 	// Run all registered detectors (pass vector clock for race detection)
@@ -1160,6 +1163,14 @@ func (interp *Interpreter) handleStore(gid int64, addr Value, val Value, size in
 			return &shadow.NilPointerDerefError{Site: site, GID: gid}
 		}
 		return nil // untracked destination, skip
+	}
+
+	if interp.skipChecks {
+		// SkipDetectors: no shadow metadata to check or update (see handleLoad).
+		if addr.Provenance.Offset == 0 && interp.valueStore != nil {
+			interp.valueStore[addr.Provenance.Alloc] = val
+		}
+		return nil
 	}
 
 	g := interp.goroutines[gid]

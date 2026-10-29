@@ -1148,6 +1148,27 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 
 	case *ssa.SliceToArrayPointer:
 		base := interp.resolveValue(frame, inst.X)
+		if interp.concrete {
+			// (*[N]T)(s) and [N]T(s) panic when len(s) < N.
+			n := int(inst.Type().Underlying().(*types.Pointer).Elem().Underlying().(*types.Array).Len())
+			sv, _ := base.Raw.(*SliceValue)
+			if sv == nil {
+				sv = &SliceValue{}
+			}
+			if sv.Len < n {
+				esz := interp.typeSizeOf(inst.Type().Underlying().(*types.Pointer).Elem().Underlying().(*types.Array).Elem())
+				interp.recordViolation(gid, &shadow.OutOfBoundsError{
+					AllocSize: sv.Len * esz, Offset: 0, AccessSize: n * esz, Site: site, TypeName: inst.X.Type().String(),
+				})
+				interp.halt(gid)
+				frame.Locals[interp.vname(inst)] = Value{}
+				break
+			}
+			if sv.Backing == nil { // nil or empty slice converted to *[0]T
+				frame.Locals[interp.vname(inst)] = Value{}
+				break
+			}
+		}
 		if sv, ok := base.Raw.(*SliceValue); ok {
 			frame.Locals[interp.vname(inst)] = Value{Raw: sv.Backing, Provenance: sv.Backing}
 		} else {

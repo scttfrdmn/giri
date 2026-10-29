@@ -65,7 +65,13 @@ dependencies of the loaded package (their bodies are not built).
 stored leaves (scalars, pointers, slices) of an array or struct in layout
 order and a whole-value store scatters them, so copies such as the
 temporary SSA builds for composite literals (`t6 = *t1; *t0 = t6`) keep every
-element, not just the one at offset 0.
+element, not just the one at offset 0. The zero value of every array and
+struct type has its own representation. Any other value of such a type that
+giri can't compute (an intercept placeholder such as `image.Pt`, an
+unmodeled channel receive) is unknown: its fields, elements and `==` are
+opaque, so the run reports `Opaque` instead of a wrong `Returned`.
+`append`, `copy` and `clear` move whole array and struct elements, and
+`[N]T(s)` panics when `len(s) < N`.
 
 **`uintptr` from a pointer encodes (allocation, offset) as an integer (#255).**
 It stays a scalar, which the value cache requires, and integer arithmetic on
@@ -74,7 +80,10 @@ alternative, keeping the shadow pointer as the value, made every arithmetic
 result an untyped nil and offered pointers to the cache hook. The numeric
 value is not a host address, so programs that print or hash a uintptr see
 different numbers from native; differences and alignment within one
-allocation are exact.
+allocation are exact. Only allocations that were actually converted to a
+uintptr decode back to themselves; any other integer converted to a pointer
+has no provenance, and an access through it faults with an invalid-access
+violation, as it would natively.
 
 ## Req 4 — cost counters by instruction class
 

@@ -37,7 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pkg/exec` concrete mode: `unsafe.Pointer(uintptr(p) + n)` now addresses
   `p`'s allocation `n` bytes on instead of dereferencing nil, and the value-cache
   hook is never offered non-scalar operands (#255). Arrays and structs are now
-  values: whole-value copies, `Field`/`Index` on values and `==` match native.
+  values: whole-value copies, `Field`/`Index` on values, `==`, and
+  `append`/`copy` of them match native; one giri can't compute is opaque.
+  `[N]T(s)` with `len(s) < N` panics, and an integer that was never a pointer
+  faults when used as one.
+- `pkg/exec` with `SkipDetectors`: map operations no longer report spurious
+  dangling-pointer violations. With detectors on, package-variable accesses
+  are no longer reported as races between package init and the call.
 - `pkg/exec` concrete mode: a stdlib method no longer dispatches to the
   same-named package function (`strings.(*Replacer).Replace` ran
   `strings.Replace`) (#257).

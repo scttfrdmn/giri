@@ -244,7 +244,7 @@ func sortIn[T scalar](elem types.Type, sortFn func([]T)) *concreteImpl {
 		sortFn(xs)
 		size := interp.typeSizeOf(elem)
 		for i, x := range xs {
-			interp.setElem(sv, i, size, fromNative(x))
+			interp.setElem(sv, i, elem, size, fromNative(x))
 		}
 		return Value{}
 	}}
