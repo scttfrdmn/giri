@@ -163,12 +163,17 @@ statements, which kernels should not contain.
 
 ## Req 7 — batch build
 
-**Dependencies are type-checked from source.** The fast path would read
-dependency types from export data. x/tools v0.41's reader cannot read the
-export data written by go1.27, so every import came back without types.
+**Dependencies are type-checked from source.** The alternative reads
+dependency types from export data. With x/tools v0.41, its reader couldn't
+read the export data written by go1.27, so every import came back without types.
 `LoadDir` uses `NeedDeps`, like `internal/ssautil`, but builds SSA bodies only
-for the target package. Upgrading x/tools would allow the export-data path
-and cut load time for packages with many imports.
+for the target package.
+
+x/tools is now v0.52.0 (#252), and the export-data path works. On the M4 Pro it
+is slower for packages with no imports (300 functions: 40–42 ms vs 23–25 ms;
+`go list -export` adds a fixed cost) and faster for packages with several
+(7 stdlib imports: 50–58 ms vs 161–174 ms). It hasn't been switched, because
+which is better depends on what tumble's genome packages import.
 
 ## Req 8 — determinism
 

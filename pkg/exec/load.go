@@ -16,8 +16,9 @@ import (
 // interpreted, so their bodies are not needed.
 //
 // Dependencies are type-checked from source (NeedDeps) rather than read from
-// export data, matching internal/ssautil: x/tools v0.41's export-data reader
-// cannot read the export data written by newer Go toolchains.
+// export data, matching internal/ssautil. Export data is faster for packages
+// with several imports but slower for packages with none; see
+// docs/decisions.md (req 7).
 func LoadDir(dir string) (*ssa.Package, error) {
 	cfg := &packages.Config{
 		Dir: dir,
