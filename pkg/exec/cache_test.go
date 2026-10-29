@@ -179,3 +179,58 @@ func TestIsPure(t *testing.T) {
 		}
 	}
 }
+
+// TestCacheHitKeepsGCSafepoint: a cache hit on a pure intercept call still
+// runs the call site's GC-safepoint check, so a uintptr held across the call
+// is reported whether or not the call's result came from the cache. The hit
+// is set up three ways: an earlier argument set in the same Run, an earlier
+// Run sharing the hook, and a hook primed with detectors off.
+func TestCacheHitKeepsGCSafepoint(t *testing.T) {
+	pkg, err := LoadDir("testdata/unsafek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := pkg.Func("GCPoint")
+	ref, err := Run(fn, [][]any{{4.0, true}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ref.Violations) == 0 {
+		t.Fatal("no violation without a cache: the kernel does not exercise rule 2")
+	}
+	want := len(ref.Violations)
+
+	check := func(name string, res Result, err error, cache *recordingCache) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if res.CacheHits == 0 {
+			t.Fatalf("%s: no cache hit; the case does not test a hit", name)
+		}
+		if len(res.Violations) != want {
+			t.Errorf("%s: %d violations with a cache hit, %d without: %v", name, len(res.Violations), want, res.Violations)
+		}
+		if len(res.Outputs) == 0 || !reflect.DeepEqual(res.Outputs[len(res.Outputs)-1], ref.Outputs[0]) {
+			t.Errorf("%s: outputs %v, want %v", name, res.Outputs, ref.Outputs)
+		}
+	}
+
+	c := newRecordingCache()
+	res, err := Run(fn, [][]any{{4.0, false}, {4.0, true}}, Options{Cache: c})
+	check("same run", res, err, c)
+
+	c = newRecordingCache()
+	if _, err := Run(fn, [][]any{{4.0, false}}, Options{Cache: c}); err != nil {
+		t.Fatal(err)
+	}
+	res, err = Run(fn, [][]any{{4.0, true}}, Options{Cache: c})
+	check("shared hook", res, err, c)
+
+	c = newRecordingCache()
+	if _, err := Run(fn, [][]any{{4.0, true}}, Options{Cache: c, SkipDetectors: true}); err != nil {
+		t.Fatal(err)
+	}
+	res, err = Run(fn, [][]any{{4.0, true}}, Options{Cache: c})
+	check("primed without detectors", res, err, c)
+}
