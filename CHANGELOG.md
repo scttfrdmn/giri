@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Go 1.27 on Linux** (#252): SSA construction panicked (`unexpected expr:
+  *ast.KeyValueExpr`) on nearly every program importing `fmt` or `os`. Go 1.27's
+  stdlib uses composite-literal keys that name promoted fields
+  (`internal/poll/splice_linux.go`), which x/tools v0.41.0 could not build.
+  Bumped `golang.org/x/tools` to v0.52.0; the other `golang.org/x/*` modules
+  move to the versions it requires.
+
+### Changed
+- CI now tests Go 1.27 alongside 1.25 and 1.26.
+
 ## [0.97.0] - 2026-07-15
 
 ### Added
