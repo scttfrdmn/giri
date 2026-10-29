@@ -76,15 +76,15 @@ type Options struct {
 type Outcome uint8
 
 const (
-	// Returned: the function returned normally; its Outputs entry is set.
+	// Returned means the function returned normally; its Outputs entry is set.
 	Returned Outcome = iota
-	// Panicked: the call ended in an unrecovered panic, including the
+	// Panicked means the call ended in an unrecovered panic, including the
 	// run-time panics giri raises (index out of range, nil dereference,
 	// integer divide by zero).
 	Panicked
-	// Exhausted: the step budget ran out during this call.
+	// Exhausted means the step budget ran out during this call.
 	Exhausted
-	// Opaque: the function returned, but a result could not be represented
+	// Opaque means the function returned, but a result could not be represented
 	// as a Go value (it came from an intercept that returns a placeholder).
 	Opaque
 )
@@ -172,7 +172,7 @@ const (
 )
 
 // UnsupportedTypeError reports a parameter or result type that v0
-// marshalling does not cover (only integers, bools, floats, strings and
+// marshaling does not cover (only integers, bools, floats, strings and
 // slices of those are supported).
 type UnsupportedTypeError struct {
 	Func   string
@@ -341,7 +341,7 @@ func category(err error) string {
 	return shadow.CategoryOf(err)
 }
 
-// --- Marshalling ---
+// --- Marshaling ---
 
 // basicKinds maps supported basic types to their Go reflect kind and type.
 var basicKinds = map[types.BasicKind]reflect.Type{

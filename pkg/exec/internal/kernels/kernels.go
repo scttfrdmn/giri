@@ -195,7 +195,7 @@ func ApplyTwice(x int) int {
 
 func MinMax(a, b, c uint64) (uint64, uint64) { return min(a, b, c), max(a, b, c) }
 
-// TakesMap and ReturnsArray have types outside v0 marshalling.
+// TakesMap and ReturnsArray have types outside v0 marshaling.
 func TakesMap(m map[string]int) int { return len(m) }
 
 func ReturnsArray() [2]int { return [2]int{1, 2} }
@@ -220,7 +220,7 @@ func ClassMem(xs []int) int {
 
 func helper(x int) int { return x - 1 }
 
-// Accum's loop-carried accumulator has a known sequence (see TestTraces).
+// Accum sums squares; its loop-carried accumulator has a known sequence (see TestTraces).
 func Accum(n int) int {
 	s := 0
 	for i := 1; i <= n; i++ {
@@ -252,7 +252,7 @@ func OOB(xs []int, i int) int { return xs[i] }
 // Noisy draws from math/rand, which giri models with a seeded generator.
 func Noisy(n int) int { return rand.Intn(n) + rand.Intn(n)*n }
 
-// MapOrder's result depends on map iteration order, which Go randomizes and
+// MapOrder concatenates map keys; its result depends on iteration order, which Go randomizes and
 // giri's concrete mode makes sorted.
 func MapOrder(xs []int) string {
 	m := map[int]bool{}

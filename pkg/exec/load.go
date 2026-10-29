@@ -34,7 +34,7 @@ func LoadDir(dir string) (*ssa.Package, error) {
 		return nil, fmt.Errorf("exec: %s: want one package, found %d", dir, len(pkgs))
 	}
 	if len(pkgs[0].Errors) > 0 {
-		return nil, fmt.Errorf("exec: %s: %v", dir, pkgs[0].Errors[0])
+		return nil, fmt.Errorf("exec: %s: %w", dir, pkgs[0].Errors[0])
 	}
 
 	// No SanityCheckFunctions, no BuildSerially: build as fast as possible.

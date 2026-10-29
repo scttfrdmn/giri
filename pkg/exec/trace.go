@@ -102,6 +102,7 @@ type tracer struct {
 
 var _ interpreter.Tracer = (*tracer)(nil)
 
+// Record appends val to v's trace if v belongs to the traced function.
 func (tr *tracer) Record(v ssa.Value, val Value) {
 	instr, ok := v.(ssa.Instruction)
 	if !ok || instr.Parent() != tr.fn {
