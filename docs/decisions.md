@@ -63,12 +63,13 @@ dependencies of the loaded package (their bodies are not built).
 
 ## Req 4 — cost counters by instruction class
 
-**Two classes beyond the requested list: `builtin` and `other`.** Calls to
-builtins (`len`, `append`, `copy`, `min`, …) are neither intercepted stdlib
-calls nor interpreted calls, and their native cost differs from both by
-orders of magnitude, so lumping them into either call class would skew
-calibration. `other` collects conversions, `Extract`, `Return`, `Panic`,
-`MakeInterface`-free bookkeeping and so on. The set is append-only.
+**One class beyond the requested list: `builtin`.** Calls to builtins (`len`,
+`append`, `copy`, `min`, …) are neither intercepted stdlib calls nor
+interpreted calls, and their native cost differs from both by orders of
+magnitude, so lumping them into either call class would skew calibration.
+(`other` was already in the list; it collects conversions, `Extract`,
+`Return`, `Panic` and the remaining bookkeeping instructions.) The set is
+append-only.
 
 **Callee instructions count toward the caller's run.** `Steps` is every
 instruction executed during a call, including interpreted callees, which is
