@@ -901,29 +901,8 @@ func (interp *Interpreter) popFrame(gid int64) {
 
 	frame := g.Stack[len(g.Stack)-1]
 
-	// Execute deferred calls in LIFO order.
-	for i := len(frame.Defers) - 1; i >= 0; i-- {
-		d := frame.Defers[i]
-		if g.Panicking {
-			// During panic unwind: temporarily clear Panicking so the deferred
-			// function can execute normally and potentially call recover().
-			g.Panicking = false
-			g.Recovered = false
-			interp.executeDeferred(gid, d)
-			if g.Recovered {
-				// recover() was called — panic is suppressed; stop unwinding.
-				g.Recovered = false
-				break
-			}
-			// recover() was not called. If a new panic fired inside the defer,
-			// g.Panicking is already true; otherwise restore it for the next defer.
-			if !g.Panicking {
-				g.Panicking = true
-			}
-		} else {
-			interp.executeDeferred(gid, d)
-		}
-	}
+	// Execute any deferred calls not already run by ssa.RunDefers.
+	interp.runFrameDefers(gid, frame)
 
 	// Re-evaluate named return values if deferred closures may have modified
 	// named-return allocs (e.g. `func f() (err error) { defer func() { err = wrap(err) }() }`).
@@ -952,6 +931,60 @@ func (interp *Interpreter) popFrame(gid int64) {
 	}
 
 	g.Stack = g.Stack[:len(g.Stack)-1]
+}
+
+// runFrameDefers runs frame's pending deferred calls in LIFO order, removing
+// each before it runs, so a call is never repeated by a later ssa.RunDefers
+// or by popFrame. During a panic each deferred call may recover (#48); after a
+// recovery the remaining deferred calls still run, normally, as in Go (#259).
+// Returns whether the in-flight panic was recovered.
+func (interp *Interpreter) runFrameDefers(gid int64, frame *Frame) (recovered bool) {
+	g := interp.goroutines[gid]
+	if g == nil {
+		return false
+	}
+	for len(frame.Defers) > 0 {
+		last := len(frame.Defers) - 1
+		d := frame.Defers[last]
+		frame.Defers = frame.Defers[:last]
+		if g.Panicking {
+			// During panic unwind: temporarily clear Panicking so the deferred
+			// function can execute normally and potentially call recover().
+			g.Panicking = false
+			g.Recovered = false
+			interp.executeDeferred(gid, d)
+			if g.Recovered {
+				// recover() was called: the panic is over.
+				g.Recovered = false
+				recovered = true
+				continue
+			}
+			// recover() was not called. If a new panic fired inside the defer,
+			// g.Panicking is already true; otherwise restore it for the next defer.
+			if !g.Panicking {
+				g.Panicking = true
+			}
+		} else {
+			interp.executeDeferred(gid, d)
+		}
+		if g.Panicked {
+			return recovered // fatal: stop running defers
+		}
+	}
+	return recovered
+}
+
+// runtimePanic starts a Go run-time panic on goroutine gid (index out of
+// range, nil dereference, …): deferred calls run and may recover it, as in
+// Go (#259). The violation describing it is recorded separately by the
+// caller. An unrecovered panic ends the goroutine as before.
+func (interp *Interpreter) runtimePanic(gid int64, msg string) {
+	g := interp.goroutines[gid]
+	if g == nil || g.Panicked {
+		return
+	}
+	g.PanicValue = Value{Raw: &InterfaceValue{Type: types.Typ[types.String], Value: Value{Raw: "runtime error: " + msg}}}
+	g.Panicking = true
 }
 
 // recomputeNamedReturns re-evaluates the return values from a function's
@@ -1081,10 +1114,7 @@ func (interp *Interpreter) handleLoad(gid int64, addr Value, size int, site stri
 		// Distinguish nil pointer dereference from an untracked (opaque) value.
 		// When addr.Raw is also nil, this is a program nil dereference (#36).
 		if addr.Raw == nil {
-			g := interp.goroutines[gid]
-			if g != nil {
-				g.Panicked = true
-			}
+			interp.runtimePanic(gid, "invalid memory address or nil pointer dereference")
 			return Value{}, &shadow.NilPointerDerefError{Site: site, GID: gid}
 		}
 		// Non-nil Raw but no provenance: untracked value from an intercept.
@@ -1156,10 +1186,7 @@ func (interp *Interpreter) handleStore(gid int64, addr Value, val Value, size in
 	if addr.Provenance == nil {
 		// Nil pointer store (#36)
 		if addr.Raw == nil {
-			g := interp.goroutines[gid]
-			if g != nil {
-				g.Panicked = true
-			}
+			interp.runtimePanic(gid, "invalid memory address or nil pointer dereference")
 			return &shadow.NilPointerDerefError{Site: site, GID: gid}
 		}
 		return nil // untracked destination, skip
@@ -1232,9 +1259,7 @@ func (interp *Interpreter) handleFieldAddr(gid int64, base Value, fieldOffset in
 		// Distinguish nil pointer dereference from an untracked (opaque) value.
 		// When base.Raw is also nil, this is a program nil dereference (#130).
 		if base.Raw == nil {
-			if g := interp.goroutines[gid]; g != nil {
-				g.Panicked = true
-			}
+			interp.runtimePanic(gid, "invalid memory address or nil pointer dereference")
 			interp.recordViolation(gid, &shadow.NilPointerDerefError{Site: site, GID: gid})
 		}
 		return Value{}
@@ -1469,10 +1494,7 @@ func (interp *Interpreter) handleReturn(gid int64, values []Value, site string) 
 func (interp *Interpreter) handleChannelClose(gid int64, chanID ChanID, site string) {
 	if ch, ok := interp.channels[chanID]; ok {
 		if ch.closed {
-			g := interp.goroutines[gid]
-			if g != nil {
-				g.Panicked = true
-			}
+			interp.runtimePanic(gid, "close of closed channel")
 			interp.recordViolation(gid, &shadow.DoubleCloseError{Site: site, GID: gid})
 			return
 		}
@@ -1527,9 +1549,7 @@ func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value
 	// Check for send on closed channel (#31)
 	ch, ok := interp.channels[chanID]
 	if ok && ch.closed {
-		if g != nil {
-			g.Panicked = true
-		}
+		interp.runtimePanic(gid, "send on closed channel")
 		interp.recordViolation(gid, fmt.Errorf("send on closed channel at %s (goroutine %d)", site, gid))
 		return
 	}

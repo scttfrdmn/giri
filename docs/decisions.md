@@ -240,3 +240,16 @@ set, and steps, class counters and traces cover everything executed. No
 violation is recorded for exhaustion, unlike the CLI's step-limit error.
 `MaxSteps == 0` means `DefaultMaxSteps` (10M, giri's CLI default), not
 unlimited, because evolved candidates routinely loop forever.
+
+## Run-time panics and recover (#259)
+
+**A recovered run-time panic is still reported.** giri raises Go's run-time
+panics (index out of range, nil dereference, divide by zero, …) as violations.
+They now unwind, so deferred calls run and `recover()` works, and a function
+that recovers returns what it returns natively. The violation stays in
+`Result.Violations` (and in CLI output) even when the program recovers: a
+candidate that only passes by recovering from an out-of-range index is what
+the detectors exist to flag. The recovered panic value is a string-typed
+interface (`"runtime error: …"`), not a `runtime.Error`, so code that
+type-asserts it to `error` sees a failed assertion.
+

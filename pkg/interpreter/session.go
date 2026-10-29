@@ -627,7 +627,7 @@ func (interp *Interpreter) binOpConcrete(gid int64, inst *ssa.BinOp, x, y Value,
 		if _, isInt := basicIntKind(xt); isInt {
 			if yi, ok := y.Raw.(int64); ok && yi == 0 {
 				interp.recordViolation(gid, &shadow.DivisionByZeroError{Site: site, GID: gid})
-				interp.halt(gid)
+				interp.runtimePanic(gid, "integer divide by zero")
 				return Value{Raw: int64(0)}
 			}
 		}
@@ -635,7 +635,7 @@ func (interp *Interpreter) binOpConcrete(gid int64, inst *ssa.BinOp, x, y Value,
 		if k, ok := basicIntKind(yt); ok && !k.unsigned {
 			if yi, ok := y.Raw.(int64); ok && yi < 0 {
 				interp.recordViolation(gid, &shadow.NegativeShiftError{Count: yi, Site: site, GID: gid})
-				interp.halt(gid)
+				interp.runtimePanic(gid, "negative shift amount")
 				return Value{Raw: int64(0)}
 			}
 		}
@@ -644,6 +644,13 @@ func (interp *Interpreter) binOpConcrete(gid int64, inst *ssa.BinOp, x, y Value,
 		return r
 	}
 	if inst.Op == token.EQL || inst.Op == token.NEQ {
+		if _, isIface := xt.Underlying().(*types.Interface); isIface {
+			eq, ok := interp.valuesEqual(x, y, xt)
+			if !ok {
+				return stdlibOpaque
+			}
+			return Value{Raw: eq == (inst.Op == token.EQL)}
+		}
 		if isAggregateType(xt) {
 			eq, ok := interp.aggregateEqual(x, y, xt)
 			if !ok {
@@ -658,7 +665,9 @@ func (interp *Interpreter) binOpConcrete(gid int64, inst *ssa.BinOp, x, y Value,
 	return evalBinOp(inst.Op, x, y)
 }
 
-// halt stops goroutine gid as an unrecovered run-time panic would.
+// halt stops goroutine gid fatally: no deferred calls run and nothing can
+// recover it (a fault, the step budget). Recoverable run-time panics use
+// runtimePanic.
 func (interp *Interpreter) halt(gid int64) {
 	if g := interp.goroutines[gid]; g != nil {
 		g.Panicked = true
@@ -675,7 +684,7 @@ func (interp *Interpreter) sliceStringConcrete(gid int64, s string, low, high in
 		interp.recordViolation(gid, &shadow.OutOfBoundsError{
 			AllocSize: len(s), Offset: high, AccessSize: high - low, Site: site, TypeName: "string",
 		})
-		interp.halt(gid)
+		interp.runtimePanic(gid, "index out of range")
 		return Value{Raw: ""}
 	}
 	return Value{Raw: s[low:high]}

@@ -43,6 +43,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   placeholders until CLI memory is value-faithful (#260).
 - Integration test `math_bits_widths`; 0 violations (268 integration + 14
   showcase = 282 total).
+- **Deferred writes to named results, `recover()` of run-time panics, and
+  interface comparison with `nil`** (#259):
+  - `ssa.RunDefers` is now executed, so a deferred closure that assigns a
+    named result changes the returned value.
+  - Run-time panics giri raises (index or slice out of range, nil
+    dereference, failed type assertion, negative shift, integer divide by
+    zero, close of a nil or closed channel, send on a closed channel, invalid
+    `unsafe.Slice`/`String` arguments) and `log.Panic` now unwind:
+    deferred calls run and may `recover()`, after which the function returns
+    through its recover path and remaining defers still run. The panic is
+    still reported. Faults and fatal errors (unlock of an unlocked mutex,
+    `os.Exit`, `log.Fatal`, the step limit) still stop the goroutine.
+  - `==`/`!=` between an interface value and `nil` (or two boxed values)
+    now evaluate; before, a user-defined error compared as neither nil nor
+    non-nil, so error branches were never taken. On all 284 integration and
+    showcase programs, CLI findings are unchanged apart from the three new
+    tests.
+- Integration tests `defer_named_result` (0 violations),
+  `recover_runtime_panic` (2 violations: the recovered out-of-bounds index,
+  then a nil-map write only reachable after recovery) and `iface_nil_compare`
+  (0 violations) (271 integration + 14 showcase = 285 total).
 - `pkg/exec` concrete mode: `unsafe.Pointer(uintptr(p) + n)` now addresses
   `p`'s allocation `n` bytes on instead of dereferencing nil, and the value-cache
   hook is never offered non-scalar operands (#255). Arrays and structs are now
