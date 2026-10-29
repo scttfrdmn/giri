@@ -45,6 +45,9 @@ type Options struct {
 	// entries (zero means DefaultTraceCap).
 	Trace    bool
 	TraceCap int
+
+	// Cache, if non-nil, is consulted for pure instructions (see CacheHook).
+	Cache CacheHook
 }
 
 // Outcome describes how one argument set's call ended.
@@ -114,6 +117,12 @@ type Result struct {
 	// Traces holds one entry per argument set that was run when
 	// Options.Trace is set, nil otherwise.
 	Traces []Traces
+
+	// CacheHits counts pure instructions satisfied by Options.Cache;
+	// PureExecuted counts pure instructions actually executed. Both are zero
+	// without a cache.
+	CacheHits    uint64
+	PureExecuted uint64
 }
 
 // Value is giri's interpreter value representation.
@@ -212,6 +221,9 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 	cfg.TrackInit = opts.TrackInit
 	var tr *tracer
 	sopts := interpreter.SessionOptions{Config: cfg}
+	if opts.Cache != nil {
+		sopts.Cache = opts.Cache
+	}
 	if opts.Trace {
 		tr = &tracer{fn: fn, cap: opts.TraceCap}
 		if tr.cap <= 0 {
@@ -250,6 +262,8 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 		remaining -= min(out.Steps, remaining)
 
 		res.Steps += out.Steps
+		res.CacheHits += out.CacheHits
+		res.PureExecuted += out.PureExecuted
 		for c := range classes {
 			classes[c] += out.Classes[c]
 		}

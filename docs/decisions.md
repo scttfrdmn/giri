@@ -91,3 +91,33 @@ fingerprint; their element loads are traced as scalars.
 
 **A value that cannot be represented stops its trace with `Opaque` set**,
 alongside the requested `Truncated` flag. Both mean "no fingerprint".
+
+## Req 3 — value-cache hook
+
+**Granularity is one instruction.** The interpreter executes instructions in
+order, so by the time it reaches a pure instruction its operands have
+already been computed (by execution or by earlier cache hits). A hit
+therefore saves that one instruction, not its backward slice. The saving
+is real only where the instruction is expensive to interpret: concrete
+pure intercepts such as `math.Sqrt` or `bits.OnesCount64`, and arithmetic
+whose interpretation costs more than a lookup. Skipping whole sub-DAGs
+would need demand-driven (lazy) evaluation of operands. That was not
+built; it would change the evaluation order the step counters measure.
+
+**Phis are not pure.** A phi's value depends on which predecessor block ran,
+not only on its operands.
+
+**Interpreted calls are not pure in v0**, even when the callee only does
+arithmetic. Proving that needs a transitive purity analysis of the callee.
+
+**Pure ⊆ scalar.** Operands and results must be booleans, numbers or strings,
+the values tumble can hash. Conversions into slices, loads and every
+memory-touching instruction are excluded.
+
+**Panicking executions are never stored.** Integer division and shifts are
+pure but can panic. The interpreter stores an entry only for an execution
+that recorded no violation and did not halt, so a cache hit can never mask a
+detector finding.
+
+`Result.CacheHits` and `Result.PureExecuted` are additions, so a caller can
+verify cache effectiveness.
