@@ -20,6 +20,7 @@ import (
 	"encoding/pem"
 	"encoding/xml"
 	"fmt"
+	"go/build"
 	"go/types"
 	"html"
 	"math"
@@ -34,6 +35,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -241,9 +243,33 @@ func isStdlibOrKnownExternalPkg(pkgPath string) bool {
 		first = pkgPath[:i]
 	}
 	if !strings.Contains(first, ".") {
-		return true // standard library
+		// A dotless path is only a convention for the standard library: module
+		// paths may be dotless too ("module probe"), as is the synthetic
+		// "command-line-arguments". Treat it as stdlib only if GOROOT has it,
+		// so user code with an SSA body is interpreted rather than stubbed (#249).
+		return isGorootPkg(pkgPath)
 	}
 	return strings.HasPrefix(pkgPath, "golang.org/x/")
+}
+
+// gorootPkgs memoizes isGorootPkg.
+var gorootPkgs sync.Map // string → bool
+
+// isGorootPkg reports whether pkgPath names a package directory under
+// GOROOT/src. If GOROOT itself cannot be located it falls back to the
+// dotless-path convention (true), preserving the previous behavior.
+func isGorootPkg(pkgPath string) bool {
+	if v, ok := gorootPkgs.Load(pkgPath); ok {
+		return v.(bool)
+	}
+	src := filepath.Join(build.Default.GOROOT, "src")
+	in := true
+	if fi, err := os.Stat(src); err == nil && fi.IsDir() {
+		fi, err := os.Stat(filepath.Join(src, filepath.FromSlash(pkgPath)))
+		in = err == nil && fi.IsDir()
+	}
+	gorootPkgs.Store(pkgPath, in)
+	return in
 }
 
 // dispatchStdlibCall is the explicit per-package dispatch table.
