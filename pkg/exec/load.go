@@ -8,15 +8,17 @@ import (
 	"golang.org/x/tools/go/ssa/ssautil"
 )
 
-// loadDir loads the single package in dir and builds SSA for all of its
-// functions in one call. Dependencies are type-checked but get no SSA
+// LoadDir loads the single package in dir (which must belong to a module) and
+// builds SSA for all of its functions in one call, with
+// ssa.SanityCheckFunctions and ssa.BuildSerially off and generic
+// instantiations built. Dependencies are type-checked but get no SSA
 // bodies: standard-library calls are served by giri's intercepts and never
 // interpreted, so their bodies are not needed.
 //
 // Dependencies are type-checked from source (NeedDeps) rather than read from
 // export data, matching internal/ssautil: x/tools v0.41's export-data reader
 // cannot read the export data written by newer Go toolchains.
-func loadDir(dir string) (*ssa.Package, error) {
+func LoadDir(dir string) (*ssa.Package, error) {
 	cfg := &packages.Config{
 		Dir: dir,
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |

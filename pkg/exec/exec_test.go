@@ -21,7 +21,7 @@ var (
 // kernelFunc returns the SSA function name from internal/kernels.
 func kernelFunc(t testing.TB, name string) *ssa.Function {
 	t.Helper()
-	kernelsOnce.Do(func() { kernelsPkg, kernelsErr = loadDir("internal/kernels") })
+	kernelsOnce.Do(func() { kernelsPkg, kernelsErr = LoadDir("internal/kernels") })
 	if kernelsErr != nil {
 		t.Fatal(kernelsErr)
 	}
