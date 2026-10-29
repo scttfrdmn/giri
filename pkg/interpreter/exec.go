@@ -1464,6 +1464,18 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 	return nil // Continue to next instruction in block
 }
 
+// gcSafepoint checks for pending uintptr conversions that a GC at a call
+// site would invalidate (unsafe.Pointer rule 2). A value-cache hit on a call
+// must run it too: the call's result can come from the cache, but the
+// safepoint is a property of reaching the call site, not of the result.
+func (interp *Interpreter) gcSafepoint(gid int64, site string) {
+	if interp.registry != nil {
+		for _, err := range interp.registry.CheckGCPoint(site) {
+			interp.recordViolation(gid, err)
+		}
+	}
+}
+
 // execCall interprets a function call instruction.
 func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa.Call, site string) Value {
 	frame := interp.currentFrame(gid)
@@ -1526,12 +1538,7 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 	}
 
 	// Non-builtin function call is a potential GC safepoint.
-	// Check for pending uintptr conversions that would be invalidated.
-	if interp.registry != nil {
-		for _, err := range interp.registry.CheckGCPoint(site) {
-			interp.recordViolation(gid, err)
-		}
-	}
+	interp.gcSafepoint(gid, site)
 
 	calleeName := interp.callTargetName(call.Call)
 

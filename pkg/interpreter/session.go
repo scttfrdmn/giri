@@ -337,6 +337,11 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 		value = instr.(ssa.Value)
 		operands = interp.pureOperands(frame, instr)
 		if res, steps, hit := cs.cache.Lookup(value, operands); hit {
+			if _, isCall := instr.(*ssa.Call); isCall {
+				// The only effect of a pure intercept call is the GC
+				// safepoint execCall would have checked; a hit keeps it.
+				interp.gcSafepoint(gid, site)
+			}
 			interp.steps += steps
 			cs.classes[class] += steps
 			cs.cacheHits++
