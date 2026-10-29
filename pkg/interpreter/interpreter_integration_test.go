@@ -2026,6 +2026,27 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	{
+		name:           "defer named result",
+		dir:            "defer_named_result",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "recover runtime panic",
+		dir:            "recover_runtime_panic",
+		wantViolations: 2,
+		wantCategory:   "nil-map-write",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "iface nil compare",
+		dir:            "iface_nil_compare",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {

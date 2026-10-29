@@ -73,14 +73,10 @@ func TestAggregateKernels(t *testing.T) {
 		{"MapScalar", aggk.MapScalar, [][]any{{1}, {2}}}, {"DeferScalar", aggk.DeferScalar, [][]any{{7}}}, {"DeferArrNoParam", aggk.DeferArrNoParam, [][]any{{7}}}, {"AppendScalar", aggk.AppendScalar, [][]any{{7}}},
 		{"IfaceScalarEq", aggk.IfaceScalarEq, [][]any{{2}, {3}}}, {"IfaceArrOnly", aggk.IfaceArrOnly, [][]any{{2}, {3}}}, {"IfaceStructAssert", aggk.IfaceStructAssert, [][]any{{7}}}, {"GlobalsScalar", aggk.GlobalsScalar, [][]any{{7}}}, {"Globals", aggk.Globals, [][]any{{7}}}, {"Convert", aggk.Convert, [][]any{{7}}}, {"NaNStruct", aggk.NaNStruct, [][]any{{1.0}, {math.NaN()}}}, {"PtrEqStruct", aggk.PtrEqStruct, [][]any{{7}}}, {"IfaceFieldEq", aggk.IfaceFieldEq, [][]any{{7}}}, {"ClearArr", aggk.ClearArr, [][]any{{7}}}, {"AppendIntoArr", aggk.AppendIntoArr, [][]any{{7}}}, {"ConstIndexPtr", aggk.ConstIndexPtr, [][]any{{7}}}, {"ArrayOfStrings", aggk.ArrayOfStrings, [][]any{{"a"}}}, {"StructCompareInLoop", aggk.StructCompareInLoop, [][]any{{10}, {2}}}, {"ArgSliceToArr", aggk.ArgSliceToArr, [][]any{{[]int{1, 2, 3, 4}}, {[]int{5}}}}, {"SliceToArrConv", aggk.SliceToArrConv, [][]any{{[]int{1, 2}}, {[]int{1}}}}, {"ChanStruct", aggk.ChanStruct, [][]any{{7}}}, {"ChanScalar", aggk.ChanScalar, [][]any{{7}}}, {"ExtStruct", aggk.ExtStruct, [][]any{{7}}}, {"ExtStructArr", aggk.ExtStructArr, [][]any{{7}}}, {"ChanArrIdx", aggk.ChanArrIdx, [][]any{{7}}}, {"RecoverIdx", aggk.RecoverIdx, [][]any{{1}, {5}}}, {"ClearStructSlice", aggk.ClearStructSlice, [][]any{{7}}}, {"RecoverSliceIdx", aggk.RecoverSliceIdx, [][]any{{1}, {5}}},
 	}
-	// Known gaps shared with main, tracked in #259: deferred writes to named
-	// results, and recover() of giri-raised panics.
-	knownGaps := map[string]bool{"DeferArr": true, "DeferScalar": true, "DeferArrNoParam": true,
-		"RecoverIdx": true, "RecoverSliceIdx": true}
+	// Kernels that recover a run-time panic giri raises: the result must match
+	// native, and the panic is still reported as a violation.
+	recoversPanic := map[string]bool{"RecoverIdx": true, "RecoverSliceIdx": true}
 	for _, c := range cases {
-		if knownGaps[c.name] {
-			continue
-		}
 		// Native results are computed once per case, in table order: some
 		// kernels write package variables, which persist natively but start
 		// fresh in every exec.Run.
@@ -118,7 +114,8 @@ func TestAggregateKernels(t *testing.T) {
 						t.Errorf("MISMATCH set %d args %v: outcome %v viol %v; native %v", i, a, res.Outcomes[0], res.Violations, want)
 						continue
 					}
-					if len(res.Violations) > 0 {
+					// A recovered run-time panic is still reported (#259).
+					if len(res.Violations) > 0 && !recoversPanic[c.name] {
 						t.Errorf("set %d: violations %v", i, res.Violations)
 					}
 					if !reflect.DeepEqual(res.Outputs[0], want) {

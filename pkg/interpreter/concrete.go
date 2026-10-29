@@ -537,16 +537,14 @@ func isScalarValue(v Value) bool {
 func (interp *Interpreter) loadConcrete(gid int64, addr Value, t types.Type, size int, site string) (Value, error) {
 	if addr.Provenance == nil {
 		if addr.Raw == nil {
-			if g := interp.goroutines[gid]; g != nil {
-				g.Panicked = true
-			}
+			interp.runtimePanic(gid, "invalid memory address or nil pointer dereference")
 			return Value{}, &shadow.NilPointerDerefError{Site: site, GID: gid}
 		}
 		// Untracked pointer (from an intercept): defer to the CLI semantics.
 		return interp.handleLoad(gid, addr, size, site)
 	}
 	if addr.Provenance.Alloc == 0 {
-		interp.halt(gid)
+		interp.halt(gid) // a fault, not a recoverable panic
 		return concreteZero(t), forgedPointerError(site)
 	}
 	if !interp.skipChecks {
@@ -728,7 +726,7 @@ func (interp *Interpreter) indexArrayConcrete(gid int64, inst *ssa.Index, x Valu
 		interp.recordViolation(gid, &shadow.OutOfBoundsError{
 			AllocSize: int(arr.Len()) * esz, Offset: i * esz, AccessSize: esz, Site: site, TypeName: inst.X.Type().String(),
 		})
-		interp.halt(gid)
+		interp.runtimePanic(gid, "index out of range")
 		return concreteZero(arr.Elem())
 	}
 	return interp.project(x, inst.X.Type(), i*interp.typeSizeOf(arr.Elem()), arr.Elem())

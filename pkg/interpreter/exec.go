@@ -427,7 +427,7 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 	for block != nil {
 		g := interp.goroutines[gid]
 		if g != nil && (g.Panicked || g.Panicking || g.Status == GoroutineBlocked) {
-			return Value{}
+			break
 		}
 		if f := interp.currentFrame(gid); f != nil {
 			f.PrevBlock = prevBlock
@@ -435,6 +435,24 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 		nextBlock := interp.execBlock(gid, fn, block)
 		prevBlock = block
 		block = nextBlock
+	}
+
+	// A panic is unwinding through this frame. Run its deferred calls now; if
+	// one recovers, the function returns normally through its Recover block,
+	// which reloads the named results (#259).
+	if g := interp.goroutines[gid]; g != nil && g.Panicking && !g.Panicked {
+		if interp.runFrameDefers(gid, frame) && fn.Recover != nil && !g.Panicking && !g.Panicked {
+			prevBlock, block = nil, fn.Recover
+			for block != nil {
+				if g.Panicked || g.Panicking || g.Status == GoroutineBlocked {
+					return Value{}
+				}
+				frame.PrevBlock = prevBlock
+				nextBlock := interp.execBlock(gid, fn, block)
+				prevBlock = block
+				block = nextBlock
+			}
+		}
 	}
 
 	// Return the result (if any)
@@ -652,8 +670,14 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		if inst.Op == token.SHL || inst.Op == token.SHR {
 			if yi, ok := y.Raw.(int64); ok && yi < 0 {
 				interp.recordViolation(gid, &shadow.NegativeShiftError{Count: yi, Site: site, GID: gid})
-				if g := interp.goroutines[gid]; g != nil {
-					g.Panicked = true
+				interp.runtimePanic(gid, "negative shift amount")
+			}
+		}
+		if inst.Op == token.EQL || inst.Op == token.NEQ {
+			if _, isIface := inst.X.Type().Underlying().(*types.Interface); isIface {
+				if eq, ok := ifaceEqual(x, y); ok {
+					frame.Locals[interp.vname(inst)] = Value{Raw: eq == (inst.Op == token.EQL)}
+					break
 				}
 			}
 		}
@@ -694,9 +718,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 						AccessSize: elemSize,
 						Site:       site,
 					})
-					if g := interp.goroutines[gid]; g != nil {
-						g.Panicked = true
-					}
+					interp.runtimePanic(gid, "index out of range")
 					arrayOOB = true
 				}
 			}
@@ -717,9 +739,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 						AccessSize: elemSize,
 						Site:       site,
 					})
-					if g := interp.goroutines[gid]; g != nil {
-						g.Panicked = true
-					}
+					interp.runtimePanic(gid, "index out of range")
 					sliceOOB = true
 				}
 			}
@@ -735,9 +755,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				AccessSize: elemSize,
 				Site:       site,
 			})
-			if g := interp.goroutines[gid]; g != nil {
-				g.Panicked = true
-			}
+			interp.runtimePanic(gid, "index out of range")
 			frame.Locals[interp.vname(inst)] = Value{}
 			break
 		}
@@ -800,9 +818,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					AccessSize: elemSize,
 					Site:       site,
 				})
-				if g := interp.goroutines[gid]; g != nil {
-					g.Panicked = true
-				}
+				interp.runtimePanic(gid, "index out of range")
 				frame.Locals[interp.vname(inst)] = Value{}
 			}
 		case string:
@@ -816,9 +832,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					Site:       site,
 					TypeName:   "string",
 				})
-				if g := interp.goroutines[gid]; g != nil {
-					g.Panicked = true
-				}
+				interp.runtimePanic(gid, "index out of range")
 				frame.Locals[interp.vname(inst)] = Value{}
 			} else {
 				frame.Locals[interp.vname(inst)] = Value{Raw: int64(sv[idxInt])}
@@ -1119,10 +1133,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		} else {
 			if !ok {
 				// Non-comma-ok assertion that fails → runtime panic; record violation.
-				g := interp.goroutines[gid]
-				if g != nil {
-					g.Panicked = true
-				}
+				interp.runtimePanic(gid, "interface conversion")
 				interp.recordViolation(gid, &shadow.TypeAssertionError{
 					Site:         site,
 					ConcreteType: concreteType.String(),
@@ -1160,7 +1171,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				interp.recordViolation(gid, &shadow.OutOfBoundsError{
 					AllocSize: sv.Len * esz, Offset: 0, AccessSize: n * esz, Site: site, TypeName: inst.X.Type().String(),
 				})
-				interp.halt(gid)
+				interp.runtimePanic(gid, "index out of range")
 				frame.Locals[interp.vname(inst)] = Value{}
 				break
 			}
@@ -1483,6 +1494,11 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		if _, exists := frame.Locals[interp.vname(inst)]; !exists && len(inst.Edges) > 0 {
 			frame.Locals[interp.vname(inst)] = interp.resolveValue(frame, inst.Edges[0])
 		}
+
+	case *ssa.RunDefers:
+		// Run deferred calls before the return sequence reads named results,
+		// so a deferred write to a named result is returned (#259).
+		interp.runFrameDefers(gid, frame)
 
 	// --- SSA bookkeeping we pass through ---
 
@@ -1972,9 +1988,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 		if len(args) > 0 {
 			if args[0].Raw == nil {
 				interp.recordViolation(gid, &shadow.NilChannelError{Op: "close", Site: site, GID: gid})
-				if g := interp.goroutines[gid]; g != nil {
-					g.Panicked = true
-				}
+				interp.runtimePanic(gid, "close of nil channel")
 				return Value{}
 			}
 			if chanID, ok := args[0].Raw.(ChanID); ok {
@@ -2015,9 +2029,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 			interp.recordViolation(gid, &shadow.InvalidUnsafeArgError{
 				Op: "unsafe.String", Arg: "len", Value: int64(lenN), Site: site, GID: gid,
 			})
-			if g := interp.goroutines[gid]; g != nil {
-				g.Panicked = true
-			}
+			interp.runtimePanic(gid, "unsafe argument out of range")
 			break
 		}
 		// Nil pointer with non-zero length panics at runtime (#131).
@@ -2025,9 +2037,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 			interp.recordViolation(gid, &shadow.InvalidUnsafeArgError{
 				Op: "unsafe.String", Arg: "ptr", Site: site, GID: gid,
 			})
-			if g := interp.goroutines[gid]; g != nil {
-				g.Panicked = true
-			}
+			interp.runtimePanic(gid, "invalid memory address or nil pointer dereference")
 			break
 		}
 		// Valid: return an opaque string value.
@@ -2043,9 +2053,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 			interp.recordViolation(gid, &shadow.InvalidUnsafeArgError{
 				Op: "unsafe.Slice", Arg: "len", Value: int64(lenN), Site: site, GID: gid,
 			})
-			if g := interp.goroutines[gid]; g != nil {
-				g.Panicked = true
-			}
+			interp.runtimePanic(gid, "unsafe argument out of range")
 			break
 		}
 		// Nil pointer with non-zero length panics at runtime (#129).
@@ -2053,9 +2061,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 			interp.recordViolation(gid, &shadow.InvalidUnsafeArgError{
 				Op: "unsafe.Slice", Arg: "ptr", Site: site, GID: gid,
 			})
-			if g := interp.goroutines[gid]; g != nil {
-				g.Panicked = true
-			}
+			interp.runtimePanic(gid, "invalid memory address or nil pointer dereference")
 			break
 		}
 		if args[0].Provenance != nil {
@@ -2344,6 +2350,37 @@ func evalBinOp(op token.Token, x, y Value) Value {
 	}
 
 	return Value{} // Unhandled combination
+}
+
+// ifaceEqual compares two interface values for == on the CLI path (#259).
+// A nil Raw is a nil interface; any other value, including the opaque
+// placeholder intercepts return for non-error interfaces, is non-nil. Two
+// boxed values are equal when their dynamic types are identical and their
+// scalar payloads are equal. ok=false leaves the comparison to evalBinOp.
+func ifaceEqual(x, y Value) (eq, ok bool) {
+	switch {
+	case x.Raw == nil && y.Raw == nil:
+		return true, true
+	case x.Raw == nil || y.Raw == nil:
+		return false, true
+	}
+	xi, xok := x.Raw.(*InterfaceValue)
+	yi, yok := y.Raw.(*InterfaceValue)
+	if !xok || !yok {
+		return false, false
+	}
+	if !types.Identical(xi.Type, yi.Type) {
+		return false, true
+	}
+	if r, isBool := evalBinOp(token.EQL, xi.Value, yi.Value).Raw.(bool); isBool {
+		return r, true
+	}
+	if xp, ok := xi.Value.Raw.(*shadow.Pointer); ok {
+		if yp, ok := yi.Value.Raw.(*shadow.Pointer); ok {
+			return xp.Alloc == yp.Alloc && xp.Offset == yp.Offset, true
+		}
+	}
+	return false, false
 }
 
 // toInt64 converts an interpreted Value's Raw to int64.
