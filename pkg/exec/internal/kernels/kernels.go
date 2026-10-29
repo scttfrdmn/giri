@@ -265,3 +265,62 @@ func MapOrder(xs []int) string {
 	}
 	return s
 }
+
+type vec3 struct {
+	x, y float64
+	n    int32
+	tag  [2]uint8
+}
+
+func mkvec(a float64, n int32) vec3 { return vec3{x: a, y: a * 2, n: n, tag: [2]uint8{uint8(n), 7}} }
+
+// StructValues copies, returns and compares struct values (whole-value loads
+// and stores), and selects fields of a struct value.
+func StructValues(a float64, n int32) (float64, int32, uint8, bool, bool) {
+	v := mkvec(a, n)
+	w := v
+	w.y += 1
+	arr := [3]vec3{v, w, v}
+	b := arr[1]
+	return b.y, arr[2].n, arr[0].tag[0], arr[0] == arr[2], v == w
+}
+
+// ArrayValues copies arrays by value, indexes array values and compares them.
+func ArrayValues(xs []int) (int, bool, int) {
+	var a [4]int
+	for i := range a {
+		if i < len(xs) {
+			a[i] = xs[i]
+		}
+	}
+	b := a
+	b[3] = 99
+	sum := 0
+	for _, v := range b {
+		sum += v
+	}
+	return a[3] + sum, a == b, [4]int{1, 2, 3, 4}[2]
+}
+
+// IndexAfterMath does cacheable arithmetic, then indexes with its result,
+// which is out of range for large i.
+func IndexAfterMath(xs []int, i int) int {
+	j := i*3 - 2*i
+	return xs[j] + j
+}
+
+type celsius float64
+
+type pair2 struct{ a, b int }
+
+func divmod7(x int) (int, int) { return x / 7, x % 7 }
+func triple(x int) [3]int      { return [3]int{x, x + 1, x + 2} }
+func mkpair(x int) pair2       { return pair2{x, x * 2} }
+
+// PurityMix contains one of each instruction kind TestIsPure classifies that
+// the other kernels lack: UnOp -, ^ and !, ChangeType, Extract, and Index
+// and Field on values.
+func PurityMix(x int, b bool, f float64) (int, int, bool, celsius, int, int, int) {
+	q, r := divmod7(x)
+	return -x, ^x, !b, celsius(f), q + r, triple(x)[1], mkpair(x).b
+}

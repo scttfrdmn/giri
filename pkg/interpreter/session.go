@@ -109,7 +109,10 @@ type callState struct {
 	cacheHits    uint64
 	pureExecuted uint64
 	sites        map[token.Pos]string
-	nextAlloc    uint64 // SkipDetectors allocation IDs
+	nextAlloc    uint64                  // SkipDetectors allocation IDs
+	layouts      map[types.Type][]leaf   // array/struct leaf layouts
+	encoded      map[shadow.AllocID]bool // allocations converted to uintptr
+	hb           map[int64]uint64        // clocks of finished calls (happens-before)
 	single       bool
 }
 
@@ -165,10 +168,13 @@ func NewSession(fn *ssa.Function, opts SessionOptions) (*Session, error) {
 	interp.names = make(map[unsafe.Pointer]string)
 	interp.globals = make(map[*ssa.Global]Value)
 	interp.cs = &callState{
-		cache:  opts.Cache,
-		tracer: opts.Tracer,
-		sites:  make(map[token.Pos]string),
-		single: opts.SingleGoroutine,
+		cache:   opts.Cache,
+		tracer:  opts.Tracer,
+		sites:   make(map[token.Pos]string),
+		layouts: make(map[types.Type][]leaf),
+		encoded: make(map[shadow.AllocID]bool),
+		hb:      make(map[int64]uint64),
+		single:  opts.SingleGoroutine,
 	}
 	if opts.Cache != nil {
 		interp.cs.pure = make(map[ssa.Instruction]bool)
@@ -227,8 +233,17 @@ func (s *Session) call(fn *ssa.Function, args []Value, budget uint64) CallOutcom
 		out.Violations = []error{err}
 		return out
 	}
-	ret := interp.execFunction(gid, fn, args)
+	// Successive calls (and package init before them) are sequential, as
+	// successive native calls are: each call happens after everything the
+	// previous ones did.
 	g := interp.goroutines[gid]
+	mergeClock(g, cs.hb)
+	ret := interp.execFunction(gid, fn, args)
+	for id, t := range g.VClock.Clocks {
+		if t > cs.hb[id] {
+			cs.hb[id] = t
+		}
+	}
 	halted := g.Panicked || g.Panicking
 	delete(interp.goroutines, gid)
 	if !cs.single {
@@ -336,6 +351,9 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 	if cs.cache != nil && cs.isPure(instr) {
 		value = instr.(ssa.Value)
 		operands = interp.pureOperands(frame, instr)
+		cacheable = allScalarValues(operands)
+	}
+	if cacheable {
 		if res, steps, hit := cs.cache.Lookup(value, operands); hit {
 			if _, isCall := instr.(*ssa.Call); isCall {
 				// The only effect of a pure intercept call is the GC
@@ -351,7 +369,6 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 			}
 			return nil
 		}
-		cacheable = true
 	}
 
 	interp.steps++
@@ -363,7 +380,7 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 		cs.pureExecuted++
 		g := interp.goroutines[gid]
 		if len(interp.violations) == nviol && g != nil && !g.Panicked && !g.Panicking {
-			if res, ok := frame.Locals[interp.vname(value)]; ok {
+			if res, ok := frame.Locals[interp.vname(value)]; ok && isScalarValue(res) {
 				cs.cache.Store(value, operands, res, 1)
 			}
 		}
@@ -376,6 +393,18 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 		}
 	}
 	return next
+}
+
+// allScalarValues reports whether every operand is a scalar at run time.
+// IsPure decides from static types; this guards the hook against values whose
+// representation is not a scalar despite their type (#255).
+func allScalarValues(vs []Value) bool {
+	for _, v := range vs {
+		if !isScalarValue(v) {
+			return false
+		}
+	}
+	return true
 }
 
 // isPure memoizes IsPure per instruction.
@@ -452,8 +481,7 @@ func IsPure(instr ssa.Instruction) bool {
 		if callee == nil {
 			return false
 		}
-		pkg, name := calleePkgName(callee)
-		impl := lookupConcrete(pkg, name)
+		impl := concreteCallee(callee)
 		if impl == nil || !impl.pure {
 			return false
 		}
@@ -474,6 +502,20 @@ func isScalarType(t types.Type) bool {
 		return false
 	}
 	return b.Info()&(types.IsBoolean|types.IsNumeric|types.IsString) != 0
+}
+
+// concreteCallee returns the concrete implementation of a static callee, or
+// nil. The table is keyed by package-level function name, so methods never
+// match: strings.(*Replacer).Replace is not strings.Replace (#257).
+func concreteCallee(callee *ssa.Function) *concreteImpl {
+	if callee == nil || callee.Signature.Recv() != nil {
+		return nil
+	}
+	pkg, name := calleePkgName(callee)
+	if pkg == "" {
+		return nil
+	}
+	return lookupConcrete(pkg, name)
 }
 
 // calleePkgName returns the package path and (generic-stripped) name of a
@@ -602,6 +644,13 @@ func (interp *Interpreter) binOpConcrete(gid int64, inst *ssa.BinOp, x, y Value,
 		return r
 	}
 	if inst.Op == token.EQL || inst.Op == token.NEQ {
+		if isAggregateType(xt) {
+			eq, ok := interp.aggregateEqual(x, y, xt)
+			if !ok {
+				return stdlibOpaque
+			}
+			return Value{Raw: eq == (inst.Op == token.EQL)}
+		}
 		if eq, ok := concreteEqual(x, y); ok {
 			return Value{Raw: eq == (inst.Op == token.EQL)}
 		}

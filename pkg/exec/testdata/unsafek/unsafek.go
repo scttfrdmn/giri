@@ -23,3 +23,29 @@ func GCPoint(x float64, hold bool) float64 {
 	}
 	return r
 }
+
+// PtrArith reads a[n] through uintptr arithmetic (#255). For n outside 0..3
+// the pointer leaves the array: an unsafe.Pointer rule 3 violation.
+func PtrArith(n int) int {
+	a := [4]int{1, 2, 3, 4}
+	u := uintptr(unsafe.Pointer(&a[0])) + uintptr(n)*8
+	q := (*int)(unsafe.Pointer(u))
+	return *q
+}
+
+// PtrDiff returns the distance in bytes between two elements of an array,
+// computed on uintptrs.
+func PtrDiff(i, j int) int {
+	var a [8]int64
+	return int(uintptr(unsafe.Pointer(&a[j])) - uintptr(unsafe.Pointer(&a[i])))
+}
+
+// Forge turns a plain integer, never derived from a pointer, into a pointer
+// and reads through it. Native code faults; giri must not hand back the
+// value of some live allocation.
+func Forge(n int) int {
+	a := []int{11, 22, 33, 44}
+	_ = a
+	p := (*int)(unsafe.Pointer(uintptr(n)))
+	return *p
+}

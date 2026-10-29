@@ -527,7 +527,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		val := interp.resolveValue(frame, inst.Val)
 		size := interp.typeSizeOf(inst.Val.Type())
 		if interp.concrete {
-			if err := interp.storeConcrete(gid, addr, val, size, site); err != nil {
+			if err := interp.storeConcrete(gid, addr, val, inst.Val.Type(), size, site); err != nil {
 				interp.recordViolation(gid, err)
 			}
 			break
@@ -750,6 +750,10 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 
 	case *ssa.Field:
 		base := interp.resolveValue(frame, inst.X)
+		if interp.concrete {
+			frame.Locals[interp.vname(inst)] = interp.fieldConcrete(inst, base)
+			break
+		}
 		if m, ok := base.Raw.(map[int]Value); ok {
 			frame.Locals[interp.vname(inst)] = m[inst.Field]
 		} else {
@@ -760,6 +764,10 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		x := interp.resolveValue(frame, inst.X)
 		idx := interp.resolveValue(frame, inst.Index)
 		idxInt := int(toInt64(idx))
+		if _, isArr := inst.X.Type().Underlying().(*types.Array); isArr && interp.concrete {
+			frame.Locals[interp.vname(inst)] = interp.indexArrayConcrete(gid, inst, x, idxInt, site)
+			break
+		}
 		switch sv := x.Raw.(type) {
 		case *SliceValue:
 			// Slice element access: derive the element pointer and call handleLoad
@@ -1140,6 +1148,27 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 
 	case *ssa.SliceToArrayPointer:
 		base := interp.resolveValue(frame, inst.X)
+		if interp.concrete {
+			// (*[N]T)(s) and [N]T(s) panic when len(s) < N.
+			n := int(inst.Type().Underlying().(*types.Pointer).Elem().Underlying().(*types.Array).Len())
+			sv, _ := base.Raw.(*SliceValue)
+			if sv == nil {
+				sv = &SliceValue{}
+			}
+			if sv.Len < n {
+				esz := interp.typeSizeOf(inst.Type().Underlying().(*types.Pointer).Elem().Underlying().(*types.Array).Elem())
+				interp.recordViolation(gid, &shadow.OutOfBoundsError{
+					AllocSize: sv.Len * esz, Offset: 0, AccessSize: n * esz, Site: site, TypeName: inst.X.Type().String(),
+				})
+				interp.halt(gid)
+				frame.Locals[interp.vname(inst)] = Value{}
+				break
+			}
+			if sv.Backing == nil { // nil or empty slice converted to *[0]T
+				frame.Locals[interp.vname(inst)] = Value{}
+				break
+			}
+		}
 		if sv, ok := base.Raw.(*SliceValue); ok {
 			frame.Locals[interp.vname(inst)] = Value{Raw: sv.Backing, Provenance: sv.Backing}
 		} else {
@@ -1388,6 +1417,12 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		val := interp.resolveValue(frame, inst.X)
 		// Check for unsafe.Pointer conversions
 		if isUnsafePointerConversion(inst) {
+			if interp.concrete {
+				if r, ok := interp.convertUnsafeConcrete(gid, classifyUnsafeConversion(inst), val, site, inst); ok {
+					frame.Locals[interp.vname(inst)] = r
+					break
+				}
+			}
 			result, err := interp.handleUnsafePointer(gid, classifyUnsafeConversion(inst), val, site, inst.Type(), interp.vname(inst))
 			if err != nil {
 				interp.recordViolation(gid, err)
@@ -1645,7 +1680,7 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 					results = origin.Signature.Results()
 				}
 				if interp.concrete {
-					if impl := lookupConcrete(pkg.Path(), genericBaseName(interceptName)); impl != nil {
+					if impl := concreteCallee(callee); impl != nil {
 						return impl.call(interp, gid, args)
 					}
 				}

@@ -67,6 +67,11 @@ linters:
       - path: 'pkg/exec/internal/'
         linters:
           - revive
+      # The aggregate review kernels contain deliberate oddities.
+      - path: 'pkg/exec/internal/aggk/'
+        linters:
+          - staticcheck
+          - ineffassign
 
       # SSA dispatch files contain purposely large switch tables; gocyclo
       # does not apply to these architectural dispatch functions.

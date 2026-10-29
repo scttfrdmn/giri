@@ -424,8 +424,109 @@ func concreteZero(t types.Type) Value {
 		}
 	case *types.Slice:
 		return Value{Raw: &SliceValue{}}
+	case *types.Array, *types.Struct:
+		return Value{Raw: zeroAggregate}
 	}
 	return Value{}
+}
+
+// --- uintptr ↔ pointer ---
+
+// In concrete mode a uintptr converted from a pointer is a plain integer that
+// encodes the pointer's allocation and offset: alloc<<32 + offset. Integer
+// arithmetic on it then moves the offset, and converting it back to
+// unsafe.Pointer decodes the allocation and offset again, so
+// unsafe.Pointer(uintptr(p) + 8) addresses p's allocation 8 bytes further on
+// (#255). The encoding is deterministic, preserves alignment and ordering
+// within an allocation, and keeps the value a scalar for the value cache.
+// Offsets are taken in [-2^31, 2^31); 0 is the nil pointer.
+
+func encodeUintptr(p *shadow.Pointer) int64 {
+	if p == nil {
+		return 0
+	}
+	return int64(uint64(p.Alloc)<<32) + int64(p.Offset)
+}
+
+func decodeUintptr(u int64) *shadow.Pointer {
+	if u == 0 {
+		return nil
+	}
+	alloc := (u + 1<<31) >> 32 // round so small negative offsets keep their allocation
+	return &shadow.Pointer{Alloc: shadow.AllocID(alloc), Offset: int(u - alloc<<32)}
+}
+
+// pointerOf returns the shadow pointer a value carries, or nil.
+func pointerOf(v Value) *shadow.Pointer {
+	if v.Provenance != nil {
+		return v.Provenance
+	}
+	p, _ := v.Raw.(*shadow.Pointer)
+	return p
+}
+
+// convertUnsafeConcrete implements unsafe.Pointer ↔ uintptr conversions in
+// concrete mode; ok=false leaves other unsafe conversions to the CLI path.
+func (interp *Interpreter) convertUnsafeConcrete(gid int64, op UnsafeOp, val Value, site string, inst *ssa.Convert) (Value, bool) {
+	switch op {
+	case UnsafeOpToUintptr:
+		// Run the CLI handler for its detector bookkeeping (rule 2: the
+		// pending conversion), then produce the encoded integer.
+		if _, err := interp.handleUnsafePointer(gid, op, val, site, inst.Type(), interp.vname(inst)); err != nil {
+			interp.recordViolation(gid, err)
+		}
+		p := pointerOf(val)
+		if p != nil {
+			interp.cs.encoded[p.Alloc] = true
+		}
+		return Value{Raw: encodeUintptr(p)}, true
+	case UnsafeOpArithmetic:
+		n, ok := val.Raw.(int64)
+		if !ok {
+			return Value{}, false
+		}
+		var ptrVal Value
+		if p := decodeUintptr(n); p != nil {
+			if !interp.cs.encoded[p.Alloc] {
+				// Never converted from a pointer: no provenance. Alloc 0 is
+				// never allocated, so any access through it faults.
+				p = &shadow.Pointer{Alloc: 0, Offset: 0}
+			}
+			ptrVal = Value{Raw: p, Provenance: p}
+		}
+		// The CLI handler clears pending conversions and bounds-checks the
+		// resulting pointer (rule 3).
+		result, err := interp.handleUnsafePointer(gid, op, ptrVal, site, inst.Type(), interp.vname(inst))
+		if err != nil {
+			interp.recordViolation(gid, err)
+		}
+		return result, true
+	}
+	return Value{}, false
+}
+
+// forgedPointerError reports an access through a pointer made from an
+// integer that was never converted from a pointer.
+func forgedPointerError(site string) error {
+	return &shadow.InvalidAccessError{
+		Kind:    "pointer without provenance",
+		Site:    site,
+		Details: "unsafe.Pointer made from a uintptr that was not derived from a pointer",
+	}
+}
+
+// isScalarValue reports whether v's runtime representation is a scalar the
+// value cache may see: int64, float64, bool, string or complex128, with no
+// pointer provenance.
+func isScalarValue(v Value) bool {
+	if v.Provenance != nil {
+		return false
+	}
+	switch v.Raw.(type) {
+	case int64, float64, bool, string, complex128:
+		return true
+	}
+	return false
 }
 
 // --- Concrete memory ---
@@ -444,10 +545,17 @@ func (interp *Interpreter) loadConcrete(gid int64, addr Value, t types.Type, siz
 		// Untracked pointer (from an intercept): defer to the CLI semantics.
 		return interp.handleLoad(gid, addr, size, site)
 	}
+	if addr.Provenance.Alloc == 0 {
+		interp.halt(gid)
+		return concreteZero(t), forgedPointerError(site)
+	}
 	if !interp.skipChecks {
 		if _, err := interp.handleLoad(gid, addr, size, site); err != nil {
 			return concreteZero(t), err
 		}
+	}
+	if isAggregateType(t) {
+		return interp.gatherAggregate(addr.Provenance, t), nil
 	}
 	if v, ok := interp.elems[elemKey{addr.Provenance.Alloc, addr.Provenance.Offset}]; ok {
 		return v, nil
@@ -457,9 +565,13 @@ func (interp *Interpreter) loadConcrete(gid int64, addr Value, t types.Type, siz
 
 // storeConcrete writes val through addr, running detector checks unless
 // skipped, and records the value in the element store.
-func (interp *Interpreter) storeConcrete(gid int64, addr Value, val Value, size int, site string) error {
+func (interp *Interpreter) storeConcrete(gid int64, addr Value, val Value, t types.Type, size int, site string) error {
 	if addr.Provenance == nil {
 		return interp.handleStore(gid, addr, val, size, site)
+	}
+	if addr.Provenance.Alloc == 0 {
+		interp.halt(gid)
+		return forgedPointerError(site)
 	}
 	if !interp.skipChecks {
 		if err := interp.handleStore(gid, addr, val, size, site); err != nil {
@@ -469,8 +581,213 @@ func (interp *Interpreter) storeConcrete(gid int64, addr Value, val Value, size 
 		// handleStore maintains valueStore (named-return recomputation, #49).
 		interp.valueStore[addr.Provenance.Alloc] = val
 	}
+	if isAggregateType(t) {
+		interp.scatterAggregate(addr.Provenance, t, val)
+		return nil
+	}
 	interp.elems[elemKey{addr.Provenance.Alloc, addr.Provenance.Offset}] = val
 	return nil
+}
+
+// --- Array and struct values ---
+
+// aggregateValue is the concrete-mode value of an array or struct: its scalar
+// (and pointer, slice, …) leaves in layout order.
+type aggregateValue struct {
+	leaves []leaf
+	vals   []Value
+	zero   bool // the zero value of any array or struct type (zeroAggregate)
+}
+
+// zeroAggregate is the zero value of every array and struct type. Any other
+// Raw in an aggregate-typed value (an intercept placeholder, an unmodeled
+// channel receive) is unknown, and reads from it are opaque, never zero.
+var zeroAggregate = &aggregateValue{zero: true}
+
+// leaf is one non-aggregate component of an array or struct type, at a byte
+// offset from the start of the value.
+type leaf struct {
+	off int
+	t   types.Type
+}
+
+// isAggregateType reports whether t is an array or struct type.
+func isAggregateType(t types.Type) bool {
+	switch t.Underlying().(type) {
+	case *types.Array, *types.Struct:
+		return true
+	}
+	return false
+}
+
+// layout returns t's leaves in offset order (memoized per session).
+func (interp *Interpreter) layout(t types.Type) []leaf {
+	if ls, ok := interp.cs.layouts[t]; ok {
+		return ls
+	}
+	var ls []leaf
+	switch u := t.Underlying().(type) {
+	case *types.Array:
+		elem := interp.layout(u.Elem())
+		sz := interp.typeSizeOf(u.Elem())
+		for i := 0; i < int(u.Len()); i++ {
+			for _, l := range elem {
+				ls = append(ls, leaf{l.off + i*sz, l.t})
+			}
+		}
+	case *types.Struct:
+		fields := structFields(u)
+		offs := interp.sizes.Offsetsof(fields)
+		for i, f := range fields {
+			for _, l := range interp.layout(f.Type()) {
+				ls = append(ls, leaf{l.off + int(offs[i]), l.t})
+			}
+		}
+	default:
+		ls = []leaf{{0, t}}
+	}
+	interp.cs.layouts[t] = ls
+	return ls
+}
+
+// gatherAggregate reads the aggregate of type t stored at p.
+func (interp *Interpreter) gatherAggregate(p *shadow.Pointer, t types.Type) Value {
+	ls := interp.layout(t)
+	vals := make([]Value, len(ls))
+	for i, l := range ls {
+		if v, ok := interp.elems[elemKey{p.Alloc, p.Offset + l.off}]; ok {
+			vals[i] = v
+		} else {
+			vals[i] = concreteZero(l.t)
+		}
+	}
+	return Value{Raw: &aggregateValue{leaves: ls, vals: vals}}
+}
+
+// scatterAggregate writes the aggregate val of type t to p. A value that is
+// not a known aggregate of t's layout writes opaque leaves.
+func (interp *Interpreter) scatterAggregate(p *shadow.Pointer, t types.Type, val Value) {
+	ls := interp.layout(t)
+	agg, _ := val.Raw.(*aggregateValue)
+	for i, l := range ls {
+		var v Value
+		switch {
+		case agg == nil || (!agg.zero && len(agg.vals) != len(ls)):
+			v = stdlibOpaque // unknown value: its leaves are unknown too
+		case agg.zero:
+			v = concreteZero(l.t)
+		default:
+			v = agg.vals[i]
+		}
+		interp.elems[elemKey{p.Alloc, p.Offset + l.off}] = v
+	}
+}
+
+// project extracts the component of type sub at byte offset off from the
+// aggregate value v of type t.
+func (interp *Interpreter) project(v Value, t types.Type, off int, sub types.Type) Value {
+	agg, _ := v.Raw.(*aggregateValue)
+	if agg == nil {
+		return stdlibOpaque
+	}
+	if agg.zero {
+		return concreteZero(sub)
+	}
+	at := func(o int, lt types.Type) Value {
+		i := sort.Search(len(agg.leaves), func(i int) bool { return agg.leaves[i].off >= o })
+		if i < len(agg.leaves) && agg.leaves[i].off == o {
+			return agg.vals[i]
+		}
+		return concreteZero(lt)
+	}
+	if !isAggregateType(sub) {
+		return at(off, sub)
+	}
+	ls := interp.layout(sub)
+	vals := make([]Value, len(ls))
+	for i, l := range ls {
+		vals[i] = at(off+l.off, l.t)
+	}
+	return Value{Raw: &aggregateValue{leaves: ls, vals: vals}}
+}
+
+// fieldConcrete evaluates the struct-value field selection x.f (ssa.Field).
+func (interp *Interpreter) fieldConcrete(inst *ssa.Field, x Value) Value {
+	st := inst.X.Type().Underlying().(*types.Struct)
+	fields := structFields(st)
+	off := interp.sizes.Offsetsof(fields)[inst.Field]
+	return interp.project(x, inst.X.Type(), int(off), fields[inst.Field].Type())
+}
+
+// indexArrayConcrete evaluates a[i] on an array value (ssa.Index), raising an
+// index-out-of-range panic for a bad index.
+func (interp *Interpreter) indexArrayConcrete(gid int64, inst *ssa.Index, x Value, i int, site string) Value {
+	arr := inst.X.Type().Underlying().(*types.Array)
+	if i < 0 || i >= int(arr.Len()) {
+		esz := interp.typeSizeOf(arr.Elem())
+		interp.recordViolation(gid, &shadow.OutOfBoundsError{
+			AllocSize: int(arr.Len()) * esz, Offset: i * esz, AccessSize: esz, Site: site, TypeName: inst.X.Type().String(),
+		})
+		interp.halt(gid)
+		return concreteZero(arr.Elem())
+	}
+	return interp.project(x, inst.X.Type(), i*interp.typeSizeOf(arr.Elem()), arr.Elem())
+}
+
+// aggregateEqual compares two array or struct values of type t leaf by leaf.
+// ok=false means equality can't be decided (an operand or leaf is unknown).
+func (interp *Interpreter) aggregateEqual(x, y Value, t types.Type) (eq, ok bool) {
+	for _, l := range interp.layout(t) {
+		e, ok := interp.valuesEqual(interp.project(x, t, l.off, l.t), interp.project(y, t, l.off, l.t), l.t)
+		if !ok {
+			return false, false
+		}
+		if !e {
+			return false, true
+		}
+	}
+	if len(interp.layout(t)) == 0 {
+		// Zero-size: always equal, but only if both are known values.
+		_, xk := x.Raw.(*aggregateValue)
+		_, yk := y.Raw.(*aggregateValue)
+		return true, xk && yk
+	}
+	return true, true
+}
+
+// valuesEqual compares two values of static type t with Go's == semantics.
+// ok=false means the comparison can't be decided.
+func (interp *Interpreter) valuesEqual(a, b Value, t types.Type) (eq, ok bool) {
+	if _, unknown := a.Raw.(struct{}); unknown {
+		return false, false
+	}
+	if _, unknown := b.Raw.(struct{}); unknown {
+		return false, false
+	}
+	if isAggregateType(t) {
+		return interp.aggregateEqual(a, b, t)
+	}
+	if _, isIface := t.Underlying().(*types.Interface); isIface {
+		ai, aIs := a.Raw.(*InterfaceValue)
+		bi, bIs := b.Raw.(*InterfaceValue)
+		switch {
+		case a.Raw == nil && b.Raw == nil:
+			return true, true
+		case a.Raw == nil || b.Raw == nil:
+			return false, aIs || bIs
+		case aIs && bIs:
+			if !types.Identical(ai.Type, bi.Type) {
+				return false, true
+			}
+			return interp.valuesEqual(ai.Value, bi.Value, ai.Type)
+		}
+		return false, false
+	}
+	if r, ok := concreteBinOp(token.EQL, a, b, t, t); ok {
+		e, isBool := r.Raw.(bool)
+		return e, isBool
+	}
+	return concreteEqual(a, b)
 }
 
 // elemAt returns the element stored at index i of the slice sv, or the zero
@@ -478,6 +795,9 @@ func (interp *Interpreter) storeConcrete(gid int64, addr Value, val Value, size 
 func (interp *Interpreter) elemAt(sv *SliceValue, i int, elemType types.Type, elemSize int) Value {
 	if sv.Backing == nil {
 		return concreteZero(elemType)
+	}
+	if isAggregateType(elemType) {
+		return interp.gatherAggregate(&shadow.Pointer{Alloc: sv.Backing.Alloc, Offset: sv.Backing.Offset + i*elemSize}, elemType)
 	}
 	if v, ok := interp.elems[elemKey{sv.Backing.Alloc, sv.Backing.Offset + i*elemSize}]; ok {
 		return v
@@ -487,8 +807,12 @@ func (interp *Interpreter) elemAt(sv *SliceValue, i int, elemType types.Type, el
 
 // setElem stores v at index i of the slice sv without detector checks; used by
 // builtins whose bounds are established by construction.
-func (interp *Interpreter) setElem(sv *SliceValue, i int, elemSize int, v Value) {
+func (interp *Interpreter) setElem(sv *SliceValue, i int, elemType types.Type, elemSize int, v Value) {
 	if sv.Backing == nil {
+		return
+	}
+	if isAggregateType(elemType) {
+		interp.scatterAggregate(&shadow.Pointer{Alloc: sv.Backing.Alloc, Offset: sv.Backing.Offset + i*elemSize}, elemType, v)
 		return
 	}
 	interp.elems[elemKey{sv.Backing.Alloc, sv.Backing.Offset + i*elemSize}] = v
@@ -512,7 +836,7 @@ func (interp *Interpreter) newConcreteSlice(elemType types.Type, elems []Value, 
 	ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
 	sv := arenaNew(interp.arena, SliceValue{Backing: ptr, Len: len(elems), Cap: capacity})
 	for i, e := range elems {
-		interp.elems[elemKey{allocID, i * elemSize}] = e
+		interp.setElem(sv, i, elemType, elemSize, e)
 	}
 	return Value{Raw: sv, Provenance: ptr}
 }
@@ -586,7 +910,7 @@ func (interp *Interpreter) concreteBuiltin(gid int64, name string, call *ssa.Cal
 		if newLen <= base.Cap && base.Backing != nil {
 			out := arenaNew(interp.arena, SliceValue{Backing: base.Backing, Len: newLen, Cap: base.Cap})
 			for i, e := range extra {
-				interp.setElem(out, base.Len+i, elemSize, e)
+				interp.setElem(out, base.Len+i, elemType, elemSize, e)
 			}
 			return Value{Raw: out, Provenance: base.Backing}, true
 		}
@@ -618,7 +942,7 @@ func (interp *Interpreter) concreteBuiltin(gid int64, name string, call *ssa.Cal
 		}
 		n := min(dst.Len, len(src))
 		for i := 0; i < n; i++ {
-			interp.setElem(dst, i, elemSize, src[i])
+			interp.setElem(dst, i, elemType, elemSize, src[i])
 		}
 		return Value{Raw: int64(n)}, true
 
@@ -630,7 +954,7 @@ func (interp *Interpreter) concreteBuiltin(gid int64, name string, call *ssa.Cal
 			elemType := sliceElemType(call.Args[0].Type())
 			elemSize := interp.typeSizeOf(elemType)
 			for i := 0; i < sv.Len; i++ {
-				interp.setElem(sv, i, elemSize, concreteZero(elemType))
+				interp.setElem(sv, i, elemType, elemSize, concreteZero(elemType))
 			}
 			return Value{}, true
 		}
