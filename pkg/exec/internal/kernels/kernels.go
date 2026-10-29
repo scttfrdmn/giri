@@ -217,3 +217,12 @@ func ClassMem(xs []int) int {
 }
 
 func helper(x int) int { return x - 1 }
+
+// Accum's loop-carried accumulator has a known sequence (see TestTraces).
+func Accum(n int) int {
+	s := 0
+	for i := 1; i <= n; i++ {
+		s += i * i
+	}
+	return s
+}

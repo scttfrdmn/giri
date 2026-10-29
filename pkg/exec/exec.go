@@ -38,6 +38,13 @@ type Options struct {
 	// TrackInit enables giri's uninitialized-read detector (off by default,
 	// as under the CLI).
 	TrackInit bool
+
+	// Trace records, per argument set, the sequence of values taken by every
+	// value-producing instruction of fn (Result.Traces). Recording is the
+	// dominant memory cost of a Run; each sequence is capped at TraceCap
+	// entries (zero means DefaultTraceCap).
+	Trace    bool
+	TraceCap int
 }
 
 // Outcome describes how one argument set's call ended.
@@ -103,6 +110,10 @@ type Result struct {
 
 	// Exhausted is set when MaxSteps ran out; the last Outcome is Exhausted.
 	Exhausted bool
+
+	// Traces holds one entry per argument set that was run when
+	// Options.Trace is set, nil otherwise.
+	Traces []Traces
 }
 
 // Value is giri's interpreter value representation.
@@ -199,7 +210,16 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 	cfg := interpreter.DefaultConfig()
 	cfg.MaxSteps = budget
 	cfg.TrackInit = opts.TrackInit
-	sess, err := interpreter.NewSession(fn, interpreter.SessionOptions{Config: cfg})
+	var tr *tracer
+	sopts := interpreter.SessionOptions{Config: cfg}
+	if opts.Trace {
+		tr = &tracer{fn: fn, cap: opts.TraceCap}
+		if tr.cap <= 0 {
+			tr.cap = DefaultTraceCap
+		}
+		sopts.Tracer = tr
+	}
+	sess, err := interpreter.NewSession(fn, sopts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -209,6 +229,9 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 	remaining := budget
 	for set, a := range args {
 		if remaining == 0 {
+			if tr != nil {
+				res.Traces = append(res.Traces, Traces{})
+			}
 			res.Outputs = append(res.Outputs, nil)
 			res.Outcomes = append(res.Outcomes, Exhausted)
 			res.StepsPerSet = append(res.StepsPerSet, 0)
@@ -218,6 +241,10 @@ func Run(fn *ssa.Function, args [][]any, opts Options) (Result, error) {
 		vals := make([]Value, len(a))
 		for i, v := range a {
 			vals[i] = marshal(sess, sig.Params().At(i).Type(), v)
+		}
+		if tr != nil {
+			tr.traces = make(Traces)
+			res.Traces = append(res.Traces, tr.traces)
 		}
 		out := sess.Call(vals, remaining)
 		remaining -= min(out.Steps, remaining)

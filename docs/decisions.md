@@ -77,3 +77,17 @@ what a cost model compares against native `ns/op`.
 
 **The CLI prints nothing new, even with `-v`.** Class counters exist only in
 library sessions; the CLI never creates one.
+
+## Req 2 — per-value traces
+
+**Only the traced function's own instructions are recorded**, not those of
+interpreted callees; recursive activations of the function append to the
+same sequence. Traces are keyed by `ssa.Value`, and a callee's values belong
+to a different function.
+
+**Non-scalar values record only an execution count** (`TraceOther`).
+Pointers, slices and tuples have no machine-independent concrete value to
+fingerprint; their element loads are traced as scalars.
+
+**A value that cannot be represented stops its trace with `Opaque` set**,
+alongside the requested `Truncated` flag. Both mean "no fingerprint".
