@@ -109,7 +109,8 @@ type callState struct {
 	cacheHits    uint64
 	pureExecuted uint64
 	sites        map[token.Pos]string
-	nextAlloc    uint64 // SkipDetectors allocation IDs
+	nextAlloc    uint64                // SkipDetectors allocation IDs
+	layouts      map[types.Type][]leaf // array/struct leaf layouts
 	single       bool
 }
 
@@ -165,10 +166,11 @@ func NewSession(fn *ssa.Function, opts SessionOptions) (*Session, error) {
 	interp.names = make(map[unsafe.Pointer]string)
 	interp.globals = make(map[*ssa.Global]Value)
 	interp.cs = &callState{
-		cache:  opts.Cache,
-		tracer: opts.Tracer,
-		sites:  make(map[token.Pos]string),
-		single: opts.SingleGoroutine,
+		cache:   opts.Cache,
+		tracer:  opts.Tracer,
+		sites:   make(map[token.Pos]string),
+		layouts: make(map[types.Type][]leaf),
+		single:  opts.SingleGoroutine,
 	}
 	if opts.Cache != nil {
 		interp.cs.pure = make(map[ssa.Instruction]bool)
@@ -336,6 +338,9 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 	if cs.cache != nil && cs.isPure(instr) {
 		value = instr.(ssa.Value)
 		operands = interp.pureOperands(frame, instr)
+		cacheable = allScalarValues(operands)
+	}
+	if cacheable {
 		if res, steps, hit := cs.cache.Lookup(value, operands); hit {
 			if _, isCall := instr.(*ssa.Call); isCall {
 				// The only effect of a pure intercept call is the GC
@@ -351,7 +356,6 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 			}
 			return nil
 		}
-		cacheable = true
 	}
 
 	interp.steps++
@@ -363,7 +367,7 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 		cs.pureExecuted++
 		g := interp.goroutines[gid]
 		if len(interp.violations) == nviol && g != nil && !g.Panicked && !g.Panicking {
-			if res, ok := frame.Locals[interp.vname(value)]; ok {
+			if res, ok := frame.Locals[interp.vname(value)]; ok && isScalarValue(res) {
 				cs.cache.Store(value, operands, res, 1)
 			}
 		}
@@ -376,6 +380,18 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 		}
 	}
 	return next
+}
+
+// allScalarValues reports whether every operand is a scalar at run time.
+// IsPure decides from static types; this guards the hook against values whose
+// representation is not a scalar despite their type (#255).
+func allScalarValues(vs []Value) bool {
+	for _, v := range vs {
+		if !isScalarValue(v) {
+			return false
+		}
+	}
+	return true
 }
 
 // isPure memoizes IsPure per instruction.
@@ -615,6 +631,9 @@ func (interp *Interpreter) binOpConcrete(gid int64, inst *ssa.BinOp, x, y Value,
 		return r
 	}
 	if inst.Op == token.EQL || inst.Op == token.NEQ {
+		if isAggregateType(xt) {
+			return Value{Raw: interp.aggregateEqual(x, y, xt) == (inst.Op == token.EQL)}
+		}
 		if eq, ok := concreteEqual(x, y); ok {
 			return Value{Raw: eq == (inst.Op == token.EQL)}
 		}

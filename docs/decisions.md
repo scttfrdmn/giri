@@ -56,10 +56,25 @@ NaN to 0, so results are identical on every host.
 allocator size-class rounding**, so `cap()` of a grown slice can be smaller
 than native. `len` and contents are exact.
 
-**Not modelled concretely in v0:** whole-value loads and stores of arrays and
-structs (element and field access works), maps as arguments or results,
+**Not modelled concretely in v0:** maps, arrays and structs as arguments or
+results,
 interface method calls into the standard library, and calls into non-stdlib
 dependencies of the loaded package (their bodies are not built).
+
+**Arrays and structs are values (#255).** A whole-value load gathers the
+stored leaves (scalars, pointers, slices) of an array or struct in layout
+order and a whole-value store scatters them, so copies such as the
+temporary SSA builds for composite literals (`t6 = *t1; *t0 = t6`) keep every
+element, not just the one at offset 0.
+
+**`uintptr` from a pointer encodes (allocation, offset) as an integer (#255).**
+It stays a scalar, which the value cache requires, and integer arithmetic on
+it moves the offset; converting back to `unsafe.Pointer` decodes it. The
+alternative, keeping the shadow pointer as the value, made every arithmetic
+result an untyped nil and offered pointers to the cache hook. The numeric
+value is not a host address, so programs that print or hash a uintptr see
+different numbers from native; differences and alignment within one
+allocation are exact.
 
 ## Req 4 — cost counters by instruction class
 

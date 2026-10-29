@@ -527,7 +527,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		val := interp.resolveValue(frame, inst.Val)
 		size := interp.typeSizeOf(inst.Val.Type())
 		if interp.concrete {
-			if err := interp.storeConcrete(gid, addr, val, size, site); err != nil {
+			if err := interp.storeConcrete(gid, addr, val, inst.Val.Type(), size, site); err != nil {
 				interp.recordViolation(gid, err)
 			}
 			break
@@ -750,6 +750,10 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 
 	case *ssa.Field:
 		base := interp.resolveValue(frame, inst.X)
+		if interp.concrete {
+			frame.Locals[interp.vname(inst)] = interp.fieldConcrete(inst, base)
+			break
+		}
 		if m, ok := base.Raw.(map[int]Value); ok {
 			frame.Locals[interp.vname(inst)] = m[inst.Field]
 		} else {
@@ -760,6 +764,10 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		x := interp.resolveValue(frame, inst.X)
 		idx := interp.resolveValue(frame, inst.Index)
 		idxInt := int(toInt64(idx))
+		if _, isArr := inst.X.Type().Underlying().(*types.Array); isArr && interp.concrete {
+			frame.Locals[interp.vname(inst)] = interp.indexArrayConcrete(gid, inst, x, idxInt, site)
+			break
+		}
 		switch sv := x.Raw.(type) {
 		case *SliceValue:
 			// Slice element access: derive the element pointer and call handleLoad
@@ -1388,6 +1396,12 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		val := interp.resolveValue(frame, inst.X)
 		// Check for unsafe.Pointer conversions
 		if isUnsafePointerConversion(inst) {
+			if interp.concrete {
+				if r, ok := interp.convertUnsafeConcrete(gid, classifyUnsafeConversion(inst), val, site, inst); ok {
+					frame.Locals[interp.vname(inst)] = r
+					break
+				}
+			}
 			result, err := interp.handleUnsafePointer(gid, classifyUnsafeConversion(inst), val, site, inst.Type(), interp.vname(inst))
 			if err != nil {
 				interp.recordViolation(gid, err)

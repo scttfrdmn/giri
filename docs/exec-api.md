@@ -192,16 +192,21 @@ which are interpreted from source.
 - integer operations wrap to the operand's width and honor signedness;
   `float32` results round to `float32`; constants are exact;
 - every store is remembered per (allocation, byte offset), so slice, array
-  and struct-field loads return stored values (or the zero value);
+  and struct-field loads return stored values (or the zero value); arrays and
+  structs are also values in their own right, so whole-value copies, field
+  selection and indexing of such values, and `==` on them behave as native;
 - `append`, `copy`, `clear`, `min`/`max`, string slicing and string↔`[]byte`/
   `[]rune` conversions move real values;
 - integer division by zero, out-of-range indexing and nil dereference halt
   the call as a run-time panic would;
 - float→integer conversions that overflow saturate (NaN → 0), identically on
-  every host.
+  every host;
+- a `uintptr` converted from a pointer is an integer encoding the pointer's
+  allocation and offset (`alloc<<32 + offset`), so `unsafe.Pointer(uintptr(p)
+  + n)` addresses the same allocation `n` bytes on, and the unsafe-pointer
+  rules still apply. Its numeric value is not a real address.
 
-**Not covered in v0:** whole-value loads and stores of arrays and structs
-(element and field access work), maps and structs as arguments or results,
+**Not covered in v0:** maps, arrays and structs as arguments or results,
 calls into non-stdlib dependencies of the loaded package, and `cap()` of a
 slice grown by `append` (it follows the runtime growth formula without size
 class rounding, so it can be smaller than native).

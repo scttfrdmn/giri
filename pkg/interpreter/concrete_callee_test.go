@@ -10,6 +10,8 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
+
+	"github.com/scttfrdmn/giri/pkg/shadow"
 )
 
 // TestConcreteCalleeRejectsMethods: the concrete table is keyed by package
@@ -61,5 +63,21 @@ func F(s string) (string, string) {
 	}
 	if !IsPure(function) {
 		t.Error("strings.Replace on scalars not pure")
+	}
+}
+
+func TestUintptrEncoding(t *testing.T) {
+	for _, p := range []shadow.Pointer{{Alloc: 1}, {Alloc: 7, Offset: 24}, {Alloc: 7, Offset: -8}, {Alloc: 1 << 20, Offset: 1<<31 - 1}} {
+		got := decodeUintptr(encodeUintptr(&p))
+		if got.Alloc != p.Alloc || got.Offset != p.Offset {
+			t.Errorf("round trip %+v → %+v", p, *got)
+		}
+	}
+	if encodeUintptr(nil) != 0 || decodeUintptr(0) != nil {
+		t.Error("nil must encode as 0")
+	}
+	a, b := shadow.Pointer{Alloc: 3, Offset: 8}, shadow.Pointer{Alloc: 3, Offset: 40}
+	if encodeUintptr(&b)-encodeUintptr(&a) != 32 {
+		t.Error("difference within an allocation is not the byte distance")
 	}
 }
