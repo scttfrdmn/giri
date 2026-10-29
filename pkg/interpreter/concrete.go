@@ -1,23 +1,34 @@
-// Package interpreter - concrete.go implements value-faithful ("concrete")
-// semantics used by library callers (pkg/exec).
+// Package interpreter - concrete.go implements value-faithful semantics.
 //
-// The CLI interprets programs to find undefined behavior and deliberately
-// approximates values: integer arithmetic is plain int64, and memory remembers
-// only the value stored at offset 0 of each allocation. That is enough to drive
-// detectors, but a caller that wants a function's actual outputs needs Go's
-// real semantics. Concrete mode supplies them:
+// Two levels, set per Interpreter:
+//
+// Value-faithful memory (interp.faithful), on for every interpreter, CLI
+// included (#260):
+//
+//   - every store is remembered per (allocation, byte offset), so loads of
+//     slice/array elements and struct fields return the stored value (or the
+//     type's zero value), not just the value at offset 0
+//   - arrays and structs are values: whole-value loads and stores, Field and
+//     Index on values, and == behave as native
+//   - append, copy, clear and string<->[]byte/[]rune conversions move real
+//     element values; sort.* runs the real functions on them
+//   - [N]T(s) with len(s) < N panics
+//
+// Detector checks are unchanged: every load and store still goes through
+// handleLoad/handleStore.
+//
+// Concrete mode (interp.concrete), set only by NewSession for pkg/exec, adds
+// Go's typed value semantics on top:
 //
 //   - integer operations wrap to the operand width and honor signedness;
-//     float32 results are rounded to float32
-//   - every store is remembered per (allocation, byte offset), so loads of
-//     slice/array elements return the stored value (or the type's zero value)
-//   - append, copy, clear, string slicing and string<->[]byte/[]rune
-//     conversions move real element values
+//     float32 results are rounded to float32; constants are exact
+//   - string slicing, typed min/max, and native-backed concrete intercepts
+//   - uintptr values derived from pointers encode (allocation, offset)
 //   - integer division by zero halts the goroutine like a runtime panic
 //   - map range iteration order is sorted, not Go's randomized order
 //
-// Concrete mode is enabled only through NewSession; Run, RunN and RunTests
-// never set it, so CLI behavior is unchanged.
+// The CLI keeps its approximate arithmetic: it drives detectors, and changing
+// it would change which branches existing programs take.
 package interpreter
 
 import (
@@ -477,7 +488,7 @@ func (interp *Interpreter) convertUnsafeConcrete(gid int64, op UnsafeOp, val Val
 		}
 		p := pointerOf(val)
 		if p != nil {
-			interp.cs.encoded[p.Alloc] = true
+			interp.encoded[p.Alloc] = true
 		}
 		return Value{Raw: encodeUintptr(p)}, true
 	case UnsafeOpArithmetic:
@@ -487,7 +498,7 @@ func (interp *Interpreter) convertUnsafeConcrete(gid int64, op UnsafeOp, val Val
 		}
 		var ptrVal Value
 		if p := decodeUintptr(n); p != nil {
-			if !interp.cs.encoded[p.Alloc] {
+			if !interp.encoded[p.Alloc] {
 				// Never converted from a pointer: no provenance. Alloc 0 is
 				// never allocated, so any access through it faults.
 				p = &shadow.Pointer{Alloc: 0, Offset: 0}
@@ -513,6 +524,16 @@ func forgedPointerError(site string) error {
 		Site:    site,
 		Details: "unsafe.Pointer made from a uintptr that was not derived from a pointer",
 	}
+}
+
+// sortArgsConcrete reports whether a sort call's slice argument lives in the
+// element store, so the concrete sort implementation can read and write it.
+func sortArgsConcrete(args []Value) bool {
+	if len(args) == 0 {
+		return false
+	}
+	sv, ok := args[0].Raw.(*SliceValue)
+	return ok && (sv.Backing != nil || sv.Len == 0)
 }
 
 // isScalarValue reports whether v's runtime representation is a scalar the
@@ -620,7 +641,7 @@ func isAggregateType(t types.Type) bool {
 
 // layout returns t's leaves in offset order (memoized per session).
 func (interp *Interpreter) layout(t types.Type) []leaf {
-	if ls, ok := interp.cs.layouts[t]; ok {
+	if ls, ok := interp.layouts[t]; ok {
 		return ls
 	}
 	var ls []leaf
@@ -644,7 +665,7 @@ func (interp *Interpreter) layout(t types.Type) []leaf {
 	default:
 		ls = []leaf{{0, t}}
 	}
-	interp.cs.layouts[t] = ls
+	interp.layouts[t] = ls
 	return ls
 }
 
@@ -872,7 +893,10 @@ func sliceElemType(t types.Type) types.Type {
 // concreteBuiltin implements builtins whose concrete-mode semantics differ
 // from the CLI model (append, copy, clear, min, max). ok=false defers to
 // execBuiltin.
-func (interp *Interpreter) concreteBuiltin(gid int64, name string, call *ssa.CallCommon, args []Value, site string) (Value, bool) {
+func (interp *Interpreter) concreteBuiltin(gid int64, name string, call *ssa.CallCommon, args []Value, site string, typed bool) (Value, bool) {
+	if !typed && (name == "min" || name == "max") {
+		return Value{}, false // typed ordering is concrete-mode only
+	}
 	switch name {
 	case "append":
 		if len(args) < 2 {
@@ -1036,9 +1060,11 @@ func growCap(oldCap, newLen int) int {
 
 // concreteConvert implements Convert in concrete mode. ok=false defers to the
 // CLI convertValue.
-func (interp *Interpreter) concreteConvert(v Value, src, dst types.Type, site string) (Value, bool) {
-	if r, ok := concreteConvertNumeric(v, src, dst); ok {
-		return r, true
+func (interp *Interpreter) concreteConvert(v Value, src, dst types.Type, site string, numeric bool) (Value, bool) {
+	if numeric {
+		if r, ok := concreteConvertNumeric(v, src, dst); ok {
+			return r, true
+		}
 	}
 	sb, srcBasic := src.Underlying().(*types.Basic)
 	db, dstBasic := dst.Underlying().(*types.Basic)

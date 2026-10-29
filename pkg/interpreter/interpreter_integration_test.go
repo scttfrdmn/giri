@@ -2047,6 +2047,13 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	{
+		name:           "faithful memory",
+		dir:            "faithful_memory",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {

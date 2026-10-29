@@ -187,7 +187,9 @@ which are interpreted from source.
 ## The concrete interpreter mode
 
 `Run` executes in a value-faithful mode of giri's interpreter (`NewSession` in
-`pkg/interpreter`), which the CLI never enables:
+`pkg/interpreter`). Since #260 the CLI shares the memory part (the element
+store, array/struct values, element-carrying builtins and conversions, `sort`).
+The typed-arithmetic part below is `pkg/exec`-only:
 
 - integer operations wrap to the operand's width and honor signedness;
   `float32` results round to `float32`; constants are exact;

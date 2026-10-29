@@ -473,11 +473,14 @@ type Interpreter struct {
 
 	// Library call mode (NewSession, used by pkg/exec). All zero for the CLI,
 	// whose behavior is unaffected by these fields.
-	concrete   bool              // value-faithful semantics (concrete.go)
+	concrete   bool              // typed values and pkg/exec semantics (concrete.go)
+	faithful   bool              // value-faithful memory: element store, array/struct values (#260)
 	skipChecks bool              // SkipDetectors: no shadow checks or detectors
 	elems      map[elemKey]Value // concrete-mode element store
 	cs         *callState        // per-session instrumentation (session.go)
 	names      map[unsafe.Pointer]string
+	layouts    map[types.Type][]leaf   // array/struct leaf layouts
+	encoded    map[shadow.AllocID]bool // allocations converted to uintptr (concrete mode)
 }
 
 // vname returns v's SSA name, the key of frame.Locals. ssa.Value.Name formats
@@ -656,6 +659,10 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 		onceState:        make(map[shadow.AllocID]bool),
 		valueStore:       make(map[shadow.AllocID]Value),
 		cancelFuncs:      make(map[cancelFuncID]cancelRecord),
+		faithful:         true,
+		elems:            make(map[elemKey]Value),
+		layouts:          make(map[types.Type][]leaf),
+		encoded:          make(map[shadow.AllocID]bool),
 		config:           config,
 		sizes:            types.SizesFor("gc", runtime.GOARCH),
 		rng:              rand.New(rand.NewSource(config.RandomSeed)),
@@ -721,6 +728,10 @@ func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Inter
 		onceState:        make(map[shadow.AllocID]bool),
 		valueStore:       make(map[shadow.AllocID]Value),
 		cancelFuncs:      make(map[cancelFuncID]cancelRecord),
+		faithful:         true,
+		elems:            make(map[elemKey]Value),
+		layouts:          make(map[types.Type][]leaf),
+		encoded:          make(map[shadow.AllocID]bool),
 		config:           config,
 		sizes:            types.SizesFor("gc", runtime.GOARCH),
 		arena:            a,
