@@ -232,6 +232,12 @@ func (s *Server) runAnalysis() (map[string][]Diagnostic, error) {
 	if !s.noCache && deterministic {
 		cacheDir, cacheOK = cache.Dir()
 	}
+	// The giri build and Go toolchain are part of the key (#263); if either
+	// can't be identified, don't risk a stale hit.
+	cacheEnv := ""
+	if cacheOK {
+		cacheEnv, cacheOK = cache.Environment(cacheDir)
+	}
 	cfgFingerprint := cache.Fingerprint(s.config)
 
 	byFile := make(map[string][]Diagnostic)
@@ -248,7 +254,7 @@ func (s *Server) runAnalysis() (map[string][]Diagnostic, error) {
 	for _, prog := range progs {
 		var key string
 		if cacheOK && prog.SourceHash != "" {
-			key = cache.Key(prog.SourceHash, cfgFingerprint, report.Version, prog.GoVersion)
+			key = cache.Key(prog.SourceHash, cfgFingerprint, report.Version, prog.GoVersion, cacheEnv)
 			if entry, hit := cache.Load(cacheDir, key); hit {
 				add(entry.Active) // suppressed findings intentionally skipped
 				continue

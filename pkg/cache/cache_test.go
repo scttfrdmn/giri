@@ -11,23 +11,24 @@ import (
 )
 
 func TestKeyStability(t *testing.T) {
-	k1 := cache.Key("srchash", "fp", "0.95.0", "go1.23")
-	k2 := cache.Key("srchash", "fp", "0.95.0", "go1.23")
+	k1 := cache.Key("srchash", "fp", "0.95.0", "go1.23", "env")
+	k2 := cache.Key("srchash", "fp", "0.95.0", "go1.23", "env")
 	if k1 != k2 {
 		t.Errorf("identical inputs must yield identical keys: %s vs %s", k1, k2)
 	}
 	// Each component change must change the key.
 	cases := []struct {
-		name             string
-		src, fp, gv, gov string
+		name                  string
+		src, fp, gv, gov, env string
 	}{
-		{"source", "OTHER", "fp", "0.95.0", "go1.23"},
-		{"fingerprint", "srchash", "OTHER", "0.95.0", "go1.23"},
-		{"giriVersion", "srchash", "fp", "0.96.0", "go1.23"},
-		{"goVersion", "srchash", "fp", "0.95.0", "go1.24"},
+		{"source", "OTHER", "fp", "0.95.0", "go1.23", "env"},
+		{"fingerprint", "srchash", "OTHER", "0.95.0", "go1.23", "env"},
+		{"giriVersion", "srchash", "fp", "0.96.0", "go1.23", "env"},
+		{"goVersion", "srchash", "fp", "0.95.0", "go1.24", "env"},
+		{"environment", "srchash", "fp", "0.95.0", "go1.23", "OTHER"},
 	}
 	for _, c := range cases {
-		if got := cache.Key(c.src, c.fp, c.gv, c.gov); got == k1 {
+		if got := cache.Key(c.src, c.fp, c.gv, c.gov, c.env); got == k1 {
 			t.Errorf("%s change must alter the key, but it did not", c.name)
 		}
 	}
