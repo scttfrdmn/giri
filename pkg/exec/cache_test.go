@@ -3,6 +3,7 @@ package exec
 import (
 	"fmt"
 	"go/token"
+	"go/types"
 	"reflect"
 	"testing"
 
@@ -31,7 +32,7 @@ func cacheKey(v ssa.Value, operands []Value) string {
 
 func (c *recordingCache) Lookup(v ssa.Value, operands []Value) (Value, uint64, bool) {
 	c.lookups++
-	if !IsPure(v.(ssa.Instruction)) {
+	if !mayBeCached(v.(ssa.Instruction)) {
 		c.impureConsults = append(c.impureConsults, v)
 	}
 	r, ok := c.entries[cacheKey(v, operands)]
@@ -44,6 +45,49 @@ func (c *recordingCache) Lookup(v ssa.Value, operands []Value) (Value, uint64, b
 func (c *recordingCache) Store(v ssa.Value, operands []Value, result Value, steps uint64) {
 	c.stores++
 	c.entries[cacheKey(v, operands)] = result
+}
+
+// mayBeCached is the test's own statement of which instructions the hook may
+// be offered, written independently of IsPure so a misclassification there
+// is caught (#256): scalar BinOps, UnOps other than load and receive, scalar
+// Convert/ChangeType, and calls to package-level functions of the pure
+// stdlib packages with scalar arguments and result.
+func mayBeCached(instr ssa.Instruction) bool {
+	scalar := func(t types.Type) bool {
+		b, ok := t.Underlying().(*types.Basic)
+		return ok && b.Kind() != types.UnsafePointer && b.Kind() != types.UntypedNil && b.Kind() != types.Invalid
+	}
+	v, ok := instr.(ssa.Value)
+	if !ok || !scalar(v.Type()) {
+		return false
+	}
+	switch i := instr.(type) {
+	case *ssa.BinOp:
+		return scalar(i.X.Type()) && scalar(i.Y.Type())
+	case *ssa.UnOp:
+		return i.Op != token.MUL && i.Op != token.ARROW && scalar(i.X.Type())
+	case *ssa.Convert:
+		return scalar(i.X.Type())
+	case *ssa.ChangeType:
+		return scalar(i.X.Type())
+	case *ssa.Call:
+		f := i.Call.StaticCallee()
+		if f == nil || i.Call.IsInvoke() || f.Signature.Recv() != nil || f.Pkg == nil {
+			return false
+		}
+		switch f.Pkg.Pkg.Path() {
+		case "math", "math/bits", "strings", "strconv", "unicode", "unicode/utf8":
+		default:
+			return false
+		}
+		for _, a := range i.Call.Args {
+			if !scalar(a.Type()) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // TestCacheSecondRunExecutesNoPureInstructions runs kernels twice with one
@@ -158,9 +202,43 @@ func TestIsPure(t *testing.T) {
 		"Fib": {
 			{isCall("Fib"), false, "recursive interpreted call"},
 		},
+		"PurityMix": {
+			{is(func(i ssa.Instruction) bool { u, ok := i.(*ssa.UnOp); return ok && u.Op == token.SUB }), true, "negation"},
+			{is(func(i ssa.Instruction) bool { u, ok := i.(*ssa.UnOp); return ok && u.Op == token.XOR }), true, "bitwise complement"},
+			{is(func(i ssa.Instruction) bool { u, ok := i.(*ssa.UnOp); return ok && u.Op == token.NOT }), true, "logical not"},
+			{is(func(i ssa.Instruction) bool { _, ok := i.(*ssa.ChangeType); return ok }), true, "float64→celsius"},
+			{is(func(i ssa.Instruction) bool { _, ok := i.(*ssa.Extract); return ok }), false, "extract from a tuple"},
+			{is(func(i ssa.Instruction) bool { _, ok := i.(*ssa.Index); return ok }), false, "index of an array value"},
+			{is(func(i ssa.Instruction) bool { _, ok := i.(*ssa.Field); return ok }), false, "field of a struct value"},
+			{isCall("divmod7"), false, "multi-result interpreted call"},
+		},
 	}
+	unsafek, err := LoadDir("testdata/unsafek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	isConv := func(from, to string) func(ssa.Instruction) bool {
+		return func(i ssa.Instruction) bool {
+			c, ok := i.(*ssa.Convert)
+			return ok && c.X.Type().String() == from && c.Type().String() == to
+		}
+	}
+	unsafeChecks := []expect{
+		{isConv("unsafe.Pointer", "uintptr"), false, "unsafe.Pointer→uintptr"},
+		{isConv("uintptr", "unsafe.Pointer"), false, "uintptr→unsafe.Pointer"},
+		{isConv("int", "uintptr"), true, "int→uintptr"},
+		{isConv("*int", "unsafe.Pointer"), false, "*int→unsafe.Pointer"},
+		{isBin(token.ADD), true, "uintptr addition (static types are scalar; run-time values are checked separately)"},
+	}
+	funcOf := func(name string) *ssa.Function {
+		if name == "PtrArith" {
+			return unsafek.Func(name)
+		}
+		return kernelFunc(t, name)
+	}
+	checks["PtrArith"] = unsafeChecks
 	for fnName, exps := range checks {
-		fn := kernelFunc(t, fnName)
+		fn := funcOf(fnName)
 		for _, e := range exps {
 			found := false
 			for _, b := range fn.Blocks {
@@ -233,4 +311,85 @@ func TestCacheHitKeepsGCSafepoint(t *testing.T) {
 	}
 	res, err = Run(fn, [][]any{{4.0, true}}, Options{Cache: c})
 	check("primed without detectors", res, err, c)
+}
+
+// TestCacheNeverChangesResults: for kernels including ones that raise
+// violations, a run with a value cache reports exactly what a run without
+// one does (outputs, outcomes, counters and violations), however the cache
+// was primed: on the same arguments, on arguments in another order, or with
+// detectors off (#256).
+func TestCacheNeverChangesResults(t *testing.T) {
+	unsafek, err := LoadDir("testdata/unsafek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		fn   *ssa.Function
+		args [][]any
+	}{
+		{kernelFunc(t, "DivMod"), [][]any{{uint64(7), uint64(2)}, {uint64(1), uint64(0)}, {uint64(9), uint64(4)}}},
+		{kernelFunc(t, "IndexAfterMath"), [][]any{{[]int{1, 2}, 1}, {[]int{1, 2}, 5}}},
+		{kernelFunc(t, "Mix32"), [][]any{{int32(7), int32(3)}, {int32(-9), int32(2)}}},
+		{kernelFunc(t, "Shifts"), [][]any{{uint32(5), uint(3)}, {uint32(5), uint(40)}}},
+		{kernelFunc(t, "SqrtSum"), [][]any{{[]float64{4, 9}}, {[]float64{2, 4}}}},
+		{kernelFunc(t, "Pop"), [][]any{{uint64(3)}, {uint64(0xFFFF)}}},
+		{kernelFunc(t, "Strs"), [][]any{{"héllo"}, {"abc"}}},
+		{kernelFunc(t, "StructValues"), [][]any{{1.5, int32(3)}, {1.5, int32(4)}}},
+		{unsafek.Func("GCPoint"), [][]any{{4.0, false}, {4.0, true}}},
+		{unsafek.Func("PtrArith"), [][]any{{1}, {6}, {2}}},
+	}
+	summary := func(r Result) string {
+		var v []string
+		for _, x := range r.Violations {
+			v = append(v, fmt.Sprintf("%d %s %s", x.Set, x.Category, x.Message))
+		}
+		return fmt.Sprintf("out=%v outcomes=%v steps=%d %v classes=%v viol=%v",
+			r.Outputs, r.Outcomes, r.Steps, r.StepsPerSet, r.StepsByClass, v)
+	}
+	reverse := func(a [][]any) [][]any {
+		out := make([][]any, len(a))
+		for i := range a {
+			out[i] = a[len(a)-1-i]
+		}
+		return out
+	}
+	for _, c := range cases {
+		t.Run(c.fn.Name(), func(t *testing.T) {
+			ref, err := Run(c.fn, c.args, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := summary(ref)
+			totalHits := uint64(0)
+			for _, prime := range []struct {
+				name string
+				args [][]any
+				opts Options
+			}{
+				{"same args", c.args, Options{}},
+				{"reversed args", reverse(c.args), Options{}},
+				{"primed without detectors", reverse(c.args), Options{SkipDetectors: true}},
+			} {
+				cache := newRecordingCache()
+				prime.opts.Cache = cache
+				if _, err := Run(c.fn, prime.args, prime.opts); err != nil {
+					t.Fatal(err)
+				}
+				got, err := Run(c.fn, c.args, Options{Cache: cache})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if s := summary(got); s != want {
+					t.Errorf("%s:\n got %s\nwant %s", prime.name, s, want)
+				}
+				if len(cache.impureConsults) > 0 {
+					t.Errorf("%s: hook offered %v", prime.name, cache.impureConsults)
+				}
+				totalHits += got.CacheHits
+			}
+			if totalHits == 0 {
+				t.Error("no cache hits: the case does not exercise the cache")
+			}
+		})
+	}
 }

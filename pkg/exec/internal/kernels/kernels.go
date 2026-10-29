@@ -301,3 +301,26 @@ func ArrayValues(xs []int) (int, bool, int) {
 	}
 	return a[3] + sum, a == b, [4]int{1, 2, 3, 4}[2]
 }
+
+// IndexAfterMath does cacheable arithmetic, then indexes with its result,
+// which is out of range for large i.
+func IndexAfterMath(xs []int, i int) int {
+	j := i*3 - 2*i
+	return xs[j] + j
+}
+
+type celsius float64
+
+type pair2 struct{ a, b int }
+
+func divmod7(x int) (int, int) { return x / 7, x % 7 }
+func triple(x int) [3]int      { return [3]int{x, x + 1, x + 2} }
+func mkpair(x int) pair2       { return pair2{x, x * 2} }
+
+// PurityMix contains one of each instruction kind TestIsPure classifies that
+// the other kernels lack: UnOp -, ^ and !, ChangeType, Extract, and Index
+// and Field on values.
+func PurityMix(x int, b bool, f float64) (int, int, bool, celsius, int, int, int) {
+	q, r := divmod7(x)
+	return -x, ^x, !b, celsius(f), q + r, triple(x)[1], mkpair(x).b
+}

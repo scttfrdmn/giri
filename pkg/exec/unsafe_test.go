@@ -70,6 +70,9 @@ func TestUintptrArithmetic(t *testing.T) {
 		if res.PureExecuted == 0 {
 			t.Error("no pure instruction offered to the cache; the case tests nothing")
 		}
+		if len(c.impureConsults) > 0 {
+			t.Errorf("hook offered %v", c.impureConsults)
+		}
 		if len(c.bad) > 0 {
 			t.Errorf("hook saw non-scalar values: %v", c.bad)
 		}
