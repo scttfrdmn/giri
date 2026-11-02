@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Phi nodes take effect together** (#268). A block's phis were evaluated one
+  at a time, so a phi reading another phi of the same block saw the value just
+  assigned. `a, b = b, a` in a loop gave `(2, 2)` instead of `(2, 1)` after one
+  iteration, on the CLI path and in `pkg/exec`. All of a block's incoming
+  values are now computed on block entry, before any is assigned. Across 287
+  integration and showcase programs, CLI findings change only in the new test.
+- Integration test `phi_parallel`; 0 violations (273 integration + 14
+  showcase = 287 total).
+
 ## [0.99.0] - 2026-10-29
 
 ### Added

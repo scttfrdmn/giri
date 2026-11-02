@@ -142,6 +142,13 @@ type Frame struct {
 	// Previous basic block (for Phi node resolution)
 	PrevBlock *ssa.BasicBlock
 
+	// phiVals holds the incoming values of the current block's phis, computed
+	// together on block entry so every phi reads the values from before any of
+	// them is assigned (Go's parallel phi semantics); phiNext is the next one
+	// to install.
+	phiVals []Value
+	phiNext int
+
 	// ReturnInst holds the ssa.Return instruction so popFrame can re-evaluate
 	// named return values after executing deferred calls that may have modified
 	// named-return allocs (#49). Nil for functions without named returns.

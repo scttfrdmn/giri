@@ -367,3 +367,30 @@ func OpaqueIntoArg(xs []int) int {
 	xs[0] = image.Pt(3, 4).X
 	return len(xs)
 }
+
+// Swap exchanges two loop variables n times. Like Rotate3 and FibPair, it
+// assigns several loop variables at once, so each iteration's phis must read
+// the previous iteration's values together.
+func Swap(n int) (int, int) {
+	a, b := 1, 2
+	for i := 0; i < n; i++ {
+		a, b = b, a
+	}
+	return a, b
+}
+
+func Rotate3(n int) (int, int, int) {
+	a, b, c := 1, 2, 3
+	for i := 0; i < n; i++ {
+		a, b, c = b, c, a
+	}
+	return a, b, c
+}
+
+func FibPair(n int) (uint64, uint64) {
+	a, b := uint64(0), uint64(1)
+	for i := 0; i < n; i++ {
+		a, b = b, a+b
+	}
+	return a, b
+}

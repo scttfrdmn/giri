@@ -112,6 +112,9 @@ func TestRoundTripMatchesNative(t *testing.T) {
 		{"ApplyTwice", kernels.ApplyTwice, [][]any{{2}}},
 		{"StructValues", kernels.StructValues, [][]any{{1.5, int32(300)}, {-2.0, int32(-1)}}},
 		{"ArrayValues", kernels.ArrayValues, [][]any{{[]int{1, 2, 3, 4}}, {[]int{5}}, {nil}}},
+		{"Swap", kernels.Swap, [][]any{{0}, {1}, {2}, {7}}},
+		{"Rotate3", kernels.Rotate3, [][]any{{0}, {1}, {2}, {3}, {10}}},
+		{"FibPair", kernels.FibPair, [][]any{{0}, {1}, {10}, {90}}},
 		{"MinMax", kernels.MinMax, [][]any{{uint64(1 << 63), uint64(5), uint64(9)}}},
 	}
 	for _, c := range cases {

@@ -470,6 +470,19 @@ func (interp *Interpreter) execBlock(gid int64, fn *ssa.Function, block *ssa.Bas
 		return nil
 	}
 
+	// A block's phis are its leading instructions and take effect together:
+	// for "a, b = b, a" in a loop, each phi must read the other's value from
+	// the previous iteration, not the one just assigned. Evaluate all their
+	// incoming values first; each Phi instruction then installs its own.
+	frame.phiVals, frame.phiNext = frame.phiVals[:0], 0
+	for _, instr := range block.Instrs {
+		phi, ok := instr.(*ssa.Phi)
+		if !ok {
+			break
+		}
+		frame.phiVals = append(frame.phiVals, interp.phiIncoming(frame, phi))
+	}
+
 	for _, instr := range block.Instrs {
 		// Stop if the goroutine has panicked, is unwinding a panic, or is blocked.
 		if g := interp.goroutines[gid]; g != nil && (g.Panicked || g.Panicking || g.Status == GoroutineBlocked) {
@@ -1480,19 +1493,13 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 	// --- Phi nodes ---
 
 	case *ssa.Phi:
-		// Select the edge value corresponding to the predecessor block we came from.
-		for i, pred := range inst.Block().Preds {
-			if pred == frame.PrevBlock {
-				frame.Locals[interp.vname(inst)] = interp.resolveValue(frame, inst.Edges[i])
-				break
-			}
-		}
-		// Fallback: if no predecessor matched, take the first edge unconditionally.
-		// This is correct because SSA guarantees edge order matches predecessor order,
-		// and the entry block has no Phi nodes. The previous code skipped zero-valued
-		// edges (int 0, false, nil pointer), producing wrong values in loops (#18).
-		if _, exists := frame.Locals[interp.vname(inst)]; !exists && len(inst.Edges) > 0 {
-			frame.Locals[interp.vname(inst)] = interp.resolveValue(frame, inst.Edges[0])
+		// The incoming value was computed with the block's other phis on
+		// block entry (execBlock).
+		if frame.phiNext < len(frame.phiVals) {
+			frame.Locals[interp.vname(inst)] = frame.phiVals[frame.phiNext]
+			frame.phiNext++
+		} else {
+			frame.Locals[interp.vname(inst)] = interp.phiIncoming(frame, inst)
 		}
 
 	case *ssa.RunDefers:
@@ -2084,6 +2091,23 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 		return Value{}
 	}
 
+	return Value{}
+}
+
+// phiIncoming returns the value phi takes on entry from frame.PrevBlock: the
+// edge for that predecessor. If no predecessor matches, it takes the first
+// edge unconditionally; SSA guarantees edge order matches predecessor order,
+// and the entry block has no Phi nodes. (Skipping zero-valued edges instead
+// gave wrong values in loops, #18.)
+func (interp *Interpreter) phiIncoming(frame *Frame, phi *ssa.Phi) Value {
+	for i, pred := range phi.Block().Preds {
+		if pred == frame.PrevBlock {
+			return interp.resolveValue(frame, phi.Edges[i])
+		}
+	}
+	if len(phi.Edges) > 0 {
+		return interp.resolveValue(frame, phi.Edges[0])
+	}
 	return Value{}
 }
 
