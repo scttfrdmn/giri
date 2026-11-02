@@ -2054,6 +2054,13 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	{
+		name:           "phi parallel",
+		dir:            "phi_parallel",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {
