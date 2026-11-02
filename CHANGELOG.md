@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.99.1] - 2026-11-02
+
 ### Fixed
 - **Phi nodes take effect together** (#268). A block's phis were evaluated one
   at a time, so a phi reading another phi of the same block saw the value just
