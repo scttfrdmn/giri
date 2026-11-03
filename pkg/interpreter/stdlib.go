@@ -3822,9 +3822,7 @@ func (interp *Interpreter) handleLogCall(gid int64, name string, args []Value) (
 
 	case "Fatal", "Fatalln", "Fatalf":
 		// Simulates os.Exit(1): terminate all goroutines.
-		for _, g := range interp.goroutines {
-			g.Panicked = true
-		}
+		interp.haltAll()
 		return Value{}, true
 
 	case "Panic", "Panicln", "Panicf":
@@ -8323,7 +8321,25 @@ func (interp *Interpreter) handleErrgroupCall(gid int64, name string, args []Val
 		return Value{Raw: []Value{{Raw: struct{}{}}, {Raw: struct{}{}}}}, true
 
 	case "Go", "TryGo":
-		// Go(fn func()) — probe fn once with no args (fn takes no params).
+		// Go(f) starts f as a goroutine, which Wait waits for (#294). A
+		// Group giri can't identify (one from WithContext, which returns a
+		// placeholder) falls back to probing f once in place.
+		if eg := interp.errgroupState(args); eg != nil && len(args) >= 2 {
+			if t, ok := funcTask(args[len(args)-1]); ok {
+				eg.wgCounter++
+				t.onExit = func(cg int64) {
+					c := interp.goroutine(cg)
+					c.VClock.Tick(cg)
+					eg.lastUnlockClock = joinClock(eg.lastUnlockClock, c)
+					eg.wgCounter--
+				}
+				interp.startGoroutine(gid, t, "errgroup.Group.Go", site)
+				if name == "TryGo" {
+					return Value{Raw: true}, true
+				}
+				return Value{}, true
+			}
+		}
 		probe(len(args)-1, nil)
 		if name == "TryGo" {
 			return Value{Raw: true}, true
@@ -8331,7 +8347,14 @@ func (interp *Interpreter) handleErrgroupCall(gid int64, name string, args []Val
 		return Value{}, true
 
 	case "Wait":
-		return Value{}, true // nil error
+		// Wait for the Group's goroutines; their returns happen before Wait
+		// returns. The error result is nil.
+		if eg := interp.errgroupState(args); eg != nil {
+			if interp.block(gid, waitInfo{site: site, kind: "errgroup.Group.Wait", ready: func() bool { return eg.wgCounter <= 0 }}) && eg.lastUnlockClock != nil {
+				mergeClock(interp.goroutine(gid), eg.lastUnlockClock)
+			}
+		}
+		return Value{}, true
 
 	case "SetLimit", "GOMAXPROCS":
 		return Value{}, true
@@ -8846,9 +8869,7 @@ func (interp *Interpreter) handleSyscallCall(name string, args []Value) (Value, 
 	case "Getpagesize":
 		return Value{Raw: int64(4096)}, true
 	case "Exit":
-		for _, g := range interp.goroutines {
-			g.Panicked = true
-		}
+		interp.haltAll()
 		return Value{}, true
 	case "Mmap":
 		return Value{Raw: []Value{{Raw: []Value{}}, {}}}, true

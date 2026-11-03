@@ -411,3 +411,30 @@ func writeFirst(xs []int, v int, wg *sync.WaitGroup) {
 	xs[0] = v
 	wg.Done()
 }
+
+// PingPong passes a token between two goroutines n times and returns the
+// number of round trips the other goroutine counted (#294).
+func PingPong(n int) int {
+	ping, pong := make(chan int), make(chan int)
+	trips := 0
+	go func() {
+		for range ping {
+			trips++
+			pong <- 0
+		}
+	}()
+	for i := 0; i < n; i++ {
+		ping <- i
+		<-pong
+	}
+	close(ping)
+	return trips
+}
+
+// WaitForever waits on a WaitGroup nothing will finish: a deadlock.
+func WaitForever(x int) int {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	wg.Wait()
+	return x
+}

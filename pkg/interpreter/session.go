@@ -111,7 +111,6 @@ type callState struct {
 	sites        map[token.Pos]string
 	idents       map[*ssa.Function][2]string // funcIdent memo
 	nextAlloc    uint64                      // SkipDetectors allocation IDs
-	hb           map[int64]uint64            // clocks of finished calls (happens-before)
 	single       bool
 }
 
@@ -172,7 +171,6 @@ func NewSession(fn *ssa.Function, opts SessionOptions) (*Session, error) {
 		tracer: opts.Tracer,
 		sites:  make(map[token.Pos]string),
 		idents: make(map[*ssa.Function][2]string),
-		hb:     make(map[int64]uint64),
 		single: opts.SingleGoroutine,
 	}
 	if opts.Cache != nil {
@@ -237,30 +235,29 @@ func (s *Session) call(fn *ssa.Function, args []Value, budget uint64) CallOutcom
 	// successive native calls are: each call happens after everything the
 	// previous ones did.
 	g := interp.goroutine(gid)
-	mergeClock(g, cs.hb)
-	ret := interp.execFunction(gid, fn, args)
-	for id, t := range g.VClock.Clocks {
-		if t > cs.hb[id] {
-			cs.hb[id] = t
-		}
+	var ret Value
+	var halted bool
+	// The call's goroutine runs here; goroutines it starts run until none
+	// is runnable, and those still waiting are then aborted, so none
+	// outlives the call (#294).
+	interp.runDriver(gid, func() {
+		ret = interp.execFunction(gid, fn, args)
+		halted = g.Panicked || g.Panicking || g.Status == GoroutineBlocked
+	})
+	if interp.deadlock != nil {
+		interp.violations = append(interp.violations, interp.deadlock)
+		halted = true
 	}
-	halted := g.Panicked || g.Panicking
-	interp.forgetGoroutine(gid)
-	if !cs.single {
-		interp.drainSessionQueue()
+	interp.halting, interp.deadlock = false, nil
+	for id := range interp.goroutines {
+		interp.forgetGoroutine(id)
 	}
-	// With no goroutine left, everything this session has done happens
-	// before the next call. The finished-call clocks and the race detector's
-	// access history can then be dropped: nothing recorded can race with
-	// anything later. Without this, every call merged the clocks of all
-	// earlier calls and the race detector snapshotted that growing clock on
-	// every access, quadratic in the number of argument sets (#270).
-	if len(interp.goroutines) == 0 {
-		clear(cs.hb)
-		if interp.registry != nil {
-			interp.registry.ResetRaces()
-			interp.registry.SetRaceDormant(true) // single goroutine again (#272)
-		}
+	// With no goroutine left, everything this call did happens before the
+	// next call, so the race detector's access history can be dropped:
+	// nothing recorded can race with anything later (#270).
+	if interp.registry != nil {
+		interp.registry.ResetRaces()
+		interp.registry.SetRaceDormant(true) // single goroutine again (#272)
 	}
 
 	out.Exhausted = cs.exhausted
@@ -278,21 +275,6 @@ func (s *Session) call(fn *ssa.Function, args []Value, budget uint64) CallOutcom
 		out.Violations = append([]error(nil), interp.violations[nviol:]...)
 	}
 	return out
-}
-
-// drainSessionQueue runs goroutines spawned during a call to completion via the
-// scheduler (mirrors the drain loop in Run), then forgets them.
-func (interp *Interpreter) drainSessionQueue() {
-	for len(interp.runQueue) > 0 {
-		t := interp.takeNextTask()
-		interp.execFunction(t.gid, t.fn, t.args)
-		interp.sched.OnFinish(t.gid)
-	}
-	for id, g := range interp.goroutines {
-		if g.Status != GoroutineBlocked {
-			interp.forgetGoroutine(id)
-		}
-	}
 }
 
 // splitResults turns execFunction's return value into one Value per result.
@@ -328,9 +310,7 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 	cs := interp.cs
 	if cs.limit > 0 && interp.steps >= cs.limit {
 		cs.exhausted = true
-		if g := interp.goroutine(gid); g != nil {
-			g.Panicked = true
-		}
+		interp.haltAll()
 		return nil
 	}
 

@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Goroutines block and resume** (#294). A goroutine that receives from an
+  empty channel, ranges over one, sends on a full buffered channel, waits in
+  a `select` with no ready case, or calls `WaitGroup.Wait` or
+  `errgroup.Group.Wait` now waits until another goroutine makes progress
+  possible, then continues. Before, it stopped for good, so the code after
+  `wg.Wait()` or `<-done` was never checked. Each started goroutine runs on
+  its own host goroutine, and they pass control one at a time; programs
+  without `go` statements are unaffected. Leaks and deadlocks are now exact:
+  a deadlock is reported once, without a duplicate leak per goroutine, and
+  abandoned goroutines no longer run their deferred calls.
+  `errgroup.Group.Go` starts a real goroutine. In `pkg/exec`, every goroutine
+  a call starts finishes or is abandoned before the call returns, and a
+  deadlocked call ends `Panicked` with a `deadlock` violation. Unbuffered
+  sends, `Mutex.Lock` and `Cond.Wait` don't block yet (#295, #290).
+- `close(ch)` now happens before a receive that observes the close, for the
+  race detector.
+
 ### Fixed
+- **`sync` calls dispatch on the receiver type** (#293). `WaitGroup.Wait`
+  merges the clocks of every `Done`, not only the last. `RWMutex` keeps a
+  reader count, so overlapping read locks no longer report a false
+  "unlock of unlocked mutex", and a writer's `Lock` follows every `RUnlock`.
+- Callbacks of `crypto/subtle.WithDataIndependentTiming`,
+  `crypto/fips140.WithoutEnforcement` and `testing/synctest.Test` ran on a
+  nonexistent goroutine 0, crashing giri (#293).
 - **Race detector: a read no longer hides an earlier write** (part of #286).
   The detector kept one last access per byte, so a goroutine reading back its
   own write replaced that write, and a later unordered read by another

@@ -25,6 +25,7 @@ import (
 	"go/types"
 	"math/rand"
 	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"unsafe"
@@ -243,8 +244,19 @@ type Goroutine struct {
 	BlockChanID ChanID
 
 	// BlockOnSend is true when the goroutine blocked trying to send (vs. receive).
-	// Used by checkGoroutineLeaks to distinguish send-blocked from recv-blocked.
 	BlockOnSend bool
+
+	// BlockKind names what the goroutine waits for ("channel receive",
+	// "select", …), for GoroutineLeakError.
+	BlockKind string
+
+	// wait reports whether a blocked goroutine's wait is over (#294).
+	wait func() bool
+
+	// Aborted is set on a goroutine that was still waiting when the program
+	// ended. It unwinds without running deferred calls or recording
+	// violations.
+	Aborted bool
 }
 
 // GoroutineStatus tracks goroutine lifecycle.
@@ -339,11 +351,12 @@ type ChanID uint64
 type chanEntry struct {
 	lastSenderGID   int64
 	lastSenderClock map[int64]uint64
-	closed          bool  // set by close(ch) (#31)
-	hasPending      bool  // a value has been sent but not yet received
-	pendingVal      Value // the pending value (for select readiness checks)
-	capacity        int   // buffered channel capacity (0 = unbuffered)
-	pendingCount    int   // number of buffered values currently held (#44)
+	closed          bool             // set by close(ch) (#31)
+	closeClock      map[int64]uint64 // the closer's clock: close happens before a receive that observes it
+	hasPending      bool             // a value has been sent but not yet received
+	pendingVal      Value            // the pending value (for select readiness checks)
+	capacity        int              // buffered channel capacity (0 = unbuffered)
+	pendingCount    int              // values sent and not yet received (#44, #294)
 }
 
 // CloseableID uniquely identifies an interpreted closeable resource
@@ -389,10 +402,23 @@ type goroutineTask struct {
 	gid  int64
 	fn   *ssa.Function
 	args []Value
+	// onExit, if set, runs when the goroutine returns normally (not when it
+	// is aborted): errgroup membership.
+	onExit func(gid int64)
 }
 
 // Interpreter is the main SSA interpreter with shadow memory instrumentation.
 type Interpreter struct {
+	// Goroutine scheduling (gosched.go, #294).
+	hosts      map[int64]*hostG // started goroutines' host goroutines, including the driver's
+	driverHost *hostG
+	driverGID  int64
+	halting    bool                           // os.Exit, log.Fatal or the step limit: run nothing more
+	deadlock   *shadow.DeadlockError          // every goroutine asleep while the entry goroutine waits
+	crash      *errHostCrash                  // internal panic forwarded from a host goroutine
+	probeDepth int                            // > 0 inside a probe: blocking unwinds instead of parking
+	egroups    map[shadow.AllocID]*mutexState // errgroup.Group state: running member count, joined exit clocks
+
 	// Shadow memory system
 	Memory *shadow.Memory
 
@@ -860,6 +886,9 @@ func (interp *Interpreter) captureStack(gid int64) []StackFrame {
 func (interp *Interpreter) recordViolation(gid int64, err error) {
 	var spawnSite string
 	if g := interp.goroutine(gid); g != nil {
+		if g.Aborted {
+			return // unwinding a goroutine that never resumed
+		}
 		spawnSite = g.SpawnSite
 	}
 	wrapped := &ViolationWithStack{
@@ -1012,6 +1041,12 @@ func (interp *Interpreter) popFrame(gid int64) {
 func (interp *Interpreter) runFrameDefers(gid int64, frame *Frame) (recovered bool) {
 	g := interp.goroutine(gid)
 	if g == nil {
+		return false
+	}
+	if g.Aborted {
+		// The goroutine never got past its wait, so its deferred calls
+		// never run (#294).
+		frame.Defers = nil
 		return false
 	}
 	for len(frame.Defers) > 0 {
@@ -1569,6 +1604,21 @@ func (interp *Interpreter) handleChannelClose(gid int64, chanID ChanID, site str
 			return
 		}
 		ch.closed = true
+		if g := interp.goroutine(gid); g != nil && interp.config.TrackRaces {
+			g.VClock.Tick(gid)
+			ch.closeClock = snapshotClock(g)
+		}
+	}
+}
+
+// observeClose records that goroutine gid's receive from ch returned because
+// ch is closed and empty: the close happens before it (#294).
+func (interp *Interpreter) observeClose(gid int64, ch *chanEntry) {
+	if ch == nil || !ch.closed || ch.hasPending || ch.pendingCount > 0 || ch.closeClock == nil {
+		return
+	}
+	if g := interp.goroutine(gid); g != nil {
+		mergeClock(g, ch.closeClock)
 	}
 }
 
@@ -1616,24 +1666,17 @@ func (interp *Interpreter) checkResourceClose(gid int64, receiver Value, site st
 func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value, site string) {
 	g := interp.goroutine(gid)
 
-	// Check for send on closed channel (#31)
 	ch, ok := interp.channels[chanID]
+
+	// Buffered channel: wait while the buffer is full (#44, #294).
+	if ok && ch.capacity > 0 && !interp.block(gid, sendWait(ch, chanID, site)) {
+		return // aborted
+	}
+
+	// Check for send on closed channel (#31)
 	if ok && ch.closed {
 		interp.runtimePanic(gid, "send on closed channel")
 		interp.recordViolation(gid, fmt.Errorf("send on closed channel at %s (goroutine %d)", site, gid))
-		return
-	}
-
-	// Buffered channel: block the goroutine if the buffer is full (#44)
-	if ok && ch.capacity > 0 && ch.pendingCount >= ch.capacity {
-		if g != nil {
-			g.Status = GoroutineBlocked
-			g.BlockSite = site
-			g.BlockChanID = chanID
-			g.BlockOnSend = true
-		}
-		// Still record that this channel has a sender.
-		interp.channelSenders[chanID] = true
 		return
 	}
 
@@ -1650,9 +1693,7 @@ func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value
 			}
 			ch.hasPending = true
 			ch.pendingVal = val
-			if ch.capacity > 0 {
-				ch.pendingCount++
-			}
+			ch.pendingCount++
 		}
 	} else {
 		// Even without race tracking, mark the channel as having a pending value
@@ -1660,9 +1701,7 @@ func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value
 		// if a sender exists, regardless of scheduling order).
 		if ok {
 			ch.hasPending = true
-			if ch.capacity > 0 {
-				ch.pendingCount++
-			}
+			ch.pendingCount++
 		}
 	}
 
@@ -1690,10 +1729,11 @@ func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value
 func (interp *Interpreter) handleChannelRecv(gid int64, chanID ChanID, site string) {
 	// Track that this channel has had a receiver.
 	interp.channelReceivers[chanID] = true
+	interp.observeClose(gid, interp.channels[chanID])
 
 	if !interp.config.TrackRaces {
 		// Still decrement pendingCount for buffered channels (#44)
-		if ch, ok := interp.channels[chanID]; ok && ch.capacity > 0 && ch.pendingCount > 0 {
+		if ch, ok := interp.channels[chanID]; ok && ch.pendingCount > 0 {
 			ch.pendingCount--
 			if ch.pendingCount == 0 {
 				ch.hasPending = false
@@ -1709,7 +1749,7 @@ func (interp *Interpreter) handleChannelRecv(gid int64, chanID ChanID, site stri
 				g.VClock.Clocks[id] = t
 			}
 		}
-		if ch.capacity > 0 && ch.pendingCount > 0 {
+		if ch.pendingCount > 0 {
 			ch.pendingCount--
 		}
 		if ch.pendingCount == 0 {
@@ -1739,67 +1779,39 @@ func (interp *Interpreter) StackTrace(gid int64) string {
 
 // --- Finalization ---
 
-// checkGoroutineLeaks reports goroutines that are permanently blocked on a
-// channel with no corresponding counterpart. A recv-blocked goroutine is not
-// a leak if a sender ran on that channel; a send-blocked goroutine is not a
-// leak if a receiver ran on that channel.
-// Also detects global deadlock: when ALL goroutines are blocked simultaneously
-// and none has finished (i.e. main itself is blocked, not just spawned goroutines).
+// checkGoroutineLeaks reports how the program's goroutines ended (#294).
+// Scheduling runs until nothing is runnable, so a goroutine still waiting
+// then can never proceed:
+//   - if the entry goroutine itself was waiting, every goroutine was asleep:
+//     one DeadlockError, as native Go's fatal "all goroutines are asleep";
+//   - otherwise each goroutine still waiting is a GoroutineLeakError.
+//
+// Nothing is reported after os.Exit, log.Fatal or the step limit, which stop
+// goroutines wherever they are.
 func (interp *Interpreter) checkGoroutineLeaks() []error {
-	var leaks []error
-	for _, g := range interp.goroutines {
-		if g.Status != GoroutineBlocked {
-			continue
-		}
-		if g.BlockOnSend {
-			// Goroutine is blocked trying to send. Not a leak if a receiver ran.
-			if g.BlockChanID != 0 && interp.channelReceivers[g.BlockChanID] {
-				continue
-			}
-			leaks = append(leaks, &shadow.GoroutineLeakError{
-				GID:       g.ID,
-				SpawnSite: g.SpawnSite,
-				BlockSite: g.BlockSite,
-				BlockKind: "channel send",
-			})
-		} else {
-			// Goroutine is blocked trying to receive. Not a leak if a sender ran.
-			if g.BlockChanID != 0 && interp.channelSenders[g.BlockChanID] {
-				continue
-			}
-			leaks = append(leaks, &shadow.GoroutineLeakError{
-				GID:       g.ID,
-				SpawnSite: g.SpawnSite,
-				BlockSite: g.BlockSite,
-				BlockKind: "channel receive",
-			})
+	if interp.deadlock != nil {
+		return []error{interp.deadlock}
+	}
+	if interp.halting {
+		return nil
+	}
+	var ids []int64
+	for id, g := range interp.goroutines {
+		if g.Status == GoroutineBlocked && !g.Panicked {
+			ids = append(ids, id)
 		}
 	}
-
-	// Deadlock detection (#56): if ALL goroutines are blocked and none has
-	// finished, no goroutine can ever unblock the others — global deadlock.
-	// Distinguished from goroutine leak: leak = main finished, some blocked;
-	// deadlock = nobody finished (main is blocked too).
-	allBlocked := true
-	anyFinished := false
-	blocked := 0
-	for _, g := range interp.goroutines {
-		if g.Panicked {
-			continue // panicked goroutine is effectively dead
-		}
-		switch g.Status {
-		case GoroutineFinished:
-			anyFinished = true
-		case GoroutineBlocked:
-			blocked++
-		default: // GoroutineRunning — shouldn't happen at Finish() time
-			allBlocked = false
-		}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	leaks := make([]error, 0, len(ids))
+	for _, id := range ids {
+		g := interp.goroutines[id]
+		leaks = append(leaks, &shadow.GoroutineLeakError{
+			GID:       g.ID,
+			SpawnSite: g.SpawnSite,
+			BlockSite: g.BlockSite,
+			BlockKind: g.BlockKind,
+		})
 	}
-	if allBlocked && blocked > 0 && !anyFinished {
-		leaks = append(leaks, &shadow.DeadlockError{GoroutineCount: blocked})
-	}
-
 	return leaks
 }
 
@@ -1896,7 +1908,7 @@ func (interp *Interpreter) handleSyncCall(gid int64, callee *ssa.Function, args 
 			// OnceValues[T1,T2] (v0.88.0). Probe f once to surface violations
 			// inside the callback; return an opaque callable.
 			if len(args) >= 1 {
-				interp.callFuncArg(gid, args[0], nil)
+				interp.probe(gid, func() { interp.callFuncArg(gid, args[0], nil) })
 			}
 			return Value{Raw: struct{}{}}
 		case "NewCond":
@@ -2070,6 +2082,10 @@ func (interp *Interpreter) syncWaitGroup(gid int64, g *Goroutine, ms *mutexState
 			add(int(toInt64(args[1])))
 		}
 	case "Wait":
+		// Wait until the counter is zero (#294).
+		if !interp.block(gid, waitInfo{site: site, kind: "sync.WaitGroup.Wait", ready: func() bool { return ms.wgCounter <= 0 }}) {
+			return // aborted
+		}
 		if ms.lastUnlockClock != nil {
 			mergeClock(g, ms.lastUnlockClock)
 		}
