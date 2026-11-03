@@ -709,6 +709,7 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 		dets = append(dets, detector.NewRaceDetector())
 	}
 	interp.registry = detector.NewRegistry(dets...)
+	interp.registry.SetRaceDormant(true) // woken by the first go statement (#272)
 
 	// Initialize scheduler
 	switch config.ScheduleStrategy {
@@ -777,6 +778,7 @@ func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Inter
 		dets = append(dets, detector.NewRaceDetector())
 	}
 	interp.registry = detector.NewRegistry(dets...)
+	interp.registry.SetRaceDormant(true) // woken by the first go statement (#272)
 
 	switch config.ScheduleStrategy {
 	case ScheduleRoundRobin:

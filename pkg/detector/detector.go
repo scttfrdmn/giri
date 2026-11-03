@@ -234,7 +234,20 @@ func (d *UnsafeDetector) CheckFinalize(_ *shadow.Memory) []error {
 // It tracks happens-before relationships through channels, mutexes, and atomics.
 type RaceDetector struct {
 	// Last access per (allocation, offset) pair
-	lastAccess map[accessKey]*accessEntry
+	lastAccess map[accessKey]accessEntry
+
+	// snap is the most recent clock snapshot, taken for goroutine snapGID.
+	// Snapshots are never mutated once stored, so consecutive accesses by the
+	// same goroutine with an unchanged clock share one, instead of copying
+	// the clock for every byte accessed (#272).
+	snap    map[int64]uint64
+	snapGID int64
+
+	// dormant suppresses recording while only one goroutine has existed.
+	// Such accesses can't take part in a race: each goroutine spawned later
+	// inherits its parent's clock, so they happen before all of its accesses
+	// (#272). The interpreter wakes the detector at the first go statement.
+	dormant bool
 }
 
 type accessKey struct {
@@ -252,7 +265,7 @@ type accessEntry struct {
 // NewRaceDetector creates a new RaceDetector with an empty access history.
 func NewRaceDetector() *RaceDetector {
 	return &RaceDetector{
-		lastAccess: make(map[accessKey]*accessEntry),
+		lastAccess: make(map[accessKey]accessEntry),
 	}
 }
 
@@ -266,6 +279,9 @@ func (d *RaceDetector) Description() string {
 
 // CheckAccess implements Detector. It checks for concurrent conflicting accesses.
 func (d *RaceDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) error {
+	if d.dormant {
+		return nil
+	}
 	// For each byte accessed, check against last access
 	for i := 0; i < size; i++ {
 		key := accessKey{allocID: ptr.Alloc, offset: ptr.Offset + i}
@@ -294,19 +310,48 @@ func (d *RaceDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size
 		}
 
 		// Record this access with a snapshot of the current clock.
-		clockSnapshot := make(map[int64]uint64, len(clock))
-		for k, v := range clock {
-			clockSnapshot[k] = v
-		}
-		d.lastAccess[key] = &accessEntry{
+		d.lastAccess[key] = accessEntry{
 			kind:      kind,
 			goroutine: goroutine,
 			site:      site,
-			clock:     clockSnapshot,
+			clock:     d.snapshot(goroutine, clock),
 		}
 	}
 
 	return nil
+}
+
+// snapshot returns an immutable copy of clock, reusing the previous copy when
+// it was taken for the same goroutine and is element-wise equal.
+func (d *RaceDetector) snapshot(goroutine int64, clock map[int64]uint64) map[int64]uint64 {
+	if d.snap != nil && d.snapGID == goroutine && len(d.snap) == len(clock) {
+		same := true
+		for k, v := range clock {
+			if sv, ok := d.snap[k]; !ok || sv != v {
+				same = false
+				break
+			}
+		}
+		if same {
+			return d.snap
+		}
+	}
+	c := make(map[int64]uint64, len(clock))
+	for k, v := range clock {
+		c[k] = v
+	}
+	d.snap, d.snapGID = c, goroutine
+	return c
+}
+
+// SetDormant puts the detector to sleep (true) or wakes it (false); see the
+// dormant field.
+func (d *RaceDetector) SetDormant(dormant bool) { d.dormant = dormant }
+
+// Reset forgets the access history.
+func (d *RaceDetector) Reset() {
+	clear(d.lastAccess)
+	d.snap = nil
 }
 
 // happensBefore returns true if vector clock a causally precedes (≤) clock b,
@@ -365,7 +410,17 @@ func DefaultRegistry() *Registry {
 func (r *Registry) ResetRaces() {
 	for _, d := range r.detectors {
 		if rd, ok := d.(*RaceDetector); ok {
-			clear(rd.lastAccess)
+			rd.Reset()
+		}
+	}
+}
+
+// SetRaceDormant sets the race detector's dormant state (#272): dormant
+// while only one goroutine has existed, woken by the first go statement.
+func (r *Registry) SetRaceDormant(dormant bool) {
+	for _, d := range r.detectors {
+		if rd, ok := d.(*RaceDetector); ok {
+			rd.SetDormant(dormant)
 		}
 	}
 }
