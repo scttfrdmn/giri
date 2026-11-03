@@ -2103,6 +2103,27 @@ var integrationTests = []struct {
 		wantCategory:   "out-of-bounds",
 		config:         interpreter.DefaultConfig(),
 	},
+	{
+		name:           "race spawn parent (#286 p2)",
+		dir:            "race_spawn_parent",
+		wantViolations: 1,
+		wantCategory:   "data-race",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "race after send (#286 p3)",
+		dir:            "race_after_send",
+		wantViolations: 1,
+		wantCategory:   "data-race",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "race grandchild (#286 p4)",
+		dir:            "race_grandchild",
+		wantViolations: 1,
+		wantCategory:   "data-race",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {

@@ -1813,9 +1813,9 @@ func (interp *Interpreter) handleSyncCall(gid int64, callee *ssa.Function, args 
 	case "Cond":
 		switch name {
 		case "Signal", "Broadcast":
-			// Tick and snapshot, as Mutex.Unlock does.
-			g.VClock.Tick(gid)
+			// Snapshot and tick, as Mutex.Unlock does.
 			ms.lastUnlockClock = snapshotClock(g)
+			g.VClock.Tick(gid)
 		case "Wait":
 			// Merge the last Signal/Broadcast clock.
 			if ms.lastUnlockClock != nil {
@@ -1863,10 +1863,11 @@ func (interp *Interpreter) syncMutex(gid int64, g *Goroutine, ms *mutexState, re
 		if !ms.locked {
 			return unlockOfUnlocked()
 		}
-		// Tick, then snapshot: this Unlock happens before any later Lock.
-		g.VClock.Tick(gid)
+		// Snapshot, then tick: this Unlock happens before any later Lock,
+		// but the unlocker's later accesses don't (#286).
 		ms.locked = false
 		ms.lastUnlockClock = snapshotClock(g)
+		g.VClock.Tick(gid)
 	case "RLock":
 		if recv == "RWMutex" {
 			rAcquire()
@@ -1884,8 +1885,8 @@ func (interp *Interpreter) syncMutex(gid int64, g *Goroutine, ms *mutexState, re
 			return unlockOfUnlocked()
 		}
 		ms.readers--
-		g.VClock.Tick(gid)
 		ms.rUnlockClock = joinClock(ms.rUnlockClock, g)
+		g.VClock.Tick(gid)
 	}
 	return Value{}
 }
@@ -1896,8 +1897,8 @@ func (interp *Interpreter) syncMutex(gid int64, g *Goroutine, ms *mutexState, re
 func (interp *Interpreter) syncWaitGroup(gid int64, g *Goroutine, ms *mutexState, name string, args []Value, site string) {
 	add := func(delta int) {
 		if delta < 0 {
-			g.VClock.Tick(gid)
 			ms.lastUnlockClock = joinClock(ms.lastUnlockClock, g)
+			g.VClock.Tick(gid)
 		}
 		ms.wgCounter += delta
 		if ms.wgCounter < 0 {

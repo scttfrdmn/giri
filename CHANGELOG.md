@@ -48,8 +48,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   goroutine was compared against a read and missed. It now tracks the last
   write and the last read separately: a read is checked against the last
   write, and a write against both. CLI findings on all 291 integration and
-  showcase programs are unchanged. The rest of #286 (clock tick order at
-  release points) waits on blocking semantics for `Wait`/receive.
+  showcase programs are unchanged.
+- **Race detector: races after a release point are found** (#286, #296). At
+  `go` statements, channel sends and receives, `close`, `Unlock`, `RUnlock`,
+  `WaitGroup.Done` and `Cond.Signal`/`Broadcast`, giri ticked the
+  goroutine's vector clock before publishing it, so the goroutine's next
+  accesses looked ordered before whoever acquired the clock. It now
+  publishes, then ticks. A parent writing after `go`, a sender writing after
+  a send, and a goroutine's child racing with main are now reported, as
+  `go run -race` reports them. Integration tests `race_spawn_parent`,
+  `race_after_send` and `race_grandchild`. This needed blocking semantics
+  first: with code after `wg.Wait()` never run, the correct clocks gave
+  false positives.
 
 ## [0.100.0] - 2026-11-02
 
