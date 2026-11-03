@@ -156,49 +156,11 @@ func Run(prog *Program, config Config) *RunResult {
 
 		if mainFn != nil {
 			interp.execFunction(mainGID, mainFn, nil)
-			// Mark main goroutine as finished.
-			if g := interp.goroutine(mainGID); g != nil && g.Status == GoroutineRunning {
-				if g.Panicking {
-					// Unrecovered panic propagated to the top — goroutine terminates.
-					g.Panicking = false
-					g.Panicked = true
-				}
-				if !g.Panicked {
-					g.Status = GoroutineFinished
-					interp.sched.OnFinish(mainGID)
-				}
-			}
+			interp.finishGoroutine(mainGID)
 		}
 
 		// Drain the run queue: execute spawned goroutines via scheduler
-		for len(interp.runQueue) > 0 {
-			runnable := make([]int64, len(interp.runQueue))
-			for i, t := range interp.runQueue {
-				runnable[i] = t.gid
-			}
-			nextGID := interp.sched.Next(runnable)
-			for i, t := range interp.runQueue {
-				if t.gid == nextGID {
-					// Swap-last-and-shrink: O(1) removal (order irrelevant; scheduler picks next).
-					last := len(interp.runQueue) - 1
-					interp.runQueue[i] = interp.runQueue[last]
-					interp.runQueue = interp.runQueue[:last]
-					interp.execFunction(t.gid, t.fn, t.args)
-					// Mark goroutine as finished if it completed normally (not blocked).
-					if g := interp.goroutine(t.gid); g != nil && g.Status == GoroutineRunning {
-						if g.Panicking {
-							g.Panicking = false
-							g.Panicked = true
-						}
-						if !g.Panicked {
-							g.Status = GoroutineFinished
-							interp.sched.OnFinish(t.gid)
-						}
-					}
-					break
-				}
-			}
-		}
+		interp.drainRunQueue()
 
 		// Run finalization checks
 		finalErrs := interp.Finish()
@@ -344,45 +306,10 @@ func runTestFn(prog *Program, tf TestFunc, config Config) *TestRunResult {
 		// handleTestingCall in stdlib.go intercepts t.Fatal, t.Log, t.Run, etc.
 		tArg := Value{Raw: struct{}{}}
 		interp.execFunction(mainGID, tf.Fn, []Value{tArg})
-		if g := interp.goroutine(mainGID); g != nil && g.Status == GoroutineRunning {
-			if g.Panicking {
-				g.Panicking = false
-				g.Panicked = true
-			}
-			if !g.Panicked {
-				g.Status = GoroutineFinished
-				interp.sched.OnFinish(mainGID)
-			}
-		}
+		interp.finishGoroutine(mainGID)
 
 		// Drain the run queue (goroutines spawned inside the test).
-		for len(interp.runQueue) > 0 {
-			runnable := make([]int64, len(interp.runQueue))
-			for i, t := range interp.runQueue {
-				runnable[i] = t.gid
-			}
-			nextGID := interp.sched.Next(runnable)
-			for i, t := range interp.runQueue {
-				if t.gid == nextGID {
-					// Swap-last-and-shrink: O(1) removal.
-					last := len(interp.runQueue) - 1
-					interp.runQueue[i] = interp.runQueue[last]
-					interp.runQueue = interp.runQueue[:last]
-					interp.execFunction(t.gid, t.fn, t.args)
-					if g := interp.goroutine(t.gid); g != nil && g.Status == GoroutineRunning {
-						if g.Panicking {
-							g.Panicking = false
-							g.Panicked = true
-						}
-						if !g.Panicked {
-							g.Status = GoroutineFinished
-							interp.sched.OnFinish(t.gid)
-						}
-					}
-					break
-				}
-			}
-		}
+		interp.drainRunQueue()
 
 		finalErrs := interp.Finish()
 		return &RunResult{Violations: finalErrs, MemStats: interp.Memory.Stats(), SuppressedCount: interp.suppressedCount, SuppressedViolations: interp.suppressedViolations}
@@ -391,6 +318,54 @@ func runTestFn(prog *Program, tf TestFunc, config Config) *TestRunResult {
 		Name:       tf.Name,
 		Violations: result.Violations,
 		MemStats:   result.MemStats,
+	}
+}
+
+// finishGoroutine records the end of goroutine gid's top-level function: an
+// unrecovered panic leaves it Panicked; otherwise a goroutine still Running
+// becomes Finished. A Blocked goroutine is left as it is.
+func (interp *Interpreter) finishGoroutine(gid int64) {
+	g := interp.goroutine(gid)
+	if g == nil || g.Status != GoroutineRunning {
+		return
+	}
+	if g.Panicking {
+		// Unrecovered panic propagated to the top — goroutine terminates.
+		g.Panicking = false
+		g.Panicked = true
+	}
+	if !g.Panicked {
+		g.Status = GoroutineFinished
+		interp.sched.OnFinish(gid)
+	}
+}
+
+// takeNextTask removes and returns the queued goroutine the scheduler picks.
+func (interp *Interpreter) takeNextTask() goroutineTask {
+	runnable := make([]int64, len(interp.runQueue))
+	for i, t := range interp.runQueue {
+		runnable[i] = t.gid
+	}
+	next := interp.sched.Next(runnable)
+	for i, t := range interp.runQueue {
+		if t.gid == next {
+			// Swap-last-and-shrink: O(1) removal (order irrelevant; scheduler picks next).
+			last := len(interp.runQueue) - 1
+			interp.runQueue[i] = interp.runQueue[last]
+			interp.runQueue = interp.runQueue[:last]
+			return t
+		}
+	}
+	panic(fmt.Sprintf("interpreter: scheduler picked goroutine %d, which is not queued", next))
+}
+
+// drainRunQueue runs queued goroutines one at a time, in scheduler order,
+// until none remain.
+func (interp *Interpreter) drainRunQueue() {
+	for len(interp.runQueue) > 0 {
+		t := interp.takeNextTask()
+		interp.execFunction(t.gid, t.fn, t.args)
+		interp.finishGoroutine(t.gid)
 	}
 }
 
@@ -1652,7 +1627,7 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 	// clock semantics directly in handleSyncCall.
 	if callee != nil && callee.Package() != nil {
 		if pkg := callee.Package().Pkg; pkg != nil && pkg.Path() == "sync" {
-			return interp.handleSyncCall(gid, callee.Name(), args, site)
+			return interp.handleSyncCall(gid, callee, args, site)
 		}
 	}
 
