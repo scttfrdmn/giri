@@ -186,6 +186,12 @@ detectors-on run. `TestFastPathsPreserveResults` checks this.
 `go` statements and goroutine exit. It is kept because it rejects `go`
 statements, which kernels should not contain.
 
+**Update for v0.100.0 (#272).** The race detector now stays dormant until a
+second goroutine exists. For single-goroutine kernels, `SkipDetectors` saves
+only the shadow-memory checks: `SliceLoop` costs 53.6 ns/instr with detectors on
+vs 47.8 with them skipped (arm64), where the gap used to be 4.3×. The option is
+still correct and still available, but it's no longer worth much for kernels.
+
 ## Req 7 — batch build
 
 **Dependencies are type-checked from source.** The alternative reads

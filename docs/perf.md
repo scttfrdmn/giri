@@ -1,88 +1,114 @@
-# pkg/exec performance
+# giri performance
 
-Nanoseconds per interpreted SSA instruction (`ns/instr` = wall time / `Result.Steps`),
-measured with the benchmarks in `pkg/exec/fastpath_test.go`:
+Numbers for v0.100.0, the result of the performance pass in milestone
+v0.100.0 (#270–#273), against v0.99.1. Benchmarks live in
+`pkg/exec/fastpath_test.go`, `pkg/exec/bench_test.go` and
+`pkg/interpreter/cli_bench_test.go`:
 
 ```bash
-GOEXPERIMENT=arenas go test ./pkg/exec/ -run '^$' -bench 'IntLoop|SliceLoop' -benchtime 2s
+GOEXPERIMENT=arenas go test ./pkg/exec/ -run '^$' -bench 'KernelBatch|IntLoop|SliceLoop|LoadDir|Loader' -benchmem
+GOEXPERIMENT=arenas go test ./pkg/interpreter/ -run '^$' -bench CLISynth -benchtime 3x -benchmem
 ```
 
-Each benchmark iteration is one `exec.Run` call: session setup plus one argument set.
+`ns/instr` is wall time divided by `Result.Steps`, the instructions the call
+executed. Each iteration of a `pkg/exec` benchmark is one `exec.Run`, which
+includes session setup.
 
-**Machines** (both measured 2026-10-28 at giri commit `c37d5ef`, `feat/tumble-exec`):
+## Method
 
-- **arm64:** Apple M4 Pro (12 cores, 48 GB), macOS 27.0.1, go1.27.3 darwin/arm64.
-- **amd64:** Intel i9-9960X @ 3.10 GHz (Skylake-X, 32 threads), Rocky Linux 9,
-  go1.27.0 linux/amd64. This is a shared machine; the run went through its
-  `measured` queue (one job at a time), but an unrelated build job was running,
-  with load average 6–8 on 32 threads. All 3 runs (`-count 3`) agreed within 2%.
+v0.99.1 predates the benchmark files, so they were copied into a v0.99.1 tree
+and both trees were built into test binaries. The binaries were then run
+alternately, three rounds each, and the tables give medians. Per-op allocations
+were identical across rounds on each machine.
 
-## Straight-line integer loop (`IntLoop`, n = 10,000, ~100k instructions)
+- **arm64:** Apple M4 Pro (12 cores), go1.27.3 darwin/arm64. This is a shared
+  workstation; load average was 6–10 during the run. The prototype work found
+  that load above ~20 inflates ns/instr by 1.5–2.5×, so check `uptime` before
+  comparing numbers.
+- **amd64:** Intel i9-9960X @ 3.10 GHz (32 threads), Rocky Linux 9, go1.27.0
+  linux/amd64. The run went through janus.local's `measured` pueue queue, one
+  job at a time, with load average about 0.2.
 
-`s = s*31 + i ^ s>>3` in a counted loop: arithmetic, compare, branch, phi only.
+## tumble-shaped workloads (`BenchmarkKernelBatch`)
 
-| Options | arm64 ns/instr | amd64 ns/instr | vs default |
-|---|---:|---:|---:|
-| default (all CLI-default detectors on) | 62.6 | 145.3–146.7 | 1.0× |
-| `SingleGoroutine` | 62.6 | 144.0–147.7 | 1.0× |
-| `SkipDetectors` | 62.6 | 144.1–145.4 | 1.0× |
-| both | 62.6–64.4 | 143.4–146.2 | 1.0× |
+A small kernel on 64 argument sets per `Run`, the shape of tumble's
+evaluations, plus a single-set `Run`. Per-`Run` and per-call costs dominate
+these.
 
-Before the session-only SSA-name memo (`Interpreter.vname`), the same loop ran
-at **169 ns/instr**. `ssa.Value.Name()` calls `fmt.Sprintf` on every call, and
-frame locals are keyed by name. The memo, keyed by the value's pointer, made
-it 2.7× faster. The CLI path is unchanged and still calls `Name()` directly.
+| Benchmark | arm64 v0.99.1 | arm64 v0.100.0 | amd64 v0.99.1 | amd64 v0.100.0 |
+|---|---:|---:|---:|---:|
+| MixU64 ×64 (7 instr/call) | 206 µs | **64.1 µs** (3.2×) | 402 µs | **137 µs** (2.9×) |
+| SumU32 ×64 (16-element slice) | 3.62 ms | **0.512 ms** (7.1×) | 6.63 ms | **1.08 ms** (6.2×) |
+| MixU64 ×1 | 16.2 µs | **6.38 µs** (2.5×) | 23.6 µs | **13.0 µs** (1.8×) |
+| SumU32 ×64, `SkipDetectors` | 0.909 ms | 0.465 ms (2.0×) | 1.60 ms | 0.952 ms (1.7×) |
 
-## Memory-bound loop (`SliceLoop` = `PrefixSums` over 10,000 `int64`)
+Allocations for SumU32 ×64 drop from 5.68 MB/op to 0.43 MB/op.
 
-One load and one store per iteration, so shadow-memory checks and the race
-detector are on the hot path.
+## Instruction loops
 
-| Options | arm64 ns/instr | amd64 ns/instr | vs default |
-|---|---:|---:|---:|
-| default | 318–326 | 703–714 | 1.0× |
-| `SkipDetectors` | 75.3 | 161.1–163.6 | **4.3×** (both) |
-| both | 74.6–75.1 | 161.6–163.4 | 4.3× (both) |
+| Benchmark | arm64 v0.99.1 | arm64 v0.100.0 | amd64 v0.99.1 | amd64 v0.100.0 |
+|---|---:|---:|---:|---:|
+| `IntLoop` (straight-line integer loop) | 61.5 ns/instr | **36.8** (1.7×) | 119.5 | **78.6** (1.5×) |
+| `SliceLoop`, detectors on (load + store per iteration) | 330 ns/instr | **53.6** (6.2×) | 634 | **120** (5.3×) |
+| `SliceLoop`, `SkipDetectors` | 77.2 ns/instr | 47.8 (1.6×) | 141 | 103 (1.4×) |
 
-## Reading the numbers
+`SingleGoroutine` makes no measurable difference on any benchmark. The
+scheduler is only consulted on `go` statements and goroutine exit. The option
+is kept because it rejects `go` statements, which kernels shouldn't contain.
 
-**amd64 is about 2.3× slower per instruction than arm64** on both loops, but the
-ratios between options are the same, so the conclusions below hold on both.
-The two machines differ in both architecture and generation (the i9-9960X
-is from 2019), so this run can't say how much of the gap comes from each.
+**`SkipDetectors` now matters little for single-goroutine kernels.** Detectors
+on cost 53.6 vs 47.8 ns/instr on `SliceLoop` (arm64), because the race
+detector stays dormant until a second goroutine exists. Before this pass the
+gap was 4.3×.
 
-**`SingleGoroutine` gives no measurable speedup**, on either loop. With one
-goroutine the scheduler is never consulted (it is invoked only on `go`
-statements and goroutine exit), so bypassing it saves nothing. It is kept
-because it also turns `go` statements into a violation, which kernels should
-never contain.
+## CLI (`BenchmarkCLISynth`)
 
-**`SkipDetectors` is under 2× on the straight-line integer loop** (1.0×): that
-loop never touches memory, so there is nothing to skip. On the kernels it is
-for, those that read and write slices, it is **4.3×**, well past the 2× bar.
-The requirement's literal rule (measure on the integer loop; under 2× means
-"not worth using") would discard an option that is worth using for
-memory-touching kernels. So it stays and is documented as worth using
-whenever the function performs loads or stores, and as having no effect on
-pure-arithmetic functions.
+A whole-program CLI run with the default detectors on a mixed workload: four
+goroutines doing sort, map, struct, append and `strings.Builder` work, joined
+with a `WaitGroup` and a `Mutex`.
 
-## Where the remaining time goes (integer loop, profiled)
+| | arm64 v0.99.1 | arm64 v0.100.0 | amd64 v0.99.1 | amd64 v0.100.0 |
+|---|---:|---:|---:|---:|
+| time per run | 258 ms | **163 ms** (1.6×) | 465 ms | **325 ms** (1.4×) |
+| allocated | 337 MB | 170 MB | 342 MB | 174 MB |
 
-- `frame.Locals` is a `map[string]Value`: every operand read and result write
-  hashes a string.
-- Every integer result is boxed into `Value.Raw interface{}` (`runtime.convT64`
-  allocates for values outside 0–255), and the GC cost follows from that.
-- Per-instruction goroutine/frame lookups (`interp.goroutines` map).
+Findings are unchanged: 0 violations both before and after. The CLI findings
+diff over all integration and showcase programs showed no changes for any PR
+in the pass.
 
-Replacing name-keyed locals with per-function slot indices is the next large
-win. That rewrite touches every instruction handler the CLI shares, so it was
-not done here.
+## Package loading (`BenchmarkLoadDir`, `BenchmarkLoader`)
 
-## LoadDir
+A generated package of 300 trivial functions.
 
-(arm64 only; not re-measured on amd64.)
+| | arm64 `LoadDir` | arm64 `Loader.Load` | amd64 `LoadDir` | amd64 `Loader.Load` |
+|---|---:|---:|---:|---:|
+| no imports | 27.2 ms | **1.34 ms** | 14.2 ms | **2.73 ms** |
+| 7 stdlib imports | 153 ms | **6.45 ms** | 241 ms | **9.59 ms** |
 
-`LoadDir` on a generated package of 300 trivial functions with no imports takes
-~30 ms. A package importing `math`, `math/bits`, `sort`, `strconv`, `strings`,
-`unicode`, `unicode/utf8` takes ~160 ms, because dependencies are
-type-checked from source. See `docs/decisions.md` (req 7).
+`LoadDir` runs `go list` and type-checks every dependency from source on each
+call. `Loader` (#273) type-checks dependencies once per `Loader`; the figures
+are steady-state, after one warm-up load.
+
+## What changed
+
+| PR | Change | Mainly helps |
+|---|---|---|
+| #270 | Session calls no longer merge every earlier call's clock (quadratic in argument sets); lazy `math/rand` seeding; memoized function names | many-set `Run`s, single-set setup |
+| #271 | Slot-indexed locals in sessions (no `map[string]Value` per frame); goroutine lookup cache | every `pkg/exec` instruction |
+| #272 | Race detector dormant until a second goroutine exists; one shared clock snapshot per access instead of a copy per byte | loads and stores, the CLI |
+| #273 | `exec.Loader`: in-memory loading with shared dependency types | per-generation package builds |
+
+## Where the time goes now
+
+Profiled on `IntLoop` after the pass, these are the next opportunities, each
+filed:
+
+- **Per-instruction map lookups:** the value→slot map, the site memo and
+  `classify`. Precompiling functions into instruction tables (#274) is
+  estimated, not measured, at a further 25–35%.
+- **Boxing integers in `Value.Raw interface{}`:** `runtime.convT64` plus the GC
+  work it causes (#275). Unboxing touches ~3000 construction sites shared with
+  the CLI, so it's high risk.
+- **Pointer allocation on every `IndexAddr`** in value-faithful memory, and the
+  `elems` map growing with every store (#276).
+- **Per-byte race entries** (#277) and **`posString` on the CLI path** (#278).
