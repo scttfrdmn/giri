@@ -96,7 +96,7 @@ accepted by kind and returned as their underlying Go type.
 | `Trace`, `TraceCap` | Record per-value traces; cap per value (0 = `DefaultTraceCap`, 1024). |
 | `Cache` | Value-cache hook (`CacheHook`), consulted only for pure instructions. |
 | `SingleGoroutine` | max_goroutines = 1 and no scheduler; a `go` statement is a violation. |
-| `SkipDetectors` | No shadow-memory checks or detectors, for already-verified functions. Outputs, counters and traces are unchanged. Worth using for functions that load or store; no effect on pure arithmetic (see perf.md). |
+| `SkipDetectors` | No shadow-memory checks or detectors, for already-verified functions. Outputs, counters and traces are unchanged. Since v0.100.0 the race detector stays dormant until a second goroutine exists, so for single-goroutine kernels this saves only the shadow-memory checks: ~10% on load/store loops, nothing on pure arithmetic (see perf.md). |
 | `Seed` | Seeds `math/rand`, `math/rand/v2` and the Random/PCT schedulers. |
 
 Detectors otherwise run with giri's CLI defaults: unsafe-pointer rules,
