@@ -237,8 +237,8 @@ func TestRaceDetector_Dormant(t *testing.T) {
 	if err := d.CheckAccess(mem, ptr, 8, shadow.AccessWrite, "a", 1, map[int64]uint64{1: 1}); err != nil {
 		t.Fatalf("dormant detector reported %v", err)
 	}
-	if len(d.lastAccess) != 0 {
-		t.Fatalf("dormant detector recorded %d accesses", len(d.lastAccess))
+	if len(d.lastWrite)+len(d.lastRead) != 0 {
+		t.Fatalf("dormant detector recorded %d accesses", len(d.lastWrite)+len(d.lastRead))
 	}
 	d.SetDormant(false)
 	if err := d.CheckAccess(mem, ptr, 8, shadow.AccessWrite, "b", 2, map[int64]uint64{2: 1}); err != nil {
@@ -261,16 +261,16 @@ func TestRaceDetector_SnapshotSharing(t *testing.T) {
 	if err := d.CheckAccess(mem, &shadow.Pointer{Alloc: id}, 8, shadow.AccessWrite, "a", 1, clock); err != nil {
 		t.Fatal(err)
 	}
-	first := d.lastAccess[accessKey{id, 0}].clock
+	first := d.lastWrite[accessKey{id, 0}].clock
 	for off := 0; off < 8; off++ {
-		if got := d.lastAccess[accessKey{id, off}].clock; len(got) != 2 {
+		if got := d.lastWrite[accessKey{id, off}].clock; len(got) != 2 {
 			t.Fatalf("byte %d: snapshot %v", off, got)
 		}
 	}
 	if err := d.CheckAccess(mem, &shadow.Pointer{Alloc: id, Offset: 8}, 8, shadow.AccessWrite, "b", 1, clock); err != nil {
 		t.Fatal(err)
 	}
-	second := d.lastAccess[accessKey{id, 8}].clock
+	second := d.lastWrite[accessKey{id, 8}].clock
 	if fmt.Sprintf("%p", first) != fmt.Sprintf("%p", second) {
 		t.Error("same goroutine and clock: snapshot not shared")
 	}
@@ -281,8 +281,57 @@ func TestRaceDetector_SnapshotSharing(t *testing.T) {
 	if err := d.CheckAccess(mem, &shadow.Pointer{Alloc: id}, 8, shadow.AccessWrite, "c", 1, clock); err != nil {
 		t.Fatal(err)
 	}
-	third := d.lastAccess[accessKey{id, 0}].clock
+	third := d.lastWrite[accessKey{id, 0}].clock
 	if fmt.Sprintf("%p", third) == fmt.Sprintf("%p", first) || third[1] != 5 {
 		t.Errorf("changed clock reused the old snapshot: %v", third)
+	}
+}
+
+// TestRaceDetector_ReadDoesNotHideWrite: goroutine 1 writes a byte then reads
+// it back; goroutine 2, unordered with both, then reads it. The read by 2
+// races with the write by 1. With one last-access entry per byte, 1's own
+// read replaced its write and the race was missed (#286).
+func TestRaceDetector_ReadDoesNotHideWrite(t *testing.T) {
+	mem := shadow.NewMemory()
+	id := mem.Allocate(shadow.AllocHeap, 8, "int", "test")
+	ptr := &shadow.Pointer{Alloc: id}
+	d := NewRaceDetector()
+	g1 := map[int64]uint64{1: 1}
+	if err := d.CheckAccess(mem, ptr, 8, shadow.AccessWrite, "w1", 1, g1); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "r1", 1, g1); err != nil {
+		t.Fatal(err)
+	}
+	err := d.CheckAccess(mem, ptr, 8, shadow.AccessRead, "r2", 2, map[int64]uint64{2: 1})
+	if err == nil {
+		t.Fatal("read by goroutine 2 races with goroutine 1's write, but no race reported")
+	}
+	if r, ok := err.(*shadow.DataRaceError); !ok || r.Write1Site != "w1" {
+		t.Errorf("race should name the write w1: %v", err)
+	}
+}
+
+// TestRaceDetector_OrderedReadsAfterWrite: reads ordered after a write, and
+// a write ordered after earlier reads, are not races.
+func TestRaceDetector_OrderedReadsAfterWrite(t *testing.T) {
+	mem := shadow.NewMemory()
+	id := mem.Allocate(shadow.AllocHeap, 8, "int", "test")
+	ptr := &shadow.Pointer{Alloc: id}
+	d := NewRaceDetector()
+	steps := []struct {
+		kind  shadow.AccessKind
+		g     int64
+		clock map[int64]uint64
+	}{
+		{shadow.AccessWrite, 1, map[int64]uint64{1: 1}},
+		{shadow.AccessRead, 2, map[int64]uint64{1: 1, 2: 1}},        // after 1's write
+		{shadow.AccessRead, 3, map[int64]uint64{1: 1, 3: 1}},        // after 1's write
+		{shadow.AccessWrite, 1, map[int64]uint64{1: 2, 2: 1, 3: 1}}, // after both reads
+	}
+	for i, s := range steps {
+		if err := d.CheckAccess(mem, ptr, 8, s.kind, fmt.Sprint(i), s.g, s.clock); err != nil {
+			t.Errorf("step %d: unexpected race %v", i, err)
+		}
 	}
 }

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Race detector: a read no longer hides an earlier write** (part of #286).
+  The detector kept one last access per byte, so a goroutine reading back its
+  own write replaced that write, and a later unordered read by another
+  goroutine was compared against a read and missed. It now tracks the last
+  write and the last read separately: a read is checked against the last
+  write, and a write against both. CLI findings on all 291 integration and
+  showcase programs are unchanged. The rest of #286 (clock tick order at
+  release points) waits on blocking semantics for `Wait`/receive.
+
 ## [0.100.0] - 2026-11-02
 
 A performance pass, milestone v0.100.0. Outputs, step counts, traces, detector
