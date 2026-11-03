@@ -67,11 +67,9 @@ func BenchmarkLoadDir(b *testing.B) {
 	}
 }
 
-// writeGenPackage writes a module with n trivial functions F000…, optionally
-// importing (and using) seven stdlib packages, and returns its directory.
-func writeGenPackage(tb testing.TB, n int, imports bool) string {
-	tb.Helper()
-	dir := tb.TempDir()
+// genSource returns the source of a package gen with n trivial functions
+// F000…, optionally importing (and using) seven stdlib packages.
+func genSource(n int, imports bool) string {
 	var src strings.Builder
 	src.WriteString("package gen\n")
 	if imports {
@@ -92,13 +90,44 @@ var _ = []any{math.Abs, bits.Len, sort.Ints, strconv.Itoa, strings.ToUpper, unic
 	for i := 0; i < n; i++ {
 		fmt.Fprintf(&src, "\nfunc F%03d(x int) int { return x + %d }\n", i, i)
 	}
+	return src.String()
+}
+
+// writeGenPackage writes genSource(n, imports) as a module and returns its
+// directory.
+func writeGenPackage(tb testing.TB, n int, imports bool) string {
+	tb.Helper()
+	dir := tb.TempDir()
 	for name, content := range map[string]string{
 		"go.mod": "module gen\n\ngo 1.26\n",
-		"gen.go": src.String(),
+		"gen.go": genSource(n, imports),
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			tb.Fatal(err)
 		}
 	}
 	return dir
+}
+
+// BenchmarkLoader measures Loader.Load on the same packages as
+// BenchmarkLoadDir, after one warm-up load caches the dependencies (#273).
+func BenchmarkLoader(b *testing.B) {
+	for _, imports := range []bool{false, true} {
+		name := "noimports"
+		if imports {
+			name = "stdlib7"
+		}
+		b.Run(name, func(b *testing.B) {
+			src := []byte(genSource(300, imports))
+			l := NewLoader()
+			if _, err := l.Load("gen", src); err != nil {
+				b.Fatal(err)
+			}
+			for b.Loop() {
+				if _, err := l.Load("gen", src); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
