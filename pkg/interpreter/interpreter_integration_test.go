@@ -2061,6 +2061,34 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	{
+		name:           "race dormant siblings",
+		dir:            "race_dormant_siblings",
+		wantViolations: 1,
+		wantCategory:   "data-race",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "race dormant prespawn",
+		dir:            "race_dormant_prespawn",
+		wantViolations: 1,
+		wantCategory:   "data-race",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "race dormant happens before",
+		dir:            "race_dormant_happens_before",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "race dormant array prespawn",
+		dir:            "race_dormant_array_prespawn",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {

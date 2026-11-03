@@ -709,6 +709,7 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 		dets = append(dets, detector.NewRaceDetector())
 	}
 	interp.registry = detector.NewRegistry(dets...)
+	interp.registry.SetRaceDormant(true) // woken by the first go statement (#272)
 
 	// Initialize scheduler
 	switch config.ScheduleStrategy {
@@ -777,6 +778,7 @@ func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Inter
 		dets = append(dets, detector.NewRaceDetector())
 	}
 	interp.registry = detector.NewRegistry(dets...)
+	interp.registry.SetRaceDormant(true) // woken by the first go statement (#272)
 
 	switch config.ScheduleStrategy {
 	case ScheduleRoundRobin:
@@ -879,6 +881,13 @@ func (interp *Interpreter) spawnGoroutine(funcName, site string) (int64, error) 
 
 	if interp.config.MaxGoroutines > 0 && len(interp.goroutines) >= interp.config.MaxGoroutines {
 		return 0, fmt.Errorf("goroutine limit reached (%d)", interp.config.MaxGoroutines)
+	}
+
+	// A second goroutine is about to exist, so from here on accesses can
+	// race: wake the race detector (#272). Doing it here, not at each call
+	// site, means no way of starting a goroutine can forget to.
+	if len(interp.goroutines) > 0 && interp.registry != nil {
+		interp.registry.SetRaceDormant(false)
 	}
 
 	// Arena-allocate the initial frame and goroutine struct. These are

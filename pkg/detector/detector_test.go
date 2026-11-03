@@ -1,6 +1,7 @@
 package detector
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/scttfrdmn/giri/pkg/shadow"
@@ -222,5 +223,66 @@ func TestRegistry_Finalize_CallsAll(t *testing.T) {
 	errs := r.Finalize(mem)
 	if len(errs) == 0 {
 		t.Fatal("expected arena leak error from Finalize, got none")
+	}
+}
+
+// TestRaceDetector_Dormant: a dormant detector records nothing, so accesses
+// made then can't be reported later; once woken it detects races (#272).
+func TestRaceDetector_Dormant(t *testing.T) {
+	mem := shadow.NewMemory()
+	id := mem.Allocate(shadow.AllocHeap, 8, "int", "test")
+	ptr := &shadow.Pointer{Alloc: id}
+	d := NewRaceDetector()
+	d.SetDormant(true)
+	if err := d.CheckAccess(mem, ptr, 8, shadow.AccessWrite, "a", 1, map[int64]uint64{1: 1}); err != nil {
+		t.Fatalf("dormant detector reported %v", err)
+	}
+	if len(d.lastAccess) != 0 {
+		t.Fatalf("dormant detector recorded %d accesses", len(d.lastAccess))
+	}
+	d.SetDormant(false)
+	if err := d.CheckAccess(mem, ptr, 8, shadow.AccessWrite, "b", 2, map[int64]uint64{2: 1}); err != nil {
+		t.Fatalf("first access after waking reported %v", err)
+	}
+	if err := d.CheckAccess(mem, ptr, 8, shadow.AccessWrite, "c", 3, map[int64]uint64{3: 1}); err == nil {
+		t.Error("unordered writes by goroutines 2 and 3 not reported after waking")
+	}
+}
+
+// TestRaceDetector_SnapshotSharing: accesses by one goroutine with an
+// unchanged clock share one stored snapshot; the snapshot is a copy, so later
+// changes to the goroutine's live clock don't alter it; a changed clock gets a
+// new snapshot (#272).
+func TestRaceDetector_SnapshotSharing(t *testing.T) {
+	mem := shadow.NewMemory()
+	id := mem.Allocate(shadow.AllocHeap, 16, "[2]int", "test")
+	d := NewRaceDetector()
+	clock := map[int64]uint64{1: 4, 2: 1}
+	if err := d.CheckAccess(mem, &shadow.Pointer{Alloc: id}, 8, shadow.AccessWrite, "a", 1, clock); err != nil {
+		t.Fatal(err)
+	}
+	first := d.lastAccess[accessKey{id, 0}].clock
+	for off := 0; off < 8; off++ {
+		if got := d.lastAccess[accessKey{id, off}].clock; len(got) != 2 {
+			t.Fatalf("byte %d: snapshot %v", off, got)
+		}
+	}
+	if err := d.CheckAccess(mem, &shadow.Pointer{Alloc: id, Offset: 8}, 8, shadow.AccessWrite, "b", 1, clock); err != nil {
+		t.Fatal(err)
+	}
+	second := d.lastAccess[accessKey{id, 8}].clock
+	if fmt.Sprintf("%p", first) != fmt.Sprintf("%p", second) {
+		t.Error("same goroutine and clock: snapshot not shared")
+	}
+	clock[1] = 5 // the goroutine's live clock advances
+	if first[1] != 4 {
+		t.Errorf("stored snapshot changed with the live clock: %v", first)
+	}
+	if err := d.CheckAccess(mem, &shadow.Pointer{Alloc: id}, 8, shadow.AccessWrite, "c", 1, clock); err != nil {
+		t.Fatal(err)
+	}
+	third := d.lastAccess[accessKey{id, 0}].clock
+	if fmt.Sprintf("%p", third) == fmt.Sprintf("%p", first) || third[1] != 5 {
+		t.Errorf("changed clock reused the old snapshot: %v", third)
 	}
 }

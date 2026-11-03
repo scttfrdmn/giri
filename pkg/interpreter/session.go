@@ -259,6 +259,7 @@ func (s *Session) call(fn *ssa.Function, args []Value, budget uint64) CallOutcom
 		clear(cs.hb)
 		if interp.registry != nil {
 			interp.registry.ResetRaces()
+			interp.registry.SetRaceDormant(true) // single goroutine again (#272)
 		}
 	}
 
