@@ -164,6 +164,8 @@ func NewSession(fn *ssa.Function, opts SessionOptions) (*Session, error) {
 	interp.prog = fn.Prog
 	interp.concrete = true
 	interp.names = make(map[unsafe.Pointer]string)
+	interp.slotIdx = make(map[unsafe.Pointer]int32)
+	interp.fnSlots = make(map[*ssa.Function]int32)
 	interp.globals = make(map[*ssa.Global]Value)
 	interp.cs = &callState{
 		cache:  opts.Cache,
@@ -234,7 +236,7 @@ func (s *Session) call(fn *ssa.Function, args []Value, budget uint64) CallOutcom
 	// Successive calls (and package init before them) are sequential, as
 	// successive native calls are: each call happens after everything the
 	// previous ones did.
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	mergeClock(g, cs.hb)
 	ret := interp.execFunction(gid, fn, args)
 	for id, t := range g.VClock.Clocks {
@@ -243,7 +245,7 @@ func (s *Session) call(fn *ssa.Function, args []Value, budget uint64) CallOutcom
 		}
 	}
 	halted := g.Panicked || g.Panicking
-	delete(interp.goroutines, gid)
+	interp.forgetGoroutine(gid)
 	if !cs.single {
 		interp.drainSessionQueue()
 	}
@@ -300,7 +302,7 @@ func (interp *Interpreter) drainSessionQueue() {
 	}
 	for id, g := range interp.goroutines {
 		if g.Status != GoroutineBlocked {
-			delete(interp.goroutines, id)
+			interp.forgetGoroutine(id)
 		}
 	}
 }
@@ -338,7 +340,7 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 	cs := interp.cs
 	if cs.limit > 0 && interp.steps >= cs.limit {
 		cs.exhausted = true
-		if g := interp.goroutines[gid]; g != nil {
+		if g := interp.goroutine(gid); g != nil {
 			g.Panicked = true
 		}
 		return nil
@@ -373,7 +375,7 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 			interp.steps += steps
 			cs.classes[class] += steps
 			cs.cacheHits++
-			frame.Locals[interp.vname(value)] = res
+			interp.setLocal(frame, value, res)
 			if cs.tracer != nil {
 				cs.tracer.Record(value, res)
 			}
@@ -388,16 +390,16 @@ func (interp *Interpreter) execInstructionSession(gid int64, fn *ssa.Function, i
 
 	if cacheable {
 		cs.pureExecuted++
-		g := interp.goroutines[gid]
+		g := interp.goroutine(gid)
 		if len(interp.violations) == nviol && g != nil && !g.Panicked && !g.Panicking {
-			if res, ok := frame.Locals[interp.vname(value)]; ok && isScalarValue(res) {
+			if res, ok := interp.getLocal(frame, value); ok && isScalarValue(res) {
 				cs.cache.Store(value, operands, res, 1)
 			}
 		}
 	}
 	if cs.tracer != nil {
 		if v, ok := instr.(ssa.Value); ok {
-			if res, ok := frame.Locals[interp.vname(v)]; ok {
+			if res, ok := interp.getLocal(frame, v); ok {
 				cs.tracer.Record(v, res)
 			}
 		}
@@ -679,7 +681,7 @@ func (interp *Interpreter) binOpConcrete(gid int64, inst *ssa.BinOp, x, y Value,
 // recover it (a fault, the step budget). Recoverable run-time panics use
 // runtimePanic.
 func (interp *Interpreter) halt(gid int64) {
-	if g := interp.goroutines[gid]; g != nil {
+	if g := interp.goroutine(gid); g != nil {
 		g.Panicked = true
 	}
 }

@@ -130,8 +130,18 @@ type Frame struct {
 	FuncName string
 	Site     string // "file:line"
 
-	// Local variable bindings: SSA value name → interpreted value
+	// Local variable bindings: SSA value name → interpreted value. Used on
+	// the CLI path; sessions use Slots instead. Access both through
+	// setLocal/getLocal (slots.go).
 	Locals map[string]Value
+
+	// Slot-indexed locals (sessions, #271): Slots[i] holds the value of the
+	// function's i'th numbered SSA value, valid when SlotOK[i]. Ret/HasRet
+	// hold the return value (Locals["__return__"] on the CLI path).
+	Slots  []Value
+	SlotOK []bool
+	Ret    Value
+	HasRet bool
 
 	// Deferred function calls (executed on return)
 	Defers []DeferredCall
@@ -486,8 +496,18 @@ type Interpreter struct {
 	elems      map[elemKey]Value // concrete-mode element store
 	cs         *callState        // per-session instrumentation (session.go)
 	names      map[unsafe.Pointer]string
-	layouts    map[types.Type][]leaf   // array/struct leaf layouts
-	encoded    map[shadow.AllocID]bool // allocations converted to uintptr (concrete mode)
+
+	// Slot numbering for sessions' slot-indexed locals (#271); nil on the
+	// CLI path, which keeps name-keyed Locals. See slots.go.
+	slotIdx map[unsafe.Pointer]int32
+	fnSlots map[*ssa.Function]int32
+
+	// gor caches the goroutine last looked up by goroutine(gid). Goroutine
+	// IDs are never reused, so the cache is only cleared when that goroutine
+	// is deleted (#271).
+	gor     *Goroutine
+	layouts map[types.Type][]leaf   // array/struct leaf layouts
+	encoded map[shadow.AllocID]bool // allocations converted to uintptr (concrete mode)
 }
 
 // vname returns v's SSA name, the key of frame.Locals. ssa.Value.Name formats
@@ -795,7 +815,7 @@ func (interp *Interpreter) Violations() []error {
 
 // captureStack returns the current call stack for a goroutine, innermost first.
 func (interp *Interpreter) captureStack(gid int64) []StackFrame {
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	if g == nil {
 		return nil
 	}
@@ -813,7 +833,7 @@ func (interp *Interpreter) captureStack(gid int64) []StackFrame {
 // violation is silently dropped (#58).
 func (interp *Interpreter) recordViolation(gid int64, err error) {
 	var spawnSite string
-	if g := interp.goroutines[gid]; g != nil {
+	if g := interp.goroutine(gid); g != nil {
 		spawnSite = g.SpawnSite
 	}
 	wrapped := &ViolationWithStack{
@@ -883,7 +903,7 @@ func (interp *Interpreter) spawnGoroutine(funcName, site string) (int64, error) 
 
 // currentFrame returns the top of the call stack for a goroutine.
 func (interp *Interpreter) currentFrame(gid int64) *Frame {
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	if g == nil || len(g.Stack) == 0 {
 		return nil
 	}
@@ -892,15 +912,17 @@ func (interp *Interpreter) currentFrame(gid int64) *Frame {
 
 // pushFrame pushes a new call frame onto the goroutine's stack.
 func (interp *Interpreter) pushFrame(gid int64, funcName, site string) *Frame {
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	caller := interp.currentFrame(gid)
 
 	frame := arenaNew(interp.arena, Frame{
 		FuncName: funcName,
 		Site:     site,
-		Locals:   make(map[string]Value),
 		Caller:   caller,
 	})
+	if interp.slotIdx == nil {
+		frame.Locals = make(map[string]Value) // sessions use slots (#271)
+	}
 	g.Stack = append(g.Stack, frame)
 	return frame
 }
@@ -910,7 +932,7 @@ func (interp *Interpreter) pushFrame(gid int64, funcName, site string) *Frame {
 // to call recover(). If recovery occurs, unwinding stops and execution
 // resumes normally in the caller (#48).
 func (interp *Interpreter) popFrame(gid int64) {
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	if g == nil || len(g.Stack) == 0 {
 		return
 	}
@@ -955,7 +977,7 @@ func (interp *Interpreter) popFrame(gid int64) {
 // recovery the remaining deferred calls still run, normally, as in Go (#259).
 // Returns whether the in-flight panic was recovered.
 func (interp *Interpreter) runFrameDefers(gid int64, frame *Frame) (recovered bool) {
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	if g == nil {
 		return false
 	}
@@ -995,7 +1017,7 @@ func (interp *Interpreter) runFrameDefers(gid int64, frame *Frame) (recovered bo
 // Go (#259). The violation describing it is recorded separately by the
 // caller. An unrecovered panic ends the goroutine as before.
 func (interp *Interpreter) runtimePanic(gid int64, msg string) {
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	if g == nil || g.Panicked {
 		return
 	}
@@ -1018,8 +1040,7 @@ func (interp *Interpreter) recomputeNamedReturns(frame *Frame) {
 		// Named return pattern: `t_n = *alloc_result; return t_n`
 		// In SSA, r is an *ssa.UnOp with Op=token.MUL (pointer dereference).
 		if unop, ok := r.(*ssa.UnOp); ok && unop.Op == token.MUL {
-			allocName := unop.X.Name()
-			if allocV, ok2 := frame.Locals[allocName]; ok2 && allocV.Provenance != nil {
+			if allocV, ok2 := interp.getLocal(frame, unop.X); ok2 && allocV.Provenance != nil {
 				if stored, ok3 := interp.valueStore[allocV.Provenance.Alloc]; ok3 {
 					newVals[i] = stored
 					changed = true
@@ -1028,7 +1049,7 @@ func (interp *Interpreter) recomputeNamedReturns(frame *Frame) {
 			}
 		}
 		// Fall back to the value captured at ssa.Return time.
-		if v, ok := frame.Locals[r.Name()]; ok {
+		if v, ok := interp.getLocal(frame, r); ok {
 			newVals[i] = v
 		}
 	}
@@ -1038,9 +1059,9 @@ func (interp *Interpreter) recomputeNamedReturns(frame *Frame) {
 	switch len(newVals) {
 	case 0:
 	case 1:
-		frame.Locals["__return__"] = newVals[0]
+		interp.setReturn(frame, newVals[0])
 	default:
-		frame.Locals["__return__"] = Value{Raw: newVals}
+		interp.setReturn(frame, Value{Raw: newVals})
 	}
 }
 
@@ -1155,7 +1176,7 @@ func (interp *Interpreter) handleLoad(gid int64, addr Value, size int, site stri
 		return Value{Raw: addr.Raw}, nil
 	}
 
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	// SkipDetectors sessions mint allocation IDs without shadow metadata, so
 	// there is nothing to check against.
 	if !interp.skipChecks {
@@ -1216,7 +1237,7 @@ func (interp *Interpreter) handleStore(gid int64, addr Value, val Value, size in
 		return nil
 	}
 
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	err := interp.Memory.CheckAccess(addr.Provenance, size, shadow.AccessWrite, site, g.ID)
 	if err != nil {
 		return err
@@ -1560,7 +1581,7 @@ func (interp *Interpreter) checkResourceClose(gid int64, receiver Value, site st
 // It records the sender's vector clock in the channel state for happens-before propagation.
 // For buffered channels (capacity > 0): blocks the goroutine when the buffer is full.
 func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value, site string) {
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 
 	// Check for send on closed channel (#31)
 	ch, ok := interp.channels[chanID]
@@ -1648,7 +1669,7 @@ func (interp *Interpreter) handleChannelRecv(gid int64, chanID ChanID, site stri
 		return
 	}
 
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	if ch, ok := interp.channels[chanID]; ok && ch.lastSenderGID != 0 {
 		for id, t := range ch.lastSenderClock {
 			if t > g.VClock.Clocks[id] {
@@ -1669,7 +1690,7 @@ func (interp *Interpreter) handleChannelRecv(gid int64, chanID ChanID, site stri
 
 // StackTrace returns a formatted stack trace for a goroutine.
 func (interp *Interpreter) StackTrace(gid int64) string {
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	if g == nil {
 		return "<unknown goroutine>"
 	}
@@ -1795,7 +1816,7 @@ func (interp *Interpreter) callCancelFunc(id cancelFuncID) {
 // These runtime types use futexes that can't be interpreted; we model their
 // clock semantics directly.
 func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, site string) Value {
-	g := interp.goroutines[gid]
+	g := interp.goroutine(gid)
 	if g == nil {
 		return Value{}
 	}

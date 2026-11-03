@@ -157,7 +157,7 @@ func Run(prog *Program, config Config) *RunResult {
 		if mainFn != nil {
 			interp.execFunction(mainGID, mainFn, nil)
 			// Mark main goroutine as finished.
-			if g := interp.goroutines[mainGID]; g != nil && g.Status == GoroutineRunning {
+			if g := interp.goroutine(mainGID); g != nil && g.Status == GoroutineRunning {
 				if g.Panicking {
 					// Unrecovered panic propagated to the top — goroutine terminates.
 					g.Panicking = false
@@ -185,7 +185,7 @@ func Run(prog *Program, config Config) *RunResult {
 					interp.runQueue = interp.runQueue[:last]
 					interp.execFunction(t.gid, t.fn, t.args)
 					// Mark goroutine as finished if it completed normally (not blocked).
-					if g := interp.goroutines[t.gid]; g != nil && g.Status == GoroutineRunning {
+					if g := interp.goroutine(t.gid); g != nil && g.Status == GoroutineRunning {
 						if g.Panicking {
 							g.Panicking = false
 							g.Panicked = true
@@ -344,7 +344,7 @@ func runTestFn(prog *Program, tf TestFunc, config Config) *TestRunResult {
 		// handleTestingCall in stdlib.go intercepts t.Fatal, t.Log, t.Run, etc.
 		tArg := Value{Raw: struct{}{}}
 		interp.execFunction(mainGID, tf.Fn, []Value{tArg})
-		if g := interp.goroutines[mainGID]; g != nil && g.Status == GoroutineRunning {
+		if g := interp.goroutine(mainGID); g != nil && g.Status == GoroutineRunning {
 			if g.Panicking {
 				g.Panicking = false
 				g.Panicked = true
@@ -369,7 +369,7 @@ func runTestFn(prog *Program, tf TestFunc, config Config) *TestRunResult {
 					interp.runQueue[i] = interp.runQueue[last]
 					interp.runQueue = interp.runQueue[:last]
 					interp.execFunction(t.gid, t.fn, t.args)
-					if g := interp.goroutines[t.gid]; g != nil && g.Status == GoroutineRunning {
+					if g := interp.goroutine(t.gid); g != nil && g.Status == GoroutineRunning {
 						if g.Panicking {
 							g.Panicking = false
 							g.Panicked = true
@@ -402,12 +402,13 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 
 	name, site := interp.funcIdent(fn)
 	frame := interp.pushFrame(gid, name, site)
+	interp.initSlots(frame, fn)
 	defer interp.popFrame(gid)
 
 	// Bind parameters
 	for i, param := range fn.Params {
 		if i < len(args) {
-			frame.Locals[param.Name()] = args[i]
+			interp.setLocal(frame, param, args[i])
 		}
 	}
 
@@ -416,7 +417,7 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 	freeVarStart := len(fn.Params)
 	for i, fv := range fn.FreeVars {
 		if freeVarStart+i < len(args) {
-			frame.Locals[fv.Name()] = args[freeVarStart+i]
+			interp.setLocal(frame, fv, args[freeVarStart+i])
 		}
 	}
 
@@ -425,7 +426,7 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 	var prevBlock *ssa.BasicBlock
 	block := fn.Blocks[0]
 	for block != nil {
-		g := interp.goroutines[gid]
+		g := interp.goroutine(gid)
 		if g != nil && (g.Panicked || g.Panicking || g.Status == GoroutineBlocked) {
 			break
 		}
@@ -440,7 +441,7 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 	// A panic is unwinding through this frame. Run its deferred calls now; if
 	// one recovers, the function returns normally through its Recover block,
 	// which reloads the named results (#259).
-	if g := interp.goroutines[gid]; g != nil && g.Panicking && !g.Panicked {
+	if g := interp.goroutine(gid); g != nil && g.Panicking && !g.Panicked {
 		if interp.runFrameDefers(gid, frame) && fn.Recover != nil && !g.Panicking && !g.Panicked {
 			prevBlock, block = nil, fn.Recover
 			for block != nil {
@@ -456,7 +457,7 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 	}
 
 	// Return the result (if any)
-	if retVal, ok := frame.Locals["__return__"]; ok {
+	if retVal, ok := interp.getReturn(frame); ok {
 		return retVal
 	}
 	return Value{}
@@ -485,7 +486,7 @@ func (interp *Interpreter) execBlock(gid int64, fn *ssa.Function, block *ssa.Bas
 
 	for _, instr := range block.Instrs {
 		// Stop if the goroutine has panicked, is unwinding a panic, or is blocked.
-		if g := interp.goroutines[gid]; g != nil && (g.Panicked || g.Panicking || g.Status == GoroutineBlocked) {
+		if g := interp.goroutine(gid); g != nil && (g.Panicked || g.Panicking || g.Status == GoroutineBlocked) {
 			return nil
 		}
 		next := interp.execInstruction(gid, fn, instr)
@@ -510,7 +511,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 	if interp.config.MaxSteps > 0 {
 		interp.steps++
 		if interp.steps > interp.config.MaxSteps {
-			g := interp.goroutines[gid]
+			g := interp.goroutine(gid)
 			if g != nil && !g.Panicked {
 				interp.recordViolation(gid, fmt.Errorf(
 					"execution limit of %d steps exceeded at %s",
@@ -547,7 +548,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		}
 		allocID := interp.allocate(kind, size, typeName, site)
 		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
-		frame.Locals[interp.vname(inst)] = Value{Raw: ptr, Provenance: ptr}
+		interp.setLocal(frame, inst, Value{Raw: ptr, Provenance: ptr})
 		// Track stack allocs for poisoning when the frame exits (#51).
 		if kind == shadow.AllocStack {
 			frame.StackAllocs = append(frame.StackAllocs, allocID)
@@ -577,19 +578,19 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				if err != nil {
 					interp.recordViolation(gid, err)
 				}
-				frame.Locals[interp.vname(inst)] = result
+				interp.setLocal(frame, inst, result)
 				break
 			}
 			result, err := interp.handleLoad(gid, operand, size, site)
 			if err != nil {
 				interp.recordViolation(gid, err)
 			}
-			frame.Locals[interp.vname(inst)] = result
+			interp.setLocal(frame, inst, result)
 		case token.ARROW: // Channel receive (<-ch)
 			// Receive from nil channel blocks forever in Go (deadlock) (#122).
 			if operand.Raw == nil {
 				interp.recordViolation(gid, &shadow.NilChannelError{Op: "receive", Site: site, GID: gid})
-				if g := interp.goroutines[gid]; g != nil {
+				if g := interp.goroutine(gid); g != nil {
 					g.Status = GoroutineBlocked
 					g.BlockSite = site
 				}
@@ -603,7 +604,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			// If so, mark the goroutine as blocked so leak detection can report it.
 			if chanID != 0 {
 				if ch, ok := interp.channels[chanID]; ok && !ch.hasPending && !ch.closed {
-					if g := interp.goroutines[gid]; g != nil {
+					if g := interp.goroutine(gid); g != nil {
 						g.Status = GoroutineBlocked
 						g.BlockChanID = chanID
 						g.BlockSite = site
@@ -623,53 +624,53 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			}
 			interp.handleChannelRecv(gid, chanID, site)
 			if inst.CommaOk {
-				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{}, {Raw: recvOk}}}
+				interp.setLocal(frame, inst, Value{Raw: []Value{{}, {Raw: recvOk}}})
 			} else {
-				frame.Locals[interp.vname(inst)] = Value{}
+				interp.setLocal(frame, inst, Value{})
 			}
 		case token.SUB:
 			if interp.concrete {
 				if r, ok := concreteUnOp(inst.Op, operand, inst.Type()); ok {
-					frame.Locals[interp.vname(inst)] = r
+					interp.setLocal(frame, inst, r)
 					break
 				}
 			}
 			if v, ok := operand.Raw.(int64); ok {
-				frame.Locals[interp.vname(inst)] = Value{Raw: -v}
+				interp.setLocal(frame, inst, Value{Raw: -v})
 			} else if v, ok := operand.Raw.(float64); ok {
-				frame.Locals[interp.vname(inst)] = Value{Raw: -v}
+				interp.setLocal(frame, inst, Value{Raw: -v})
 			} else if c, ok := operand.Raw.(complex128); ok { // (#144)
-				frame.Locals[interp.vname(inst)] = Value{Raw: -c}
+				interp.setLocal(frame, inst, Value{Raw: -c})
 			} else {
-				frame.Locals[interp.vname(inst)] = operand
+				interp.setLocal(frame, inst, operand)
 			}
 		case token.NOT:
 			if v, ok := operand.Raw.(bool); ok {
-				frame.Locals[interp.vname(inst)] = Value{Raw: !v}
+				interp.setLocal(frame, inst, Value{Raw: !v})
 			} else {
-				frame.Locals[interp.vname(inst)] = operand
+				interp.setLocal(frame, inst, operand)
 			}
 		case token.XOR:
 			if interp.concrete {
 				if r, ok := concreteUnOp(inst.Op, operand, inst.Type()); ok {
-					frame.Locals[interp.vname(inst)] = r
+					interp.setLocal(frame, inst, r)
 					break
 				}
 			}
 			if v, ok := operand.Raw.(int64); ok {
-				frame.Locals[interp.vname(inst)] = Value{Raw: ^v}
+				interp.setLocal(frame, inst, Value{Raw: ^v})
 			} else {
-				frame.Locals[interp.vname(inst)] = operand
+				interp.setLocal(frame, inst, operand)
 			}
 		default:
-			frame.Locals[interp.vname(inst)] = operand
+			interp.setLocal(frame, inst, operand)
 		}
 
 	case *ssa.BinOp:
 		x := interp.resolveValue(frame, inst.X)
 		y := interp.resolveValue(frame, inst.Y)
 		if interp.concrete {
-			frame.Locals[interp.vname(inst)] = interp.binOpConcrete(gid, inst, x, y, site)
+			interp.setLocal(frame, inst, interp.binOpConcrete(gid, inst, x, y, site))
 			break
 		}
 		// Division/modulo by zero: statically-known zero divisor (#55).
@@ -689,12 +690,12 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		if inst.Op == token.EQL || inst.Op == token.NEQ {
 			if _, isIface := inst.X.Type().Underlying().(*types.Interface); isIface {
 				if eq, ok := ifaceEqual(x, y); ok {
-					frame.Locals[interp.vname(inst)] = Value{Raw: eq == (inst.Op == token.EQL)}
+					interp.setLocal(frame, inst, Value{Raw: eq == (inst.Op == token.EQL)})
 					break
 				}
 			}
 		}
-		frame.Locals[interp.vname(inst)] = evalBinOp(inst.Op, x, y)
+		interp.setLocal(frame, inst, evalBinOp(inst.Op, x, y))
 
 	case *ssa.FieldAddr:
 		base := interp.resolveValue(frame, inst.X)
@@ -708,7 +709,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			}
 		}
 		result := interp.handleFieldAddr(gid, base, fieldOffset, site)
-		frame.Locals[interp.vname(inst)] = result
+		interp.setLocal(frame, inst, result)
 
 	case *ssa.IndexAddr:
 		base := interp.resolveValue(frame, inst.X)
@@ -769,26 +770,26 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				Site:       site,
 			})
 			interp.runtimePanic(gid, "index out of range")
-			frame.Locals[interp.vname(inst)] = Value{}
+			interp.setLocal(frame, inst, Value{})
 			break
 		}
 		if arrayOOB || sliceOOB {
-			frame.Locals[interp.vname(inst)] = Value{}
+			interp.setLocal(frame, inst, Value{})
 			break
 		}
 		result := interp.handleIndexAddr(gid, base, indexVal, elemSize, site)
-		frame.Locals[interp.vname(inst)] = result
+		interp.setLocal(frame, inst, result)
 
 	case *ssa.Field:
 		base := interp.resolveValue(frame, inst.X)
 		if interp.faithful {
-			frame.Locals[interp.vname(inst)] = interp.fieldConcrete(inst, base)
+			interp.setLocal(frame, inst, interp.fieldConcrete(inst, base))
 			break
 		}
 		if m, ok := base.Raw.(map[int]Value); ok {
-			frame.Locals[interp.vname(inst)] = m[inst.Field]
+			interp.setLocal(frame, inst, m[inst.Field])
 		} else {
-			frame.Locals[interp.vname(inst)] = Value{}
+			interp.setLocal(frame, inst, Value{})
 		}
 
 	case *ssa.Index:
@@ -796,7 +797,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		idx := interp.resolveValue(frame, inst.Index)
 		idxInt := int(toInt64(idx))
 		if _, isArr := inst.X.Type().Underlying().(*types.Array); isArr && interp.faithful {
-			frame.Locals[interp.vname(inst)] = interp.indexArrayConcrete(gid, inst, x, idxInt, site)
+			interp.setLocal(frame, inst, interp.indexArrayConcrete(gid, inst, x, idxInt, site))
 			break
 		}
 		switch sv := x.Raw.(type) {
@@ -815,14 +816,14 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					if err != nil {
 						interp.recordViolation(gid, err)
 					}
-					frame.Locals[interp.vname(inst)] = result
+					interp.setLocal(frame, inst, result)
 					break
 				}
 				result, err := interp.handleLoad(gid, addrVal, elemSize, site)
 				if err != nil {
 					interp.recordViolation(gid, err)
 				}
-				frame.Locals[interp.vname(inst)] = result
+				interp.setLocal(frame, inst, result)
 			} else {
 				// Nil slice (Backing==nil): any element access is out of bounds (#126).
 				interp.recordViolation(gid, &shadow.OutOfBoundsError{
@@ -832,7 +833,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					Site:       site,
 				})
 				interp.runtimePanic(gid, "index out of range")
-				frame.Locals[interp.vname(inst)] = Value{}
+				interp.setLocal(frame, inst, Value{})
 			}
 		case string:
 			// s[i] returns the byte at byte position i (#73), not a rune.
@@ -846,24 +847,24 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					TypeName:   "string",
 				})
 				interp.runtimePanic(gid, "index out of range")
-				frame.Locals[interp.vname(inst)] = Value{}
+				interp.setLocal(frame, inst, Value{})
 			} else {
-				frame.Locals[interp.vname(inst)] = Value{Raw: int64(sv[idxInt])}
+				interp.setLocal(frame, inst, Value{Raw: int64(sv[idxInt])})
 			}
 		case map[interface{}]Value:
 			// Arrays stored as maps (rare but possible)
-			frame.Locals[interp.vname(inst)] = sv[int64(idxInt)]
+			interp.setLocal(frame, inst, sv[int64(idxInt)])
 		default:
-			frame.Locals[interp.vname(inst)] = Value{}
+			interp.setLocal(frame, inst, Value{})
 		}
 
 	case *ssa.Extract:
 		// Extract element from a multi-value tuple (e.g. multi-return)
 		tuple := interp.resolveValue(frame, inst.Tuple)
 		if elems, ok := tuple.Raw.([]Value); ok && inst.Index < len(elems) {
-			frame.Locals[interp.vname(inst)] = elems[inst.Index]
+			interp.setLocal(frame, inst, elems[inst.Index])
 		} else {
-			frame.Locals[interp.vname(inst)] = Value{}
+			interp.setLocal(frame, inst, Value{})
 		}
 
 	case *ssa.Lookup:
@@ -879,15 +880,15 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			mk := toMapKey(key)
 			val, found := m[mk]
 			if inst.CommaOk {
-				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{val, {Raw: found}}}
+				interp.setLocal(frame, inst, Value{Raw: []Value{val, {Raw: found}}})
 			} else {
-				frame.Locals[interp.vname(inst)] = val
+				interp.setLocal(frame, inst, val)
 			}
 		} else {
 			if inst.CommaOk {
-				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{}, {Raw: false}}}
+				interp.setLocal(frame, inst, Value{Raw: []Value{{}, {Raw: false}}})
 			} else {
-				frame.Locals[interp.vname(inst)] = Value{}
+				interp.setLocal(frame, inst, Value{})
 			}
 		}
 
@@ -944,7 +945,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		allocID := interp.allocate(shadow.AllocHeap, allocSize, inst.Type().String(), site)
 		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
 		sv := arenaNew(interp.arena, SliceValue{Backing: ptr, Len: lenN, Cap: capN})
-		frame.Locals[interp.vname(inst)] = Value{Raw: sv, Provenance: ptr}
+		interp.setLocal(frame, inst, Value{Raw: sv, Provenance: ptr})
 
 	case *ssa.Slice:
 		base := interp.resolveValue(frame, inst.X)
@@ -967,7 +968,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		//   (a) []T — already a SliceValue (reslice)
 		//   (b) *[N]T — pointer to array (make([]T,n) lowered to Alloc+Slice)
 		if s, ok := base.Raw.(string); ok && interp.concrete {
-			frame.Locals[interp.vname(inst)] = interp.sliceStringConcrete(gid, s, lowVal, highVal, site)
+			interp.setLocal(frame, inst, interp.sliceStringConcrete(gid, s, lowVal, highVal, site))
 			break
 		}
 		var sv *SliceValue
@@ -1007,7 +1008,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					TypeName:   inst.X.Type().String(),
 				})
 				// Produce a safe empty slice so execution can continue
-				frame.Locals[interp.vname(inst)] = Value{Raw: arenaNew(interp.arena, SliceValue{Len: 0, Cap: 0})}
+				interp.setLocal(frame, inst, Value{Raw: arenaNew(interp.arena, SliceValue{Len: 0, Cap: 0})})
 			} else {
 				var newPtr *shadow.Pointer
 				if sv.Backing != nil {
@@ -1018,10 +1019,10 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					Len:     highVal - lowVal,
 					Cap:     maxVal - lowVal, // 3-index: cap = max - low (#85)
 				})
-				frame.Locals[interp.vname(inst)] = Value{Raw: newSv, Provenance: newPtr}
+				interp.setLocal(frame, inst, Value{Raw: newSv, Provenance: newPtr})
 			}
 		} else {
-			frame.Locals[interp.vname(inst)] = base
+			interp.setLocal(frame, inst, base)
 		}
 
 	case *ssa.MakeClosure:
@@ -1033,7 +1034,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		for i, binding := range inst.Bindings {
 			freeVars[i] = interp.resolveValue(frame, binding)
 		}
-		frame.Locals[interp.vname(inst)] = Value{Raw: &ClosureValue{Fn: fn, FreeVars: freeVars}}
+		interp.setLocal(frame, inst, Value{Raw: &ClosureValue{Fn: fn, FreeVars: freeVars}})
 
 	case *ssa.MakeMap:
 		// Negative size hint panics at runtime: "makemap: size out of range" (#136).
@@ -1049,7 +1050,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		// concurrent reads and writes to the same map (#46).
 		allocID := interp.allocate(shadow.AllocHeap, 8, inst.Type().String(), site)
 		ptr := arenaNew(interp.arena, shadow.Pointer{Alloc: allocID, Offset: 0})
-		frame.Locals[interp.vname(inst)] = Value{Raw: make(map[interface{}]Value), Provenance: ptr}
+		interp.setLocal(frame, inst, Value{Raw: make(map[interface{}]Value), Provenance: ptr})
 
 	case *ssa.MakeChan:
 		// Extract the channel capacity from the instruction operand (#44).
@@ -1063,7 +1064,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			capacity = 0
 		}
 		chanID := interp.createChannel(capacity)
-		frame.Locals[interp.vname(inst)] = Value{Raw: chanID}
+		interp.setLocal(frame, inst, Value{Raw: chanID})
 
 	case *ssa.Range:
 		base := interp.resolveValue(frame, inst.X)
@@ -1079,7 +1080,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				ri.arrayLen = int(at.Len())
 			}
 		}
-		frame.Locals[interp.vname(inst)] = Value{Raw: ri}
+		interp.setLocal(frame, inst, Value{Raw: ri})
 
 	case *ssa.Next:
 		iter := interp.resolveValue(frame, inst.Iter)
@@ -1092,27 +1093,27 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 						// Consume one value; return (true, receivedVal, _).
 						val := ch.pendingVal
 						interp.handleChannelRecv(gid, chanID, site)
-						frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: true}, val, {}}}
+						interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: true}, val, {}}})
 					} else if ch.closed {
 						// Channel closed and empty: terminate the range loop.
-						frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: false}, {}, {}}}
+						interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: false}, {}, {}}})
 					} else {
 						// Channel empty and not closed: block goroutine.
-						if g := interp.goroutines[gid]; g != nil {
+						if g := interp.goroutine(gid); g != nil {
 							g.Status = GoroutineBlocked
 							g.BlockChanID = chanID
 							g.BlockSite = site
 						}
 					}
 				} else {
-					frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: false}, {}, {}}}
+					interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: false}, {}, {}}})
 				}
 			} else {
 				ok2, k, v := ri.advance()
-				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: ok2}, k, v}}
+				interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: ok2}, k, v}})
 			}
 		} else {
-			frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: false}, {}, {}}}
+			interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: false}, {}, {}}})
 		}
 
 	case *ssa.TypeAssert:
@@ -1139,9 +1140,9 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 
 		if inst.CommaOk {
 			if ok {
-				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{concreteVal, {Raw: true}}}
+				interp.setLocal(frame, inst, Value{Raw: []Value{concreteVal, {Raw: true}}})
 			} else {
-				frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{}, {Raw: false}}}
+				interp.setLocal(frame, inst, Value{Raw: []Value{{}, {Raw: false}}})
 			}
 		} else {
 			if !ok {
@@ -1154,7 +1155,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					GID:          gid,
 				})
 			}
-			frame.Locals[interp.vname(inst)] = concreteVal
+			interp.setLocal(frame, inst, concreteVal)
 		}
 
 	case *ssa.ChangeInterface:
@@ -1162,12 +1163,12 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		if iv, ok := val.Raw.(*InterfaceValue); ok {
 			// Preserve the concrete type through interface widening so TypeAssert
 			// and invoke dispatch can still see the original dynamic type.
-			frame.Locals[interp.vname(inst)] = Value{
+			interp.setLocal(frame, inst, Value{
 				Raw:        &InterfaceValue{Type: iv.Type, Value: iv.Value},
 				Provenance: val.Provenance,
-			}
+			})
 		} else {
-			frame.Locals[interp.vname(inst)] = val
+			interp.setLocal(frame, inst, val)
 		}
 
 	case *ssa.SliceToArrayPointer:
@@ -1185,18 +1186,18 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 					AllocSize: sv.Len * esz, Offset: 0, AccessSize: n * esz, Site: site, TypeName: inst.X.Type().String(),
 				})
 				interp.runtimePanic(gid, "index out of range")
-				frame.Locals[interp.vname(inst)] = Value{}
+				interp.setLocal(frame, inst, Value{})
 				break
 			}
 			if sv.Backing == nil { // nil or empty slice converted to *[0]T
-				frame.Locals[interp.vname(inst)] = Value{}
+				interp.setLocal(frame, inst, Value{})
 				break
 			}
 		}
 		if sv, ok := base.Raw.(*SliceValue); ok {
-			frame.Locals[interp.vname(inst)] = Value{Raw: sv.Backing, Provenance: sv.Backing}
+			interp.setLocal(frame, inst, Value{Raw: sv.Backing, Provenance: sv.Backing})
 		} else {
-			frame.Locals[interp.vname(inst)] = base
+			interp.setLocal(frame, inst, base)
 		}
 
 	// --- Control Flow ---
@@ -1223,10 +1224,10 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		case 0:
 			// nothing to store
 		case 1:
-			frame.Locals["__return__"] = retVals[0]
+			interp.setReturn(frame, retVals[0])
 		default:
 			// Multi-value return: store as a tuple Value for Extract to pick apart
-			frame.Locals["__return__"] = Value{Raw: retVals}
+			interp.setReturn(frame, Value{Raw: retVals})
 		}
 		// Store the ssa.Return instruction so popFrame can re-evaluate named
 		// return values after deferred closures may have modified them (#49).
@@ -1241,7 +1242,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		// which triggers the Go-level `defer interp.popFrame(gid)` in execFunction.
 		// popFrame runs each frame's SSA defers, giving recover() a chance to fire
 		// before the goroutine is fully terminated (#48).
-		g := interp.goroutines[gid]
+		g := interp.goroutine(gid)
 		if g != nil {
 			g.PanicValue = interp.resolveValue(frame, inst.X)
 			g.Panicking = true
@@ -1253,7 +1254,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 	case *ssa.Call:
 		result := interp.execCall(gid, fn, inst, site)
 		if interp.vname(inst) != "" {
-			frame.Locals[interp.vname(inst)] = result
+			interp.setLocal(frame, inst, result)
 		}
 
 	case *ssa.Defer:
@@ -1334,17 +1335,17 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		}
 
 		// Record the spawn site on the new goroutine for goroutine leak reporting.
-		if newG := interp.goroutines[newGID]; newG != nil {
+		if newG := interp.goroutine(newGID); newG != nil {
 			newG.SpawnSite = site
 		}
 
 		// Propagate parent → child happens-before edge (#29).
 		// Per Go memory model, the go statement is synchronized before the
 		// goroutine's start: parent ticks then child inherits parent's clock.
-		parent := interp.goroutines[gid]
+		parent := interp.goroutine(gid)
 		if parent != nil {
 			parent.VClock.Tick(gid)
-			child := interp.goroutines[newGID]
+			child := interp.goroutine(newGID)
 			if child != nil {
 				for k, v := range parent.VClock.Clocks {
 					if v > child.VClock.Clocks[k] {
@@ -1369,7 +1370,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		// Send on nil channel blocks forever in Go (deadlock) (#122).
 		if chanVal.Raw == nil {
 			interp.recordViolation(gid, &shadow.NilChannelError{Op: "send", Site: site, GID: gid})
-			if g := interp.goroutines[gid]; g != nil {
+			if g := interp.goroutine(gid); g != nil {
 				g.Status = GoroutineBlocked
 				g.BlockSite = site
 			}
@@ -1425,7 +1426,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				chosenIdx = int64(len(inst.States))
 			} else {
 				// Blocking select with no ready case: mark goroutine as blocked (#45).
-				g := interp.goroutines[gid]
+				g := interp.goroutine(gid)
 				if g != nil {
 					g.Status = GoroutineBlocked
 					g.BlockSite = site
@@ -1433,7 +1434,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				}
 			}
 		}
-		frame.Locals[interp.vname(inst)] = Value{Raw: []Value{{Raw: chosenIdx}, {Raw: recvOk}}}
+		interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: chosenIdx}, {Raw: recvOk}}})
 
 	// --- Type Conversions ---
 
@@ -1443,7 +1444,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		if isUnsafePointerConversion(inst) {
 			if interp.concrete {
 				if r, ok := interp.convertUnsafeConcrete(gid, classifyUnsafeConversion(inst), val, site, inst); ok {
-					frame.Locals[interp.vname(inst)] = r
+					interp.setLocal(frame, inst, r)
 					break
 				}
 			}
@@ -1451,16 +1452,16 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			if err != nil {
 				interp.recordViolation(gid, err)
 			}
-			frame.Locals[interp.vname(inst)] = result
+			interp.setLocal(frame, inst, result)
 		} else {
 			if interp.faithful {
 				if r, ok := interp.concreteConvert(val, inst.X.Type(), inst.Type(), site, interp.concrete); ok {
-					frame.Locals[interp.vname(inst)] = r
+					interp.setLocal(frame, inst, r)
 					break
 				}
 			}
 			// Apply concrete type conversion for string↔bytes and numeric types (#74).
-			frame.Locals[interp.vname(inst)] = convertValue(val, inst.X.Type(), inst.Type())
+			interp.setLocal(frame, inst, convertValue(val, inst.X.Type(), inst.Type()))
 			// Integer overflow on explicit conversion (#223): report when a
 			// narrowing/sign conversion silently discards bits.
 			if interp.config.TrackTruncation {
@@ -1479,16 +1480,16 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 
 	case *ssa.ChangeType:
 		val := interp.resolveValue(frame, inst.X)
-		frame.Locals[interp.vname(inst)] = val
+		interp.setLocal(frame, inst, val)
 
 	case *ssa.MakeInterface:
 		val := interp.resolveValue(frame, inst.X)
 		iface := &InterfaceValue{Type: inst.X.Type(), Value: val}
-		frame.Locals[interp.vname(inst)] = Value{Raw: iface, Provenance: val.Provenance}
+		interp.setLocal(frame, inst, Value{Raw: iface, Provenance: val.Provenance})
 
 	case *ssa.MultiConvert:
 		val := interp.resolveValue(frame, inst.X)
-		frame.Locals[interp.vname(inst)] = val
+		interp.setLocal(frame, inst, val)
 
 	// --- Phi nodes ---
 
@@ -1496,10 +1497,10 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		// The incoming value was computed with the block's other phis on
 		// block entry (execBlock).
 		if frame.phiNext < len(frame.phiVals) {
-			frame.Locals[interp.vname(inst)] = frame.phiVals[frame.phiNext]
+			interp.setLocal(frame, inst, frame.phiVals[frame.phiNext])
 			frame.phiNext++
 		} else {
-			frame.Locals[interp.vname(inst)] = interp.phiIncoming(frame, inst)
+			interp.setLocal(frame, inst, interp.phiIncoming(frame, inst))
 		}
 
 	case *ssa.RunDefers:
@@ -2014,7 +2015,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 		// is in-flight (g.Panicking=true, set temporarily to false by popFrame
 		// before running each defer). Signal recovery via g.Recovered so popFrame
 		// stops unwinding after this defer returns.
-		g := interp.goroutines[gid]
+		g := interp.goroutine(gid)
 		if g != nil && !g.Panicking && g.PanicValue.Raw != nil {
 			// popFrame cleared Panicking before calling this defer; the PanicValue
 			// still set indicates we are in a defer during panic unwinding.
@@ -2121,7 +2122,7 @@ func (interp *Interpreter) resolveValue(frame *Frame, v ssa.Value) Value {
 	}
 
 	// Check locals first
-	if val, ok := frame.Locals[interp.vname(v)]; ok {
+	if val, ok := interp.getLocal(frame, v); ok {
 		return val
 	}
 

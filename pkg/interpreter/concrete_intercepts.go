@@ -35,7 +35,7 @@ type concreteImpl struct {
 func (c *concreteImpl) call(interp *Interpreter, gid int64, args []Value) (result Value) {
 	defer func() {
 		if r := recover(); r != nil {
-			if g := interp.goroutines[gid]; g != nil {
+			if g := interp.goroutine(gid); g != nil {
 				g.PanicValue = Value{Raw: fmt.Sprint(r)}
 				g.Panicking = true
 			}
