@@ -233,8 +233,12 @@ func (d *UnsafeDetector) CheckFinalize(_ *shadow.Memory) []error {
 // RaceDetector uses vector clocks to detect data races beyond what -race finds.
 // It tracks happens-before relationships through channels, mutexes, and atomics.
 type RaceDetector struct {
-	// Last access per (allocation, offset) pair
-	lastAccess map[accessKey]accessEntry
+	// Last write and last read per (allocation, offset) pair, kept apart so
+	// a read can't hide an earlier write from a later conflicting access: a
+	// read after a write used to overwrite the only entry, so a racing read
+	// by another goroutine was compared with a read and missed (#286).
+	lastWrite map[accessKey]accessEntry
+	lastRead  map[accessKey]accessEntry
 
 	// snap is the most recent clock snapshot, taken for goroutine snapGID.
 	// Snapshots are never mutated once stored, so consecutive accesses by the
@@ -265,7 +269,8 @@ type accessEntry struct {
 // NewRaceDetector creates a new RaceDetector with an empty access history.
 func NewRaceDetector() *RaceDetector {
 	return &RaceDetector{
-		lastAccess: make(map[accessKey]accessEntry),
+		lastWrite: make(map[accessKey]accessEntry),
+		lastRead:  make(map[accessKey]accessEntry),
 	}
 }
 
@@ -284,43 +289,58 @@ func (d *RaceDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size
 	}
 	// One snapshot serves every byte of this access.
 	snap := d.snapshot(goroutine, clock)
-	// For each byte accessed, check against last access
+	// For each byte: a read conflicts with the last write; a write conflicts
+	// with the last write and the last read.
 	for i := 0; i < size; i++ {
 		key := accessKey{allocID: ptr.Alloc, offset: ptr.Offset + i}
 
-		if last, ok := d.lastAccess[key]; ok {
-			// Race: two accesses from different goroutines where at least one is a
-			// write and neither clock causally precedes the other.
-			if last.goroutine != goroutine && (last.kind == shadow.AccessWrite || kind == shadow.AccessWrite) {
-				if !happensBefore(last.clock, clock) && !happensBefore(clock, last.clock) {
-					alloc, _ := mem.GetAllocation(ptr.Alloc)
-					typeName := "unknown"
-					if alloc != nil {
-						typeName = alloc.TypeName
-					}
-					return &shadow.DataRaceError{
-						AllocID:         ptr.Alloc,
-						Offset:          ptr.Offset + i,
-						Write1Site:      last.site,
-						Write1Goroutine: last.goroutine,
-						Write2Site:      site,
-						Write2Goroutine: goroutine,
-						TypeName:        typeName,
-					}
-				}
+		if last, ok := d.lastWrite[key]; ok && d.concurrent(last, goroutine, clock) {
+			return d.raceError(mem, ptr, i, last, site, goroutine)
+		}
+		if kind == shadow.AccessWrite {
+			if last, ok := d.lastRead[key]; ok && d.concurrent(last, goroutine, clock) {
+				return d.raceError(mem, ptr, i, last, site, goroutine)
 			}
 		}
 
 		// Record this access with a snapshot of the current clock.
-		d.lastAccess[key] = accessEntry{
-			kind:      kind,
-			goroutine: goroutine,
-			site:      site,
-			clock:     snap,
+		entry := accessEntry{kind: kind, goroutine: goroutine, site: site, clock: snap}
+		if kind == shadow.AccessWrite {
+			d.lastWrite[key] = entry
+			// Every later access that conflicts with the previous read either
+			// conflicts with this write or is ordered after both.
+			delete(d.lastRead, key)
+		} else {
+			d.lastRead[key] = entry
 		}
 	}
 
 	return nil
+}
+
+// concurrent reports whether the recorded access last, by another goroutine,
+// is unordered with an access by goroutine at clock.
+func (d *RaceDetector) concurrent(last accessEntry, goroutine int64, clock map[int64]uint64) bool {
+	return last.goroutine != goroutine && !happensBefore(last.clock, clock) && !happensBefore(clock, last.clock)
+}
+
+// raceError describes a race between the recorded access last and the access
+// at byte i of ptr.
+func (d *RaceDetector) raceError(mem *shadow.Memory, ptr *shadow.Pointer, i int, last accessEntry, site string, goroutine int64) error {
+	alloc, _ := mem.GetAllocation(ptr.Alloc)
+	typeName := "unknown"
+	if alloc != nil {
+		typeName = alloc.TypeName
+	}
+	return &shadow.DataRaceError{
+		AllocID:         ptr.Alloc,
+		Offset:          ptr.Offset + i,
+		Write1Site:      last.site,
+		Write1Goroutine: last.goroutine,
+		Write2Site:      site,
+		Write2Goroutine: goroutine,
+		TypeName:        typeName,
+	}
 }
 
 // snapshot returns an immutable copy of clock, reusing the previous copy when
@@ -352,7 +372,8 @@ func (d *RaceDetector) SetDormant(dormant bool) { d.dormant = dormant }
 
 // Reset forgets the access history.
 func (d *RaceDetector) Reset() {
-	clear(d.lastAccess)
+	clear(d.lastWrite)
+	clear(d.lastRead)
 	d.snap = nil
 }
 
