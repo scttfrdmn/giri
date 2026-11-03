@@ -126,3 +126,24 @@ func BenchmarkSliceLoop(b *testing.B) {
 		})
 	}
 }
+
+// TestSessionResetKeepsRaces: the race history reset between calls (#270)
+// must not hide a race inside a call, in the first argument set or any later
+// one.
+func TestSessionResetKeepsRaces(t *testing.T) {
+	res, err := Run(kernelFunc(t, "RacyWrites"), [][]any{{[]int{0}}, {[]int{0}}, {[]int{0}}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	perSet := map[int]int{}
+	for _, v := range res.Violations {
+		if v.Category == "data-race" {
+			perSet[v.Set]++
+		}
+	}
+	for set := 0; set < 3; set++ {
+		if perSet[set] == 0 {
+			t.Errorf("set %d: no data race reported; violations: %v", set, res.Violations)
+		}
+	}
+}

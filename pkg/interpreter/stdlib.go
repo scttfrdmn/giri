@@ -26,7 +26,6 @@ import (
 	"math"
 	"math/bits"
 	"math/cmplx"
-	"math/rand"
 	"net"
 	"net/url"
 	"os"
@@ -1885,10 +1884,7 @@ func (interp *Interpreter) handleOSCall(name string, args []Value) (Value, bool)
 // Uses the interpreter's per-run RNG (seeded from config.RandomSeed) for
 // deterministic, reproducible values without interpreting stdlib internals.
 func (interp *Interpreter) handleMathRandCall(name string, args []Value) (Value, bool) {
-	rng := interp.rng
-	if rng == nil {
-		rng = rand.New(rand.NewSource(0))
-	}
+	rng := interp.random()
 	switch name {
 	case "Intn", "Int31n":
 		if n, ok := stdlibArgInt(args, 0); ok && n > 0 {
@@ -7970,17 +7966,17 @@ func (interp *Interpreter) handleMathRandV2Call(name string, args []Value) (Valu
 
 	// Scalar generators — delegate to interp.rng (seeded from config).
 	case "Int", "Int32", "Int64", "Uint", "Uint32", "Uint64":
-		return Value{Raw: interp.rng.Int63()}, true
+		return Value{Raw: interp.random().Int63()}, true
 	case "Float32":
-		return Value{Raw: interp.rng.Float64()}, true
+		return Value{Raw: interp.random().Float64()}, true
 	case "Float64":
-		return Value{Raw: interp.rng.Float64()}, true
+		return Value{Raw: interp.random().Float64()}, true
 
 	// Bounded generators: Intn / IntN / Int32N / Int64N / UintN / Uint32N / Uint64N / N.
 	case "Intn", "IntN", "Int32N", "Int64N", "UintN", "Uint32N", "Uint64N", "N":
 		if len(args) >= 1 {
 			if n, ok := args[0].Raw.(int64); ok && n > 0 {
-				return Value{Raw: interp.rng.Int63n(n)}, true
+				return Value{Raw: interp.random().Int63n(n)}, true
 			}
 		}
 		return Value{Raw: int64(1)}, true
@@ -7999,7 +7995,7 @@ func (interp *Interpreter) handleMathRandV2Call(name string, args []Value) (Valu
 
 	// *Rand method calls — same returns as package-level functions.
 	case "Rand.Int", "Rand.Int64", "Rand.Uint64", "Rand.Float64", "Rand.Float32":
-		return Value{Raw: interp.rng.Float64()}, true
+		return Value{Raw: interp.random().Float64()}, true
 	}
 	return Value{}, true
 }

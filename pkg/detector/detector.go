@@ -358,6 +358,18 @@ func DefaultRegistry() *Registry {
 	)
 }
 
+// ResetRaces makes the race detector forget its access history. Callers use
+// it at a point where every recorded access happens before everything that
+// follows (a pkg/exec session after a call with no goroutine left), so no
+// recorded access can take part in a later race (#270).
+func (r *Registry) ResetRaces() {
+	for _, d := range r.detectors {
+		if rd, ok := d.(*RaceDetector); ok {
+			clear(rd.lastAccess)
+		}
+	}
+}
+
 // CheckAccess runs all detectors on a memory access.
 // clock is the goroutine's current vector clock; pass nil if not tracking races.
 func (r *Registry) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size int, kind shadow.AccessKind, site string, goroutine int64, clock map[int64]uint64) []error {

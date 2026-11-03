@@ -400,8 +400,8 @@ func (interp *Interpreter) execFunction(gid int64, fn *ssa.Function, args []Valu
 		return Value{} // External function, can't interpret
 	}
 
-	site := interp.posString(fn.Pos())
-	frame := interp.pushFrame(gid, fn.String(), site)
+	name, site := interp.funcIdent(fn)
+	frame := interp.pushFrame(gid, name, site)
 	defer interp.popFrame(gid)
 
 	// Bind parameters
