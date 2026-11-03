@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`exec.Loader`** (#273): `NewLoader().Load(pkgPath, src)` builds SSA for a
+  single-file package from source bytes, type-checking dependencies once per
+  `Loader` instead of on every call. On a 300-function package: 23.7 → 1.35 ms
+  with no imports, 151 → 6.35 ms (175 → 8.5 MB/op) with seven stdlib imports.
+  Loads are serialized and safe alongside in-flight `Run`s; positions are
+  relative to each load's source; returned packages aren't retained.
+  `LoadDir` is unchanged.
+
 ## [0.99.1] - 2026-11-02
 
 ### Fixed

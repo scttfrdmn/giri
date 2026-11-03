@@ -51,6 +51,26 @@ Standard-library calls are served by giri's intercepts, and non-stdlib
 dependencies are not interpreted in v0. Any module path works, including
 dotless ones such as `module gen`.
 
+`NewLoader()` and `(*Loader).Load(pkgPath string, src []byte) (*ssa.Package, error)`
+build the same SSA from a single-file package held in memory, without `go list`
+(#273). They're for callers that load many small packages over a long run:
+dependencies are type-checked once per `Loader` and shared by every load. On a
+300-function package, `Load` takes ~1.4 ms with no imports and ~6.4 ms with
+seven stdlib imports, against ~24 ms and ~150 ms for `LoadDir`.
+
+- **Release:** a `Loader` keeps no reference to the packages it returns.
+  Dropping a package releases its SSA; only the shared dependency types stay.
+- **Positions:** each load gets a fresh `token.FileSet`, so
+  `fn.Prog.Fset.Position(v.Pos()).Line` is relative to that load's source,
+  whatever was loaded before. The file is named `pkgPath + ".go"`.
+- **Determinism:** the same source yields the same functions, and `Run` gives
+  identical Results, on every load.
+- **Concurrency:** `Load` is safe from multiple goroutines (loads are
+  serialized), and while `Run`s on functions from earlier loads are in flight.
+- **Dependencies:** resolved with the `go/build` default context of the
+  toolchain giri runs under. They should be standard-library packages: no cgo,
+  no module dependencies.
+
 ### Running
 
 `Run(fn *ssa.Function, args [][]any, opts Options) (Result, error)` runs `fn`
