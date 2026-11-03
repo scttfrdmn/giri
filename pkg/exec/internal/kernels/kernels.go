@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 func AddInt(a, b int) int { return a + b }
@@ -393,4 +394,20 @@ func FibPair(n int) (uint64, uint64) {
 		a, b = b, a+b
 	}
 	return a, b
+}
+
+// RacyWrites has two sibling goroutines write xs[0] with no synchronization
+// between them: a data race in every call (#270).
+func RacyWrites(xs []int) int {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go writeFirst(xs, 1, &wg)
+	go writeFirst(xs, 2, &wg)
+	wg.Wait()
+	return len(xs)
+}
+
+func writeFirst(xs []int, v int, wg *sync.WaitGroup) {
+	xs[0] = v
+	wg.Done()
 }

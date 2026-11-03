@@ -672,7 +672,6 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 		encoded:          make(map[shadow.AllocID]bool),
 		config:           config,
 		sizes:            types.SizesFor("gc", runtime.GOARCH),
-		rng:              rand.New(rand.NewSource(config.RandomSeed)),
 	}
 
 	// Build detector registry from config flags
@@ -742,7 +741,6 @@ func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Inter
 		config:           config,
 		sizes:            types.SizesFor("gc", runtime.GOARCH),
 		arena:            a,
-		rng:              rand.New(rand.NewSource(config.RandomSeed)),
 	}
 
 	var dets []detector.Detector
@@ -1986,6 +1984,17 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 }
 
 // --- Helpers ---
+
+// random returns the math/rand generator, seeded from Config.RandomSeed on
+// first use. Seeding a rand.Source costs microseconds, which dominated setup
+// for small pkg/exec Runs that never call math/rand (#270). The sequence of
+// values is the same as seeding up front.
+func (interp *Interpreter) random() *rand.Rand {
+	if interp.rng == nil {
+		interp.rng = rand.New(rand.NewSource(interp.config.RandomSeed))
+	}
+	return interp.rng
+}
 
 // typeSizeOf returns the size in bytes of t for the target platform.
 func (interp *Interpreter) typeSizeOf(t types.Type) int {

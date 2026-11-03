@@ -109,8 +109,9 @@ type callState struct {
 	cacheHits    uint64
 	pureExecuted uint64
 	sites        map[token.Pos]string
-	nextAlloc    uint64           // SkipDetectors allocation IDs
-	hb           map[int64]uint64 // clocks of finished calls (happens-before)
+	idents       map[*ssa.Function][2]string // funcIdent memo
+	nextAlloc    uint64                      // SkipDetectors allocation IDs
+	hb           map[int64]uint64            // clocks of finished calls (happens-before)
 	single       bool
 }
 
@@ -168,6 +169,7 @@ func NewSession(fn *ssa.Function, opts SessionOptions) (*Session, error) {
 		cache:  opts.Cache,
 		tracer: opts.Tracer,
 		sites:  make(map[token.Pos]string),
+		idents: make(map[*ssa.Function][2]string),
 		hb:     make(map[int64]uint64),
 		single: opts.SingleGoroutine,
 	}
@@ -222,7 +224,8 @@ func (s *Session) call(fn *ssa.Function, args []Value, budget uint64) CallOutcom
 	}
 
 	out := CallOutcome{}
-	gid, err := interp.spawnGoroutine(fn.String(), "entry")
+	fname, _ := interp.funcIdent(fn)
+	gid, err := interp.spawnGoroutine(fname, "entry")
 	if err != nil {
 		out.Panicked = true
 		out.Violations = []error{err}
@@ -243,6 +246,18 @@ func (s *Session) call(fn *ssa.Function, args []Value, budget uint64) CallOutcom
 	delete(interp.goroutines, gid)
 	if !cs.single {
 		interp.drainSessionQueue()
+	}
+	// With no goroutine left, everything this session has done happens
+	// before the next call. The finished-call clocks and the race detector's
+	// access history can then be dropped: nothing recorded can race with
+	// anything later. Without this, every call merged the clocks of all
+	// earlier calls and the race detector snapshotted that growing clock on
+	// every access, quadratic in the number of argument sets (#270).
+	if len(interp.goroutines) == 0 {
+		clear(cs.hb)
+		if interp.registry != nil {
+			interp.registry.ResetRaces()
+		}
 	}
 
 	out.Exhausted = cs.exhausted
@@ -708,4 +723,20 @@ func (interp *Interpreter) derive(base *shadow.Pointer, delta int) *shadow.Point
 		return &shadow.Pointer{Alloc: base.Alloc, Offset: base.Offset + delta}
 	}
 	return interp.Memory.DerivePointer(base, delta)
+}
+
+// funcIdent returns fn's name and the "file:line" of its declaration, as
+// execFunction records them on each frame. Sessions memoize both: fn.String()
+// and posString format with fmt on every call (#270). The CLI computes them
+// directly.
+func (interp *Interpreter) funcIdent(fn *ssa.Function) (name, site string) {
+	if interp.cs == nil {
+		return fn.String(), interp.posString(fn.Pos())
+	}
+	if id, ok := interp.cs.idents[fn]; ok {
+		return id[0], id[1]
+	}
+	name, site = fn.String(), interp.posString(fn.Pos())
+	interp.cs.idents[fn] = [2]string{name, site}
+	return name, site
 }
