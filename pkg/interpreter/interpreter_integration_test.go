@@ -2089,6 +2089,20 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	{
+		name:           "rwmutex overlapping readers",
+		dir:            "rwmutex_readers",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
+	{
+		name:           "crypto callback goroutine",
+		dir:            "crypto_callback_gid",
+		wantViolations: 1,
+		wantCategory:   "out-of-bounds",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {

@@ -284,22 +284,9 @@ func (s *Session) call(fn *ssa.Function, args []Value, budget uint64) CallOutcom
 // scheduler (mirrors the drain loop in Run), then forgets them.
 func (interp *Interpreter) drainSessionQueue() {
 	for len(interp.runQueue) > 0 {
-		runnable := make([]int64, len(interp.runQueue))
-		for i, t := range interp.runQueue {
-			runnable[i] = t.gid
-		}
-		next := interp.sched.Next(runnable)
-		for i, t := range interp.runQueue {
-			if t.gid != next {
-				continue
-			}
-			last := len(interp.runQueue) - 1
-			interp.runQueue[i] = interp.runQueue[last]
-			interp.runQueue = interp.runQueue[:last]
-			interp.execFunction(t.gid, t.fn, t.args)
-			interp.sched.OnFinish(t.gid)
-			break
-		}
+		t := interp.takeNextTask()
+		interp.execFunction(t.gid, t.fn, t.args)
+		interp.sched.OnFinish(t.gid)
 	}
 	for id, g := range interp.goroutines {
 		if g.Status != GoroutineBlocked {

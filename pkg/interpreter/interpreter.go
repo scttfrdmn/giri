@@ -305,6 +305,21 @@ func snapshotClock(g *Goroutine) map[int64]uint64 {
 	return snap
 }
 
+// joinClock merges g's vector clock into dst (element-wise max), allocating
+// dst if it is nil, and returns it. It accumulates release clocks that a later
+// acquire must merge all of, such as every WaitGroup.Done.
+func joinClock(dst map[int64]uint64, g *Goroutine) map[int64]uint64 {
+	if dst == nil {
+		return snapshotClock(g)
+	}
+	for id, t := range g.VClock.Clocks {
+		if t > dst[id] {
+			dst[id] = t
+		}
+	}
+	return dst
+}
+
 // mergeClock merges the saved clock src into g's vector clock (element-wise max).
 // Used when a goroutine re-acquires a lock or returns from WaitGroup Wait to
 // establish happens-before with the last releaser/donator.
@@ -352,12 +367,21 @@ type closeableState struct {
 	firstSite string // where Close() was first called (for the report)
 }
 
-// mutexState tracks synchronization state for sync.Mutex and sync.WaitGroup (#33).
+// mutexState tracks synchronization state for one sync primitive: a Mutex,
+// RWMutex, WaitGroup or Cond (#33).
 type mutexState struct {
-	locked          bool
-	lockGoroutine   int64
-	lastUnlockClock map[int64]uint64 // clock snapshot at last Unlock/Done
-	wgCounter       int              // WaitGroup counter; negative → violation (#57)
+	locked        bool // write lock held (Mutex, RWMutex)
+	lockGoroutine int64
+	readers       int // RWMutex read locks held
+
+	// lastUnlockClock is the release clock that later acquires merge: the
+	// last Unlock (Mutex, RWMutex writer), the join of every Done (WaitGroup)
+	// or the last Signal/Broadcast (Cond).
+	lastUnlockClock map[int64]uint64
+	// rUnlockClock is the join of every RWMutex RUnlock. A writer's Lock
+	// merges it; readers don't synchronize with each other.
+	rUnlockClock map[int64]uint64
+	wgCounter    int // WaitGroup counter; negative → violation (#57)
 }
 
 // goroutineTask holds a pending goroutine execution queued by ssa.Go.
@@ -1097,7 +1121,7 @@ func (interp *Interpreter) executeDeferred(gid int64, d DeferredCall) {
 
 	// sync package: Unlock, Done, etc. — modeled as vector-clock updates.
 	if d.PkgPath == "sync" && d.FuncName != "" {
-		interp.handleSyncCall(gid, d.FuncName, d.Args, d.Site)
+		interp.handleSyncCall(gid, d.Callee, d.Args, d.Site)
 		return
 	}
 
@@ -1821,40 +1845,93 @@ func (interp *Interpreter) callCancelFunc(id cancelFuncID) {
 	delete(interp.cancelFuncs, id)
 }
 
-// handleSyncCall intercepts sync.Mutex and sync.WaitGroup method calls (#33).
-// These runtime types use futexes that can't be interpreted; we model their
-// clock semantics directly.
-func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, site string) Value {
+// syncRecv returns the name of fn's receiver type ("Mutex", "WaitGroup", …),
+// or "" for a package-level function.
+func syncRecv(fn *ssa.Function) string {
+	if fn == nil {
+		return ""
+	}
+	recv := fn.Signature.Recv()
+	if recv == nil {
+		return ""
+	}
+	t := recv.Type()
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	if n, ok := t.(*types.Named); ok {
+		return n.Obj().Name()
+	}
+	return ""
+}
+
+// callFuncArg runs a function value passed to an intercept (a Once.Do body,
+// a sync.Map.Range callback, …) on goroutine gid.
+func (interp *Interpreter) callFuncArg(gid int64, f Value, args []Value) {
+	switch fn := f.Raw.(type) {
+	case *ssa.Function:
+		if fn.Blocks != nil {
+			interp.execFunction(gid, fn, args)
+		}
+	case *ClosureValue:
+		interp.execFunction(gid, fn.Fn, append(args, fn.FreeVars...))
+	}
+}
+
+// handleSyncCall intercepts calls into package sync (#33). The runtime types
+// use futexes that can't be interpreted; we model their happens-before
+// semantics with vector clocks. Methods dispatch on the receiver type, since
+// names such as Lock and Wait mean different things on different types.
+func (interp *Interpreter) handleSyncCall(gid int64, callee *ssa.Function, args []Value, site string) Value {
 	g := interp.goroutine(gid)
-	if g == nil {
+	if g == nil || callee == nil {
+		return Value{}
+	}
+	recv, name := syncRecv(callee), callee.Name()
+
+	if recv == "" {
+		switch name {
+		case "OnceFunc", "OnceValue", "OnceValues":
+			// sync.OnceFunc(f func()) func() (Go 1.21+), OnceValue[T] and
+			// OnceValues[T1,T2] (v0.88.0). Probe f once to surface violations
+			// inside the callback; return an opaque callable.
+			if len(args) >= 1 {
+				interp.callFuncArg(gid, args[0], nil)
+			}
+			return Value{Raw: struct{}{}}
+		case "NewCond":
+			return Value{Raw: struct{}{}}
+		}
 		return Value{}
 	}
 
-	// v0.88.0: Package-level functions (no sync primitive receiver) — handle before key extraction.
-	switch name {
-	case "OnceFunc", "OnceValue", "OnceValues":
-		// sync.OnceFunc(f func()) func() (Go 1.21+): returns a function that calls f at most once.
-		// sync.OnceValue[T](f func() T) func() T (Go 1.21+).
-		// sync.OnceValues[T1,T2](f func() (T1, T2)) func() (T1, T2) (Go 1.22+).
-		// Probe f once to surface violations inside the callback; return opaque callable.
-		if len(args) >= 1 {
-			switch fn := args[0].Raw.(type) {
-			case *ssa.Function:
-				if fn.Blocks != nil {
-					interp.execFunction(gid, fn, nil)
-				}
-			case *ClosureValue:
-				interp.execFunction(gid, fn.Fn, fn.FreeVars)
+	switch recv {
+	case "Map":
+		switch name {
+		case "Load", "LoadOrStore", "LoadAndDelete":
+			// sync.Map read methods (#46): return (Value{}, false).
+			return Value{Raw: []Value{{}, {Raw: false}}}
+		case "Range":
+			// sync.Map.Range (#46, #92): probe the callback once with
+			// (opaque, opaque) to surface violations inside its body.
+			if len(args) >= 2 {
+				sentinel := Value{Raw: struct{}{}}
+				interp.callFuncArg(gid, args[1], []Value{sentinel, sentinel})
 			}
 		}
-		return Value{Raw: struct{}{}}
+		// Store, Delete, Swap, CompareAndSwap, …: no-ops. Intercepting them
+		// prevents false races on the map's internals.
+		return Value{}
+	case "Pool":
+		// sync.Pool (#92): Get returns nil (pool empty) so callers take the
+		// allocate-new branch; Put is a no-op.
+		return Value{}
 	}
 
 	if len(args) == 0 {
 		return Value{}
 	}
-
-	// Extract the AllocID of the sync primitive's backing memory as the map key.
+	// The AllocID of the primitive's backing memory identifies it.
 	var key shadow.AllocID
 	if ptr, ok := args[0].Raw.(*shadow.Pointer); ok {
 		key = ptr.Alloc
@@ -1864,153 +1941,139 @@ func (interp *Interpreter) handleSyncCall(gid int64, name string, args []Value, 
 		return Value{} // can't track without shadow provenance
 	}
 
-	if _, exists := interp.mutexes[key]; !exists {
-		interp.mutexes[key] = &mutexState{}
+	if recv == "Once" {
+		// sync.Once.Do(f) (#61): call f exactly once per Once instance.
+		if name == "Do" && !interp.onceState[key] {
+			interp.onceState[key] = true
+			if len(args) >= 2 {
+				interp.callFuncArg(gid, args[1], nil)
+			}
+		}
+		return Value{}
 	}
-	ms := interp.mutexes[key]
 
-	switch name {
-	case "Lock", "RLock":
-		// Merge the last-unlock clock into the current goroutine's clock.
-		// This establishes that everything before the matching Unlock HB this Lock.
+	ms := interp.mutexes[key]
+	if ms == nil {
+		ms = &mutexState{}
+		interp.mutexes[key] = ms
+	}
+
+	switch recv {
+	case "Mutex", "RWMutex":
+		return interp.syncMutex(gid, g, ms, recv, name, site)
+	case "WaitGroup":
+		interp.syncWaitGroup(gid, g, ms, name, args, site)
+	case "Cond":
+		switch name {
+		case "Signal", "Broadcast":
+			// Tick and snapshot, as Mutex.Unlock does.
+			g.VClock.Tick(gid)
+			ms.lastUnlockClock = snapshotClock(g)
+		case "Wait":
+			// Merge the last Signal/Broadcast clock.
+			if ms.lastUnlockClock != nil {
+				mergeClock(g, ms.lastUnlockClock)
+			}
+		}
+	}
+	return Value{}
+}
+
+// syncMutex models sync.Mutex and sync.RWMutex. A write Lock merges the last
+// Unlock and every RUnlock; an RLock merges only the last Unlock.
+func (interp *Interpreter) syncMutex(gid int64, g *Goroutine, ms *mutexState, recv, name, site string) Value {
+	acquire := func() {
 		if ms.lastUnlockClock != nil {
 			mergeClock(g, ms.lastUnlockClock)
 		}
+		if ms.rUnlockClock != nil {
+			mergeClock(g, ms.rUnlockClock)
+		}
 		ms.locked = true
 		ms.lockGoroutine = gid
-
-	case "Unlock", "RUnlock":
-		// Unlock of unlocked mutex panics at runtime: "sync: unlock of unlocked mutex" (#127).
-		if !ms.locked {
-			interp.recordViolation(gid, &shadow.MutexUnlockError{Op: name, Site: site, GID: gid})
-			if g != nil {
-				g.Panicked = true
-			}
-			return Value{}
+	}
+	rAcquire := func() {
+		if ms.lastUnlockClock != nil {
+			mergeClock(g, ms.lastUnlockClock)
 		}
-		// Tick the goroutine's clock, then snapshot it into the mutex state.
-		// This establishes that this Unlock HB any subsequent Lock.
+		ms.readers++
+	}
+	unlockOfUnlocked := func() Value {
+		// Unlock of an unlocked mutex is a fatal error at runtime (#127).
+		interp.recordViolation(gid, &shadow.MutexUnlockError{Op: name, Site: site, GID: gid})
+		g.Panicked = true
+		return Value{}
+	}
+
+	switch name {
+	case "Lock":
+		acquire()
+	case "TryLock":
+		// Pessimistic: assume the lock is acquired.
+		acquire()
+		return Value{Raw: true}
+	case "Unlock":
+		if !ms.locked {
+			return unlockOfUnlocked()
+		}
+		// Tick, then snapshot: this Unlock happens before any later Lock.
 		g.VClock.Tick(gid)
 		ms.locked = false
 		ms.lastUnlockClock = snapshotClock(g)
-
-	case "Done":
-		// WaitGroup.Done(): equivalent to Add(-1). Tick clock and snapshot it,
-		// then decrement the counter and check for negative (#57).
+	case "RLock":
+		if recv == "RWMutex" {
+			rAcquire()
+		}
+	case "TryRLock":
+		if recv == "RWMutex" {
+			rAcquire()
+			return Value{Raw: true}
+		}
+	case "RUnlock":
+		if recv != "RWMutex" {
+			break
+		}
+		if ms.readers == 0 {
+			return unlockOfUnlocked()
+		}
+		ms.readers--
 		g.VClock.Tick(gid)
-		ms.lastUnlockClock = snapshotClock(g)
-		ms.wgCounter--
+		ms.rUnlockClock = joinClock(ms.rUnlockClock, g)
+	}
+	return Value{}
+}
+
+// syncWaitGroup models sync.WaitGroup. Every Done (or negative Add) is a
+// release, and Wait merges the join of them all: each Done happens before
+// Wait returns.
+func (interp *Interpreter) syncWaitGroup(gid int64, g *Goroutine, ms *mutexState, name string, args []Value, site string) {
+	add := func(delta int) {
+		if delta < 0 {
+			g.VClock.Tick(gid)
+			ms.lastUnlockClock = joinClock(ms.lastUnlockClock, g)
+		}
+		ms.wgCounter += delta
 		if ms.wgCounter < 0 {
+			// A negative counter panics at runtime (#57).
 			interp.recordViolation(gid, &shadow.WaitGroupNegativeError{
 				Site:    site,
 				GID:     gid,
 				Counter: ms.wgCounter,
 			})
 		}
-
+	}
+	switch name {
+	case "Done":
+		add(-1)
+	case "Add":
+		if len(args) >= 2 {
+			add(int(toInt64(args[1])))
+		}
 	case "Wait":
-		// WaitGroup.Wait() and sync.Cond.Wait(): merge the last
-		// Done/Signal/Broadcast clock (mirrors Lock semantics).
 		if ms.lastUnlockClock != nil {
 			mergeClock(g, ms.lastUnlockClock)
 		}
-
-	case "Add":
-		// WaitGroup.Add(delta): update the counter; negative → violation (#57).
-		if len(args) >= 2 {
-			delta := int(toInt64(args[1]))
-			ms.wgCounter += delta
-			if ms.wgCounter < 0 {
-				interp.recordViolation(gid, &shadow.WaitGroupNegativeError{
-					Site:    site,
-					GID:     gid,
-					Counter: ms.wgCounter,
-				})
-			}
-		}
-
-	case "Do":
-		// sync.Once.Do(f func()) (#61): call f exactly once per Once instance.
-		// The AllocID of the *sync.Once serves as the instance key.
-		// Subsequent Do calls for the same Once are silently ignored.
-		if !interp.onceState[key] {
-			interp.onceState[key] = true
-			if len(args) >= 2 {
-				switch fn := args[1].Raw.(type) {
-				case *ssa.Function:
-					if fn.Blocks != nil {
-						interp.execFunction(gid, fn, nil)
-					}
-				case *ClosureValue:
-					interp.execFunction(gid, fn.Fn, fn.FreeVars)
-				}
-			}
-		}
-
-	case "Store", "Delete", "Swap", "CompareAndSwap", "CompareAndDelete":
-		// sync.Map write methods (#46): modeled as noop — the map is already
-		// tracked separately; intercepting here prevents false-positive races.
-
-	case "Load", "LoadOrStore", "LoadAndDelete":
-		// sync.Map read methods (#46): return (Value{}, false) tuple.
-		return Value{Raw: []Value{{}, {Raw: false}}}
-
-	case "Range":
-		// sync.Map.Range (#46, #92): probe the callback once with sentinel
-		// (opaque, opaque) args to surface violations inside the callback body.
-		if len(args) >= 2 {
-			sentinel := Value{Raw: struct{}{}}
-			switch fn := args[1].Raw.(type) {
-			case *ssa.Function:
-				if fn.Blocks != nil {
-					interp.execFunction(gid, fn, []Value{sentinel, sentinel})
-				}
-			case *ClosureValue:
-				callArgs := append([]Value{sentinel, sentinel}, fn.FreeVars...)
-				interp.execFunction(gid, fn.Fn, callArgs)
-			}
-		}
-
-	// sync.Pool methods (#92): Get returns nil (pool empty) so callers take
-	// the "allocate new" branch; Put is a noop.
-	case "Get":
-		return Value{} // nil interface → callers fall through to allocation
-
-	case "Put":
-		// noop
-
-	// sync.RWMutex extras (#92)
-	case "TryLock":
-		// Pessimistic: assume lock is acquired.
-		ms.locked = true
-		ms.lockGoroutine = gid
-		return Value{Raw: true}
-
-	case "TryRLock":
-		// Pessimistic: assume read lock is acquired (mirrors TryLock).
-		ms.locked = true
-		ms.lockGoroutine = gid
-		return Value{Raw: true}
-
-	// sync.Cond methods (#92): model signal/wait using the mutex clock.
-	case "NewCond":
-		return Value{Raw: struct{}{}}
-
-	case "Signal":
-		// Cond.Signal: tick clock and snapshot (mirrors Mutex.Unlock).
-		g.VClock.Tick(gid)
-		ms.lastUnlockClock = snapshotClock(g)
-
-	case "Broadcast":
-		// Cond.Broadcast: same as Signal in our single-goroutine model.
-		g.VClock.Tick(gid)
-		ms.lastUnlockClock = snapshotClock(g)
-
-		// Note: Cond.Wait shares the "Wait" case above with WaitGroup.Wait —
-		// both merge the last clock snapshot, which is the correct HB semantics.
 	}
-
-	return Value{}
 }
 
 // --- Helpers ---

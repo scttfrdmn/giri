@@ -549,7 +549,7 @@ func (interp *Interpreter) dispatchStdlibCallInner(gid int64, site, pkgPath, nam
 		return interp.handleCookiejarCall(name, args)
 	// v0.58.0 additions (#173-176).
 	case "crypto/subtle":
-		return interp.handleCryptoSubtleCall(name, args)
+		return interp.handleCryptoSubtleCall(gid, name, args)
 	case "hash/maphash":
 		return interp.handleMapHashCall(name, args)
 	case "regexp/syntax":
@@ -633,7 +633,7 @@ func (interp *Interpreter) dispatchStdlibCallInner(gid int64, site, pkgPath, nam
 	case "crypto/mlkem":
 		return interp.handleCryptoMLKEMCall(name, args)
 	case "crypto/fips140":
-		return interp.handleCryptoFIPS140Call(name, args)
+		return interp.handleCryptoFIPS140Call(gid, name, args)
 	case "database/sql/driver":
 		return interp.handleSQLDriverCall(name, args)
 	case "crypto/x509/pkix":
@@ -649,7 +649,7 @@ func (interp *Interpreter) dispatchStdlibCallInner(gid int64, site, pkgPath, nam
 	case "testing/slogtest":
 		return interp.handleSlogTestCall(name, args)
 	case "testing/synctest":
-		return interp.handleSyncTestCall(name, args)
+		return interp.handleSyncTestCall(gid, name, args)
 	case "golang.org/x/sys/unix":
 		return interp.handleSysUnixCall(name, args)
 	case "golang.org/x/net/html":
@@ -9443,7 +9443,7 @@ func (interp *Interpreter) handleCookiejarCall(name string, args []Value) (Value
 // ── v0.58.0 new handlers (#173-176) ──────────────────────────────────────────
 
 // handleCryptoSubtleCall models crypto/subtle.* functions (#173).
-func (interp *Interpreter) handleCryptoSubtleCall(name string, args []Value) (Value, bool) {
+func (interp *Interpreter) handleCryptoSubtleCall(gid int64, name string, args []Value) (Value, bool) {
 	switch name {
 	case "ConstantTimeCompare":
 		// ([]byte, []byte) → int (1 if equal, 0 otherwise).
@@ -9473,10 +9473,10 @@ func (interp *Interpreter) handleCryptoSubtleCall(name string, args []Value) (Va
 			switch fn := args[0].Raw.(type) {
 			case *ssa.Function:
 				if fn.Blocks != nil {
-					interp.execFunction(0, fn, nil)
+					interp.execFunction(gid, fn, nil)
 				}
 			case *ClosureValue:
-				interp.execFunction(0, fn.Fn, append([]Value{}, fn.FreeVars...))
+				interp.execFunction(gid, fn.Fn, append([]Value{}, fn.FreeVars...))
 			}
 		}
 		return Value{}, true
@@ -10612,7 +10612,7 @@ func (interp *Interpreter) handleCryptoMLKEMCall(name string, args []Value) (Val
 }
 
 // handleCryptoFIPS140Call models crypto/fips140.* functions (#182).
-func (interp *Interpreter) handleCryptoFIPS140Call(name string, args []Value) (Value, bool) {
+func (interp *Interpreter) handleCryptoFIPS140Call(gid int64, name string, args []Value) (Value, bool) {
 	switch name {
 	case "Enabled":
 		return Value{Raw: false}, true
@@ -10626,10 +10626,10 @@ func (interp *Interpreter) handleCryptoFIPS140Call(name string, args []Value) (V
 			switch fn := args[0].Raw.(type) {
 			case *ssa.Function:
 				if fn.Blocks != nil {
-					interp.execFunction(0, fn, nil)
+					interp.execFunction(gid, fn, nil)
 				}
 			case *ClosureValue:
-				interp.execFunction(0, fn.Fn, append([]Value{}, fn.FreeVars...))
+				interp.execFunction(gid, fn.Fn, append([]Value{}, fn.FreeVars...))
 			}
 		}
 		return Value{}, true
@@ -10720,7 +10720,7 @@ func (interp *Interpreter) handleSlogTestCall(name string, args []Value) (Value,
 }
 
 // handleSyncTestCall models testing/synctest.* functions (#184).
-func (interp *Interpreter) handleSyncTestCall(name string, args []Value) (Value, bool) {
+func (interp *Interpreter) handleSyncTestCall(gid int64, name string, args []Value) (Value, bool) {
 	switch name {
 	case "Test":
 		// Test(t *testing.T, f func(*testing.T)) — probe f with opaque t.
@@ -10729,11 +10729,11 @@ func (interp *Interpreter) handleSyncTestCall(name string, args []Value) (Value,
 			switch fn := args[1].Raw.(type) {
 			case *ssa.Function:
 				if fn.Blocks != nil {
-					interp.execFunction(0, fn, []Value{opaque})
+					interp.execFunction(gid, fn, []Value{opaque})
 				}
 			case *ClosureValue:
 				all := append([]Value{opaque}, fn.FreeVars...)
-				interp.execFunction(0, fn.Fn, all)
+				interp.execFunction(gid, fn.Fn, all)
 			}
 		}
 		return Value{}, true
