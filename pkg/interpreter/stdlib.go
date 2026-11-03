@@ -8317,8 +8317,8 @@ func (interp *Interpreter) handleErrgroupCall(gid int64, name string, args []Val
 				eg.wgCounter++
 				t.onExit = func(cg int64) {
 					c := interp.goroutine(cg)
-					c.VClock.Tick(cg)
 					eg.lastUnlockClock = joinClock(eg.lastUnlockClock, c)
+					c.VClock.Tick(cg)
 					eg.wgCounter--
 				}
 				interp.startGoroutine(gid, t, "errgroup.Group.Go", site)

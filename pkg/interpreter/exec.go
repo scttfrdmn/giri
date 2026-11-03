@@ -345,14 +345,16 @@ func (interp *Interpreter) startGoroutine(gid int64, t goroutineTask, funcName, 
 	child.SpawnSite = site // for goroutine leak reports
 
 	// The go statement is synchronized before the goroutine's start (#29):
-	// the parent ticks, then the child inherits the parent's clock.
+	// the child inherits the parent's clock, then the parent ticks, so the
+	// parent's accesses after the go statement aren't ordered before the
+	// child's (#286).
 	if parent := interp.goroutine(gid); parent != nil {
-		parent.VClock.Tick(gid)
 		for k, v := range parent.VClock.Clocks {
 			if v > child.VClock.Clocks[k] {
 				child.VClock.Clocks[k] = v
 			}
 		}
+		parent.VClock.Tick(gid)
 	}
 
 	interp.sched.OnSpawn(gid, newGID)

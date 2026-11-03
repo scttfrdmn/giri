@@ -150,8 +150,10 @@ func (ch *chanEntry) canSend(self *selectWait) bool {
 	return hasLive(ch.recvq, self)
 }
 
-// releaseClock ticks goroutine gid's clock and snapshots it, when races are
-// tracked: the clock a release (send, close) publishes.
+// releaseClock snapshots goroutine gid's clock, then ticks it, when races
+// are tracked: the clock a release (send, close) publishes. Ticking after
+// the snapshot keeps the releaser's later accesses out of what an acquirer
+// merges (#286).
 func (interp *Interpreter) releaseClock(gid int64) map[int64]uint64 {
 	if !interp.config.TrackRaces {
 		return nil
@@ -160,8 +162,9 @@ func (interp *Interpreter) releaseClock(gid int64) map[int64]uint64 {
 	if g == nil {
 		return nil
 	}
+	snap := snapshotClock(g)
 	g.VClock.Tick(gid)
-	return snapshotClock(g)
+	return snap
 }
 
 // acquire merges clock into goroutine gid's clock.
@@ -315,8 +318,8 @@ func (interp *Interpreter) recvReady(gid int64, ch *chanEntry, elem types.Type) 
 		it := ch.buf[0]
 		ch.buf = ch.buf[1:]
 		interp.acquire(gid, it.clock)
-		interp.tick(gid)
 		if ch.capacity > 0 && interp.config.TrackRaces {
+			// Publish this receive for the (k+C)-th send, then tick.
 			if g := interp.goroutine(gid); g != nil {
 				snap := make([]clockEntry, 0, len(g.VClock.Clocks))
 				for k, t := range g.VClock.Clocks {
@@ -325,6 +328,7 @@ func (interp *Interpreter) recvReady(gid int64, ch *chanEntry, elem types.Type) 
 				ch.recvClocks = append(ch.recvClocks, snap)
 			}
 		}
+		interp.tick(gid)
 		return it.val, true, true
 	case ch.capacity == 0 && !ch.closed:
 		if s := popLive(&ch.sendq, nil); s != nil {
