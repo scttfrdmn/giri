@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.101.0] - 2026-11-02
+
+Blocking semantics for interpreted goroutines (milestone v0.101.0: #293, #294, #295, #296; closes #286).
+
 ### Changed
 - **Goroutines block and resume** (#294). A goroutine that receives from an
   empty channel, ranges over one, sends on a full buffered channel, waits in
@@ -20,8 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   abandoned goroutines no longer run their deferred calls.
   `errgroup.Group.Go` starts a real goroutine. In `pkg/exec`, every goroutine
   a call starts finishes or is abandoned before the call returns, and a
-  deadlocked call ends `Panicked` with a `deadlock` violation. Unbuffered
-  sends, `Mutex.Lock` and `Cond.Wait` don't block yet (#295, #290).
+  deadlocked call ends `Panicked` with a `deadlock` violation. `Mutex.Lock`
+  and `Cond.Wait` don't block yet (#290).
 - **Channels carry values** (#295). `v := <-ch`, `range ch` and `select`
   receive the value that was sent, and a closed channel yields the element
   type's zero value with `ok` false; before, every receive yielded nothing.
@@ -60,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `race_after_send` and `race_grandchild`. This needed blocking semantics
   first: with code after `wg.Wait()` never run, the correct clocks gave
   false positives.
+
+### Tests
+- 5 new integration tests (`rwmutex_readers`, `crypto_callback_gid`, `race_spawn_parent`, `race_after_send`, `race_grandchild`): 282 integration + 14 showcase = 296 total.
+- 21 scheduler programs in `pkg/interpreter/testdata/gosched`, asserted under round-robin, random and PCT (`TestGosched`).
 
 ## [0.100.0] - 2026-11-02
 
