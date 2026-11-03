@@ -282,6 +282,8 @@ func (d *RaceDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size
 	if d.dormant {
 		return nil
 	}
+	// One snapshot serves every byte of this access.
+	snap := d.snapshot(goroutine, clock)
 	// For each byte accessed, check against last access
 	for i := 0; i < size; i++ {
 		key := accessKey{allocID: ptr.Alloc, offset: ptr.Offset + i}
@@ -314,7 +316,7 @@ func (d *RaceDetector) CheckAccess(mem *shadow.Memory, ptr *shadow.Pointer, size
 			kind:      kind,
 			goroutine: goroutine,
 			site:      site,
-			clock:     d.snapshot(goroutine, clock),
+			clock:     snap,
 		}
 	}
 

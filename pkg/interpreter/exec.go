@@ -1328,10 +1328,6 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			break // Can't resolve the goroutine function
 		}
 		funcName := interp.callTargetName(inst.Call)
-		// From here on more than one goroutine exists, so accesses can race.
-		if interp.registry != nil {
-			interp.registry.SetRaceDormant(false)
-		}
 		newGID, err := interp.spawnGoroutine(funcName, site)
 		if err != nil {
 			interp.recordViolation(gid, err)

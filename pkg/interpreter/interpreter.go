@@ -883,6 +883,13 @@ func (interp *Interpreter) spawnGoroutine(funcName, site string) (int64, error) 
 		return 0, fmt.Errorf("goroutine limit reached (%d)", interp.config.MaxGoroutines)
 	}
 
+	// A second goroutine is about to exist, so from here on accesses can
+	// race: wake the race detector (#272). Doing it here, not at each call
+	// site, means no way of starting a goroutine can forget to.
+	if len(interp.goroutines) > 0 && interp.registry != nil {
+		interp.registry.SetRaceDormant(false)
+	}
+
 	// Arena-allocate the initial frame and goroutine struct. These are
 	// hot allocations: every goroutine spawn (ssa.Go) and every interpreter
 	// start goes through here.

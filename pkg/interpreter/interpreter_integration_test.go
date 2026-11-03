@@ -2082,6 +2082,13 @@ var integrationTests = []struct {
 		wantCategory:   "",
 		config:         interpreter.DefaultConfig(),
 	},
+	{
+		name:           "race dormant array prespawn",
+		dir:            "race_dormant_array_prespawn",
+		wantViolations: 0,
+		wantCategory:   "",
+		config:         interpreter.DefaultConfig(),
+	},
 }
 
 var showcaseTests = []struct {
