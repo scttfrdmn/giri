@@ -37,6 +37,14 @@ var goschedTests = []struct {
 	{"leak_no_defers", []string{"goroutine-leak"}},
 	{"oncefunc_probe", nil},
 	{"wg_deadlock", []string{"deadlock"}},
+	// Channels with values and their happens-before edges (#295).
+	{"chan_values", []string{"out-of-bounds"}},
+	{"recv_before_send", []string{"out-of-bounds"}},
+	{"buffered_semaphore", []string{"out-of-bounds"}},
+	{"select_pair", []string{"out-of-bounds"}},
+	{"close_zero", []string{"out-of-bounds"}},
+	{"send_closed_wakes", []string{"other"}}, // send on closed channel
+	{"unbuffered_deadlock", []string{"deadlock"}},
 }
 
 func runGosched(t *testing.T, dir string, cfg interpreter.Config) []string {

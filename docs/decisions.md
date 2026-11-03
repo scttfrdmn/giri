@@ -322,11 +322,22 @@ never resume. After `os.Exit`, `log.Fatal` or the step limit nothing more
 runs and nothing is reported as a leak.
 
 **What blocks.** Receiving from an empty or nil channel, `range` over a
-channel, sending on a full buffered channel or a nil one, a `select` with no
-ready case and no default, `sync.WaitGroup.Wait` and `errgroup.Group.Wait`.
-Unbuffered sends, `Mutex.Lock` and `Cond.Wait` don't block yet: channels
-carry no values until #295, and #290 covers the locks. A wait giri can't
-identify (a WaitGroup with no shadow provenance) doesn't block, as before.
+channel, sending on a full buffered channel, on an unbuffered channel with no
+receiver waiting, or on a nil one, a `select` with no ready case and no
+default, `sync.WaitGroup.Wait` and `errgroup.Group.Wait`. `Mutex.Lock` and
+`Cond.Wait` don't block yet (#290). A wait giri can't identify (a WaitGroup
+with no shadow provenance) doesn't block, as before.
+
+**Channels carry values (#295)**, following the runtime's `chan.go`: a
+buffered channel is a FIFO; an unbuffered one is a rendezvous, with waiting
+senders and receivers queued. A waiting `select` offers each of its cases on
+unbuffered channels; the first counterpart to take one completes it and
+withdraws the others, so two selects on opposite ends of a channel meet. A
+ready `select` takes the first ready case in source order, not a random one
+(#292). A receive from a closed, empty channel yields the element type's
+zero value with `ok` false. `time.After`, `time.Tick` and channels passed to
+`signal.Notify` still always hold a value that receiving never consumes, as
+before; real timers wait for virtual time (#291).
 
 **Probes don't park.** `sync.OnceFunc`/`OnceValue`/`OnceValues` run their
 function when they're called, to check it; natively it runs later, perhaps
@@ -336,7 +347,12 @@ comparators, `Once.Do`, `testing.T.Run`, …) run on the caller's goroutine
 natively too, so they block normally. `errgroup.Group.Go` starts a real
 goroutine.
 
-**New happens-before edges.** `close(ch)` happens before a receive that
-returns because the channel is closed; `errgroup.Group.Go`'s function
-returning happens before `Wait` returns.
+**Happens-before edges**, per the memory model: a send happens before the
+receive of that value completes; a receive from an unbuffered channel
+happens before the send completes; the k-th receive from a channel of
+capacity C happens before the (k+C)-th send completes, so a buffered channel
+used as a semaphore orders its critical sections; `close(ch)` happens before
+a receive that returns because the channel is closed; `errgroup.Group.Go`'s
+function returning happens before `Wait` returns. Native `-race` also
+reports an unordered `close` and send as a race; giri doesn't yet.
 

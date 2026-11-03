@@ -117,8 +117,9 @@ arena, bounds and race detection.
 | `CacheHits`, `PureExecuted` | Pure instructions served by the cache / actually executed (with a cache). |
 
 Goroutines: since v0.101.0 a goroutine that receives from an empty channel,
-sends on a full buffered one, waits in `select`, or calls `WaitGroup.Wait`
-blocks until another goroutine makes progress possible, as natively. Every
+sends on a full buffered one or an unbuffered one with no receiver, waits in
+`select`, or calls `WaitGroup.Wait` blocks until another goroutine makes
+progress possible, as natively, and channels carry their values. Every
 goroutine a call starts runs before the call returns. Goroutines still
 waiting when nothing can run are abandoned; none survives into the next
 call. Steps and traces of goroutine kernels therefore include the code after

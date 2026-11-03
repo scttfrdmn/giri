@@ -560,31 +560,20 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 				interp.block(gid, waitInfo{site: site, kind: "channel receive"})
 				break
 			}
-			var chanID ChanID
-			if id, ok := operand.Raw.(ChanID); ok {
-				chanID = id
+			chanID, _ := operand.Raw.(ChanID)
+			var elem types.Type
+			if ct, ok := inst.X.Type().Underlying().(*types.Chan); ok {
+				elem = ct.Elem()
 			}
-			// Wait until the channel has a value or is closed (#294).
-			if chanID != 0 {
-				if ch, ok := interp.channels[chanID]; ok && !interp.block(gid, recvWait(ch, chanID, site)) {
-					break // aborted: execBlock sees GoroutineBlocked
-				}
+			// Wait for a value or for the channel to close (#294, #295).
+			val, recvOk, completed := interp.chanRecv(gid, chanID, elem, site)
+			if !completed {
+				break // aborted: execBlock sees GoroutineBlocked
 			}
-			// Determine ok BEFORE consuming the value (#143).
-			// ok=false only when the channel is both closed and fully drained.
-			// Computing after handleChannelRecv wrongly returns ok=false for
-			// the last real item (when pendingCount transitions 1→0 after recv).
-			recvOk := true
-			if chanID != 0 {
-				if ch, exists := interp.channels[chanID]; exists {
-					recvOk = !ch.closed || ch.hasPending || ch.pendingCount > 0
-				}
-			}
-			interp.handleChannelRecv(gid, chanID, site)
 			if inst.CommaOk {
-				interp.setLocal(frame, inst, Value{Raw: []Value{{}, {Raw: recvOk}}})
+				interp.setLocal(frame, inst, Value{Raw: []Value{val, {Raw: recvOk}}})
 			} else {
-				interp.setLocal(frame, inst, Value{})
+				interp.setLocal(frame, inst, val)
 			}
 		case token.SUB:
 			if interp.concrete {
@@ -1046,20 +1035,13 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			// Range-over-channel: handle channel receives directly here (not in
 			// rangeIter.advance) because we need access to the interpreter and gid (#143).
 			if chanID, ok := ri.val.Raw.(ChanID); ok {
-				if ch, exists := interp.channels[chanID]; exists {
-					if !interp.block(gid, recvWait(ch, chanID, site)) {
+				if _, exists := interp.channels[chanID]; exists {
+					val, ok, completed := interp.chanRecv(gid, chanID, nil, site)
+					if !completed {
 						break // aborted
 					}
-					if ch.hasPending || ch.pendingCount > 0 {
-						// Consume one value; return (true, receivedVal, _).
-						val := ch.pendingVal
-						interp.handleChannelRecv(gid, chanID, site)
-						interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: true}, val, {}}})
-					} else if ch.closed {
-						// Channel closed and empty: terminate the range loop.
-						interp.observeClose(gid, ch)
-						interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: false}, {}, {}}})
-					}
+					// (true, value, _) per item; (false, _, _) once closed and empty.
+					interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: ok}, val, {}}})
 				} else {
 					interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: false}, {}, {}}})
 				}
@@ -1299,7 +1281,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		if id, ok := chanVal.Raw.(ChanID); ok {
 			chanID = id
 		}
-		interp.handleChannelSend(gid, chanID, val, site)
+		interp.chanSend(gid, chanID, val, site)
 
 	case *ssa.Select:
 		interp.execSelect(gid, frame, inst, site)
@@ -1661,7 +1643,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 				return Value{Raw: int64(len(sv))}
 			case ChanID: // buffered channel: pending item count (#138)
 				if ch, ok := interp.channels[sv]; ok && ch.capacity > 0 {
-					return Value{Raw: int64(ch.pendingCount)}
+					return Value{Raw: int64(len(ch.buf))}
 				}
 				return Value{Raw: int64(0)}
 			}
