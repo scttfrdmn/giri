@@ -12,13 +12,12 @@ import (
 // BenchmarkStdlibDispatchHit measures execStdlibCall for a known package (strings).
 func BenchmarkStdlibDispatchHit(b *testing.B) {
 	interp := &Interpreter{
-		Memory:         shadow.NewMemory(),
-		goroutines:     make(map[int64]*Goroutine),
-		channelSenders: make(map[ChanID]bool),
-		channels:       make(map[ChanID]*chanEntry),
-		mutexes:        make(map[shadow.AllocID]*mutexState),
-		onceState:      make(map[shadow.AllocID]bool),
-		valueStore:     make(map[shadow.AllocID]Value),
+		Memory:     shadow.NewMemory(),
+		goroutines: make(map[int64]*Goroutine),
+		channels:   make(map[ChanID]*chanEntry),
+		mutexes:    make(map[shadow.AllocID]*mutexState),
+		onceState:  make(map[shadow.AllocID]bool),
+		valueStore: make(map[shadow.AllocID]Value),
 	}
 	interp.goroutines[1] = &Goroutine{ID: 1, Status: GoroutineRunning, Stack: []*Frame{}}
 	args := []Value{{Raw: "hello world"}, {Raw: "world"}}
@@ -33,13 +32,12 @@ func BenchmarkStdlibDispatchHit(b *testing.B) {
 // BenchmarkStdlibDispatchMiss measures execStdlibCall for an unknown package.
 func BenchmarkStdlibDispatchMiss(b *testing.B) {
 	interp := &Interpreter{
-		Memory:         shadow.NewMemory(),
-		goroutines:     make(map[int64]*Goroutine),
-		channelSenders: make(map[ChanID]bool),
-		channels:       make(map[ChanID]*chanEntry),
-		mutexes:        make(map[shadow.AllocID]*mutexState),
-		onceState:      make(map[shadow.AllocID]bool),
-		valueStore:     make(map[shadow.AllocID]Value),
+		Memory:     shadow.NewMemory(),
+		goroutines: make(map[int64]*Goroutine),
+		channels:   make(map[ChanID]*chanEntry),
+		mutexes:    make(map[shadow.AllocID]*mutexState),
+		onceState:  make(map[shadow.AllocID]bool),
+		valueStore: make(map[shadow.AllocID]Value),
 	}
 	interp.goroutines[1] = &Goroutine{ID: 1, Status: GoroutineRunning, Stack: []*Frame{}}
 

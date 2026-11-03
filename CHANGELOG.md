@@ -22,8 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a call starts finishes or is abandoned before the call returns, and a
   deadlocked call ends `Panicked` with a `deadlock` violation. Unbuffered
   sends, `Mutex.Lock` and `Cond.Wait` don't block yet (#295, #290).
-- `close(ch)` now happens before a receive that observes the close, for the
-  race detector.
+- **Channels carry values** (#295). `v := <-ch`, `range ch` and `select`
+  receive the value that was sent, and a closed channel yields the element
+  type's zero value with `ok` false; before, every receive yielded nothing.
+  Unbuffered sends now wait for a receiver, so a send nobody receives is a
+  deadlock or a leak, as natively. A waiting `select` offers its cases to
+  counterparts, so two selects on opposite ends of a channel meet.
+- **Channel happens-before edges** follow the memory model: a receive from an
+  unbuffered channel happens before the send completes, the k-th receive
+  from a buffered channel of capacity C before the (k+C)-th send (a buffered
+  channel used as a semaphore no longer reports false races), and `close`
+  before a receive that observes it.
 
 ### Fixed
 - **`sync` calls dispatch on the receiver type** (#293). `WaitGroup.Wait`

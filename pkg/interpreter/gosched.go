@@ -2,7 +2,6 @@ package interpreter
 
 import (
 	"fmt"
-	"go/types"
 	"runtime/debug"
 	"sort"
 
@@ -300,99 +299,6 @@ func (interp *Interpreter) reportDeadlock() {
 		}
 	}
 	interp.deadlock = &shadow.DeadlockError{GoroutineCount: n}
-}
-
-// recvWait is the wait of a receive from ch: until it holds a value or is
-// closed.
-func recvWait(ch *chanEntry, id ChanID, site string) waitInfo {
-	return waitInfo{site: site, kind: "channel receive", chanID: id, ready: func() bool {
-		return ch.hasPending || ch.pendingCount > 0 || ch.closed
-	}}
-}
-
-// sendWait is the wait of a send on buffered channel ch: until its buffer has
-// room or it is closed.
-func sendWait(ch *chanEntry, id ChanID, site string) waitInfo {
-	return waitInfo{site: site, kind: "channel send", chanID: id, onSend: true, ready: func() bool {
-		return ch.pendingCount < ch.capacity || ch.closed
-	}}
-}
-
-// selectCase is one case of a select statement, resolved once.
-type selectCase struct {
-	id   ChanID
-	ch   *chanEntry // nil: never ready (a nil or unknown channel)
-	send bool
-	val  Value
-}
-
-// ready reports whether the case can proceed. A send is ready on an open
-// channel with buffer room (unbuffered sends don't block yet, #295); a
-// receive when a value is pending or the channel is closed (#145).
-func (c *selectCase) ready() bool {
-	switch {
-	case c.ch == nil:
-		return false
-	case c.send:
-		return !c.ch.closed && (c.ch.capacity == 0 || c.ch.pendingCount < c.ch.capacity)
-	default:
-		return c.ch.hasPending || c.ch.pendingCount > 0 || c.ch.closed
-	}
-}
-
-// execSelect runs a select statement (#30): the first ready case in source
-// order; otherwise the default case if there is one; otherwise it waits until
-// a case is ready (#294).
-func (interp *Interpreter) execSelect(gid int64, frame *Frame, inst *ssa.Select, site string) {
-	cases := make([]selectCase, len(inst.States))
-	for i, state := range inst.States {
-		c := &cases[i]
-		c.send = state.Dir == types.SendOnly
-		if id, ok := interp.resolveValue(frame, state.Chan).Raw.(ChanID); ok {
-			c.id, c.ch = id, interp.channels[id]
-		}
-		if c.send {
-			c.val = interp.resolveValue(frame, state.Send)
-		}
-	}
-	first := func() int {
-		for i := range cases {
-			if cases[i].ready() {
-				return i
-			}
-		}
-		return -1
-	}
-
-	chosen := first()
-	if chosen < 0 {
-		if !inst.Blocking {
-			interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: int64(len(inst.States))}, {Raw: false}}})
-			return
-		}
-		w := waitInfo{site: site, kind: "select", ready: func() bool { return first() >= 0 }}
-		if len(cases) == 0 {
-			w.ready = nil // select {}: waits forever
-		}
-		if !interp.block(gid, w) {
-			return // aborted
-		}
-		chosen = first()
-	}
-
-	c := &cases[chosen]
-	recvOk := false
-	if c.send {
-		interp.handleChannelSend(gid, c.id, c.val, site)
-	} else {
-		recvOk = !c.ch.closed || c.ch.hasPending || c.ch.pendingCount > 0
-		if c.ch.hasPending || c.ch.pendingCount > 0 {
-			interp.handleChannelRecv(gid, c.id, site)
-		} else {
-			interp.observeClose(gid, c.ch)
-		}
-	}
-	interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: int64(chosen)}, {Raw: recvOk}}})
 }
 
 // probe runs body, an intercept's early run of a callback that native Go

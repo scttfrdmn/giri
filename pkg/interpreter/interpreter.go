@@ -343,22 +343,6 @@ func mergeClock(g *Goroutine, src map[int64]uint64) {
 	}
 }
 
-// ChanID is a unique identifier for an interpreted channel.
-type ChanID uint64
-
-// chanEntry holds synchronization state for a channel, used to propagate
-// happens-before relationships from sender to receiver.
-type chanEntry struct {
-	lastSenderGID   int64
-	lastSenderClock map[int64]uint64
-	closed          bool             // set by close(ch) (#31)
-	closeClock      map[int64]uint64 // the closer's clock: close happens before a receive that observes it
-	hasPending      bool             // a value has been sent but not yet received
-	pendingVal      Value            // the pending value (for select readiness checks)
-	capacity        int              // buffered channel capacity (0 = unbuffered)
-	pendingCount    int              // values sent and not yet received (#44, #294)
-}
-
 // CloseableID uniquely identifies an interpreted closeable resource
 // (os.File, net.Conn, etc.) for double-close detection (#223).
 type CloseableID uint64
@@ -450,16 +434,6 @@ type Interpreter struct {
 	// Channel state for happens-before tracking
 	channels   map[ChanID]*chanEntry
 	nextChanID atomic.Uint64
-
-	// channelSenders tracks channels that have had at least one send operation.
-	// Used by checkGoroutineLeaks: a goroutine blocked on channel C is only
-	// reported as leaked if no goroutine ever sent on C.
-	channelSenders map[ChanID]bool
-
-	// channelReceivers tracks channels that have had at least one receive.
-	// Used by checkGoroutineLeaks: a goroutine blocked on a send is not a leak
-	// if a receiver already consumed (or will consume) from that channel.
-	channelReceivers map[ChanID]bool
 
 	// Sync primitive state for sync.Mutex and sync.WaitGroup (#33).
 	// Key is the AllocID of the mutex/waitgroup's shadow memory allocation.
@@ -725,23 +699,21 @@ func New(fset *token.FileSet, config Config) *Interpreter {
 	}
 
 	interp := &Interpreter{
-		Memory:           shadow.NewMemory(memOpts...),
-		Fset:             fset,
-		goroutines:       make(map[int64]*Goroutine),
-		channels:         make(map[ChanID]*chanEntry),
-		channelSenders:   make(map[ChanID]bool),
-		channelReceivers: make(map[ChanID]bool),
-		mutexes:          make(map[shadow.AllocID]*mutexState),
-		closeables:       make(map[CloseableID]*closeableState),
-		onceState:        make(map[shadow.AllocID]bool),
-		valueStore:       make(map[shadow.AllocID]Value),
-		cancelFuncs:      make(map[cancelFuncID]cancelRecord),
-		faithful:         true,
-		elems:            make(map[elemKey]Value),
-		layouts:          make(map[types.Type][]leaf),
-		encoded:          make(map[shadow.AllocID]bool),
-		config:           config,
-		sizes:            types.SizesFor("gc", runtime.GOARCH),
+		Memory:      shadow.NewMemory(memOpts...),
+		Fset:        fset,
+		goroutines:  make(map[int64]*Goroutine),
+		channels:    make(map[ChanID]*chanEntry),
+		mutexes:     make(map[shadow.AllocID]*mutexState),
+		closeables:  make(map[CloseableID]*closeableState),
+		onceState:   make(map[shadow.AllocID]bool),
+		valueStore:  make(map[shadow.AllocID]Value),
+		cancelFuncs: make(map[cancelFuncID]cancelRecord),
+		faithful:    true,
+		elems:       make(map[elemKey]Value),
+		layouts:     make(map[types.Type][]leaf),
+		encoded:     make(map[shadow.AllocID]bool),
+		config:      config,
+		sizes:       types.SizesFor("gc", runtime.GOARCH),
 	}
 
 	// Build detector registry from config flags
@@ -794,24 +766,22 @@ func newWithArena(fset *token.FileSet, config Config, a *safearena.Arena) *Inter
 	}
 
 	interp := &Interpreter{
-		Memory:           shadow.NewMemory(memOpts...),
-		Fset:             fset,
-		goroutines:       make(map[int64]*Goroutine),
-		channels:         make(map[ChanID]*chanEntry),
-		channelSenders:   make(map[ChanID]bool),
-		channelReceivers: make(map[ChanID]bool),
-		mutexes:          make(map[shadow.AllocID]*mutexState),
-		closeables:       make(map[CloseableID]*closeableState),
-		onceState:        make(map[shadow.AllocID]bool),
-		valueStore:       make(map[shadow.AllocID]Value),
-		cancelFuncs:      make(map[cancelFuncID]cancelRecord),
-		faithful:         true,
-		elems:            make(map[elemKey]Value),
-		layouts:          make(map[types.Type][]leaf),
-		encoded:          make(map[shadow.AllocID]bool),
-		config:           config,
-		sizes:            types.SizesFor("gc", runtime.GOARCH),
-		arena:            a,
+		Memory:      shadow.NewMemory(memOpts...),
+		Fset:        fset,
+		goroutines:  make(map[int64]*Goroutine),
+		channels:    make(map[ChanID]*chanEntry),
+		mutexes:     make(map[shadow.AllocID]*mutexState),
+		closeables:  make(map[CloseableID]*closeableState),
+		onceState:   make(map[shadow.AllocID]bool),
+		valueStore:  make(map[shadow.AllocID]Value),
+		cancelFuncs: make(map[cancelFuncID]cancelRecord),
+		faithful:    true,
+		elems:       make(map[elemKey]Value),
+		layouts:     make(map[types.Type][]leaf),
+		encoded:     make(map[shadow.AllocID]bool),
+		config:      config,
+		sizes:       types.SizesFor("gc", runtime.GOARCH),
+		arena:       a,
 	}
 
 	var dets []detector.Detector
@@ -1556,14 +1526,6 @@ func (interp *Interpreter) resolveArenaID(val Value) (shadow.ArenaID, bool) {
 	return 0, false
 }
 
-// createChannel allocates a new channel and returns its ChanID.
-// capacity == 0 creates an unbuffered channel; capacity > 0 creates a buffered channel.
-func (interp *Interpreter) createChannel(capacity int) ChanID {
-	id := ChanID(interp.nextChanID.Add(1))
-	interp.channels[id] = &chanEntry{capacity: capacity}
-	return id
-}
-
 // handleReturn interprets a return instruction.
 // Checks for arena pointer escapes via return values.
 func (interp *Interpreter) handleReturn(gid int64, values []Value, site string) {
@@ -1591,34 +1553,6 @@ func (interp *Interpreter) handleReturn(gid int64, values []Value, site string) 
 				EscapeKind: "return",
 			})
 		}
-	}
-}
-
-// handleChannelClose marks a channel as closed (#31).
-// Subsequent sends to the channel will record a violation.
-func (interp *Interpreter) handleChannelClose(gid int64, chanID ChanID, site string) {
-	if ch, ok := interp.channels[chanID]; ok {
-		if ch.closed {
-			interp.runtimePanic(gid, "close of closed channel")
-			interp.recordViolation(gid, &shadow.DoubleCloseError{Site: site, GID: gid})
-			return
-		}
-		ch.closed = true
-		if g := interp.goroutine(gid); g != nil && interp.config.TrackRaces {
-			g.VClock.Tick(gid)
-			ch.closeClock = snapshotClock(g)
-		}
-	}
-}
-
-// observeClose records that goroutine gid's receive from ch returned because
-// ch is closed and empty: the close happens before it (#294).
-func (interp *Interpreter) observeClose(gid int64, ch *chanEntry) {
-	if ch == nil || !ch.closed || ch.hasPending || ch.pendingCount > 0 || ch.closeClock == nil {
-		return
-	}
-	if g := interp.goroutine(gid); g != nil {
-		mergeClock(g, ch.closeClock)
 	}
 }
 
@@ -1658,105 +1592,6 @@ func (interp *Interpreter) checkResourceClose(gid int64, receiver Value, site st
 	}
 	st.closed = true
 	st.firstSite = site
-}
-
-// handleChannelSend interprets a channel send and checks for escapes.
-// It records the sender's vector clock in the channel state for happens-before propagation.
-// For buffered channels (capacity > 0): blocks the goroutine when the buffer is full.
-func (interp *Interpreter) handleChannelSend(gid int64, chanID ChanID, val Value, site string) {
-	g := interp.goroutine(gid)
-
-	ch, ok := interp.channels[chanID]
-
-	// Buffered channel: wait while the buffer is full (#44, #294).
-	if ok && ch.capacity > 0 && !interp.block(gid, sendWait(ch, chanID, site)) {
-		return // aborted
-	}
-
-	// Check for send on closed channel (#31)
-	if ok && ch.closed {
-		interp.runtimePanic(gid, "send on closed channel")
-		interp.recordViolation(gid, fmt.Errorf("send on closed channel at %s (goroutine %d)", site, gid))
-		return
-	}
-
-	// Synchronize vector clocks and record sender clock in channel state
-	if interp.config.TrackRaces {
-		if g != nil {
-			g.VClock.Tick(gid)
-		}
-		if ok {
-			ch.lastSenderGID = gid
-			ch.lastSenderClock = make(map[int64]uint64, len(g.VClock.Clocks))
-			for k, v := range g.VClock.Clocks {
-				ch.lastSenderClock[k] = v
-			}
-			ch.hasPending = true
-			ch.pendingVal = val
-			ch.pendingCount++
-		}
-	} else {
-		// Even without race tracking, mark the channel as having a pending value
-		// so goroutine leak detection works correctly (a receiver is not a leak
-		// if a sender exists, regardless of scheduling order).
-		if ok {
-			ch.hasPending = true
-			ch.pendingCount++
-		}
-	}
-
-	// Track that this channel has had a sender (for goroutine leak detection).
-	interp.channelSenders[chanID] = true
-
-	// Check for arena pointer escape via channel
-	if interp.config.TrackArenas && val.Provenance != nil {
-		alloc, allocOk := interp.Memory.GetAllocation(val.Provenance.Alloc)
-		if allocOk && alloc.Kind == shadow.AllocArena {
-			interp.recordViolation(gid, &shadow.EscapedPointerError{
-				AllocID:    alloc.ID,
-				ArenaID:    alloc.Arena,
-				AllocSite:  alloc.AllocSite,
-				EscapeSite: site,
-				EscapeKind: "channel",
-			})
-		}
-	}
-}
-
-// handleChannelRecv interprets a channel receive.
-// It merges the sender's clock from the channel state into the receiver's clock.
-// For buffered channels, decrements pendingCount when a buffered value is consumed.
-func (interp *Interpreter) handleChannelRecv(gid int64, chanID ChanID, site string) {
-	// Track that this channel has had a receiver.
-	interp.channelReceivers[chanID] = true
-	interp.observeClose(gid, interp.channels[chanID])
-
-	if !interp.config.TrackRaces {
-		// Still decrement pendingCount for buffered channels (#44)
-		if ch, ok := interp.channels[chanID]; ok && ch.pendingCount > 0 {
-			ch.pendingCount--
-			if ch.pendingCount == 0 {
-				ch.hasPending = false
-			}
-		}
-		return
-	}
-
-	g := interp.goroutine(gid)
-	if ch, ok := interp.channels[chanID]; ok && ch.lastSenderGID != 0 {
-		for id, t := range ch.lastSenderClock {
-			if t > g.VClock.Clocks[id] {
-				g.VClock.Clocks[id] = t
-			}
-		}
-		if ch.pendingCount > 0 {
-			ch.pendingCount--
-		}
-		if ch.pendingCount == 0 {
-			ch.hasPending = false // value consumed
-		}
-	}
-	g.VClock.Tick(gid)
 }
 
 // --- Stack Trace ---

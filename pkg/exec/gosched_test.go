@@ -26,6 +26,24 @@ func TestGoroutineKernel(t *testing.T) {
 	}
 }
 
+// TestChannelValues: values sent on a channel arrive at the receiver, typed;
+// a closed channel yields the element type's zero value (#295).
+func TestChannelValues(t *testing.T) {
+	res, err := Run(kernelFunc(t, "ChanSum"), [][]any{{0}, {10}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []uint64{0, 55} {
+		if res.Outcomes[i] != Returned {
+			t.Fatalf("set %d: outcome %v, violations %v", i, res.Outcomes[i], res.Violations)
+		}
+		out := res.Outputs[i]
+		if out[0] != want || out[1] != uint8(0) || out[2] != false {
+			t.Errorf("set %d: ChanSum = %v, want [%d 0 false]", i, out, want)
+		}
+	}
+}
+
 // TestCallDeadlock: a call whose goroutines all wait panics with a deadlock
 // violation, as native Go's fatal error, and the next call is unaffected.
 func TestCallDeadlock(t *testing.T) {

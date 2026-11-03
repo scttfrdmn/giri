@@ -438,3 +438,24 @@ func WaitForever(x int) int {
 	wg.Wait()
 	return x
 }
+
+// ChanSum sends 1..n through a buffered channel from another goroutine and
+// returns the sum of the values received, and the uint8 zero value a receive
+// from the closed channel yields (#295).
+func ChanSum(n int) (uint64, uint8, bool) {
+	ch := make(chan uint64, 2)
+	go func() {
+		for i := 1; i <= n; i++ {
+			ch <- uint64(i)
+		}
+		close(ch)
+	}()
+	var s uint64
+	for v := range ch {
+		s += v
+	}
+	z := make(chan uint8)
+	close(z)
+	v, ok := <-z
+	return s, v, ok
+}

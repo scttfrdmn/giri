@@ -47,13 +47,12 @@ func FuzzExecStdlibCall(f *testing.F) {
 
 	// Build a minimal interpreter for fuzz testing.
 	interp := &Interpreter{
-		Memory:         shadow.NewMemory(),
-		goroutines:     make(map[int64]*Goroutine),
-		channelSenders: make(map[ChanID]bool),
-		channels:       make(map[ChanID]*chanEntry),
-		mutexes:        make(map[shadow.AllocID]*mutexState),
-		onceState:      make(map[shadow.AllocID]bool),
-		valueStore:     make(map[shadow.AllocID]Value),
+		Memory:     shadow.NewMemory(),
+		goroutines: make(map[int64]*Goroutine),
+		channels:   make(map[ChanID]*chanEntry),
+		mutexes:    make(map[shadow.AllocID]*mutexState),
+		onceState:  make(map[shadow.AllocID]bool),
+		valueStore: make(map[shadow.AllocID]Value),
 	}
 	// Minimal goroutine for fuzz calls that need it.
 	interp.goroutines[1] = &Goroutine{

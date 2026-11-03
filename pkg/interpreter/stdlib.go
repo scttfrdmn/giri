@@ -1521,23 +1521,13 @@ func (interp *Interpreter) handleTimeCall(name string, args []Value) (Value, boo
 			return Value{Raw: false}, true
 		}
 		// time.After(d Duration) <-chan Time — package-level.
-		chanID := interp.createChannel(1)
-		if ch, ok := interp.channels[chanID]; ok {
-			ch.hasPending = true
-			ch.pendingCount = 1
-		}
-		interp.channelSenders[chanID] = true
-		return Value{Raw: chanID}, true
+		// Until virtual time (#291) the channel always holds a value.
+		return Value{Raw: interp.newRefillChannel(opaque)}, true
 
 	case "Tick":
 		// time.Tick(d) <-chan Time — like After but never explicitly stopped.
-		chanID := interp.createChannel(1)
-		if ch, ok := interp.channels[chanID]; ok {
-			ch.hasPending = true
-			ch.pendingCount = 1
-		}
-		interp.channelSenders[chanID] = true
-		return Value{Raw: chanID}, true
+		// Until virtual time (#291) the channel always holds a value.
+		return Value{Raw: interp.newRefillChannel(opaque)}, true
 
 	case "Sleep":
 		// Noop — goroutine continues immediately; no side effects to model.
@@ -5899,10 +5889,8 @@ func (interp *Interpreter) handleSignalCall(gid int64, name string, args []Value
 		if len(args) >= 1 {
 			if chanID, ok := args[0].Raw.(ChanID); ok {
 				if ch, ok := interp.channels[chanID]; ok {
-					ch.hasPending = true
-					ch.pendingCount = 1
+					ch.refill, ch.refillVal = true, stdlibOpaque
 				}
-				interp.channelSenders[chanID] = true
 			}
 		}
 		return Value{}, true
