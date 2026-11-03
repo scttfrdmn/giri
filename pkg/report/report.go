@@ -16,7 +16,7 @@ import (
 
 // Version is the Giri version reported in machine-readable output (e.g. the
 // SARIF tool driver). Keep in step with the CHANGELOG / release tag.
-const Version = "0.99.1"
+const Version = "0.100.0"
 
 // Format controls output format.
 type Format int

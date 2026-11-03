@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.100.0] - 2026-11-02
+
+A performance pass, milestone v0.100.0. Outputs, step counts, traces, detector
+findings and determinism are unchanged: the CLI findings diff over all
+integration and showcase programs showed no changes for any PR. Full numbers
+are in `docs/perf.md`. Highlights, v0.99.1 → v0.100.0 (arm64 / amd64):
+tumble-shaped Runs 3.2× / 2.9× (MixU64 ×64) and 7.1× / 6.2× (SumU32 ×64);
+`IntLoop` 1.7× / 1.5×; `SliceLoop` with detectors 6.2× / 5.3×; the CLI on a
+synthetic program 1.6× / 1.4×.
+
 ### Added
 - **`exec.Loader`** (#273): `NewLoader().Load(pkgPath, src)` builds SSA for a
   single-file package from source bytes, type-checking dependencies once per
@@ -15,6 +25,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Loads are serialized and safe alongside in-flight `Run`s; positions are
   relative to each load's source; returned packages aren't retained.
   `LoadDir` is unchanged.
+- Benchmarks `BenchmarkKernelBatch` (tumble-shaped Runs), `BenchmarkLoadDir`,
+  `BenchmarkLoader` and `BenchmarkCLISynth` (#270).
+- 4 new integration tests (277 integration + 14 showcase = 291 total):
+  `race_dormant_siblings`, `race_dormant_prespawn`,
+  `race_dormant_happens_before`, `race_dormant_array_prespawn`.
+
+### Changed
+- **Per-Run and per-call overhead** (#270). A session merged every earlier
+  call's vector clock into each new call, so cost grew with the number of
+  argument sets. Its clocks and race history are now reset when a call ends
+  with no goroutine alive. `math/rand` is seeded on first use (same seed, same
+  sequence), and sessions memoize function names.
+- **Slot-indexed locals in sessions** (#271): frame values live in a slice
+  indexed per function instead of a `map[string]Value`. The CLI keeps its map
+  behind the same accessors. Goroutine lookups are cached.
+- **Race detector** (#272): dormant until a second goroutine exists (while only
+  one has existed, no access can race), and one shared clock snapshot per
+  access instead of a copy per byte. CLI findings are unchanged, and the new
+  integration tests match native `go run -race`.
+- `SkipDetectors` now saves ~10% on single-goroutine load/store kernels (it was
+  4.3×), because the race detector no longer runs for them.
 
 ## [0.99.1] - 2026-11-02
 
