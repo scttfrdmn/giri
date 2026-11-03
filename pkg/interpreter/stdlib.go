@@ -3830,7 +3830,7 @@ func (interp *Interpreter) handleLogCall(gid int64, name string, args []Value) (
 	case "Panic", "Panicln", "Panicf":
 		// log.Panic panics with the message: deferred calls run and may
 		// recover it (#259).
-		if g := interp.goroutines[gid]; g != nil && !g.Panicked {
+		if g := interp.goroutine(gid); g != nil && !g.Panicked {
 			g.PanicValue = Value{Raw: &InterfaceValue{Type: types.Typ[types.String], Value: Value{Raw: "log.Panic"}}}
 			g.Panicking = true
 		}
@@ -6472,7 +6472,7 @@ func (interp *Interpreter) handleTestingCall(gid int64, name string, args []Valu
 
 	// Fatal — stop the current goroutine (like runtime.Goexit):
 	case "Fatal", "Fatalf", "FailNow":
-		if g, ok := interp.goroutines[gid]; ok {
+		if g := interp.goroutine(gid); g != nil {
 			g.Panicked = true
 		}
 		return Value{}, true
