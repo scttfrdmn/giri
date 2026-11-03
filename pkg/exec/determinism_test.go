@@ -70,6 +70,8 @@ func TestDeterministicResults(t *testing.T) {
 		{"OOB", [][]any{{[]int{1}, 3}}}, // with a violation
 		{"Strs", [][]any{{"déterminisme"}}},
 		{"PrefixSum32", [][]any{{[]int32{3, 1, 4, 1, 5}, make([]int32, 5)}}},
+		{"PingPong", [][]any{{0}, {1}, {25}}},              // goroutines (#294)
+		{"RacyWrites", [][]any{{[]int{0}}, {[]int{0, 1}}}}, // with races
 	}
 	for _, c := range cases {
 		t.Run(c.fn, func(t *testing.T) {

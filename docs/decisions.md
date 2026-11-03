@@ -215,7 +215,7 @@ kernel code, and the interpreter itself):
 |---|---|
 | `range` over a map | Go randomizes the order. Concrete mode iterates keys in sorted order (bool, int, float, string, then other by text). The CLI path is unchanged. |
 | `math/rand`, `math/rand/v2` | Drawn from the interpreter's generator, seeded from `Options.Seed`. |
-| Random/PCT schedulers | Seeded from `Options.Seed`; with `SingleGoroutine` there is no scheduler. |
+| Random/PCT schedulers | Seeded from `Options.Seed`; with `SingleGoroutine` there is no scheduler. Since v0.101.0 goroutines run on host goroutines that pass control like a baton, one at a time, so the order is the scheduler's alone (#294). |
 | `time.Now`, `Since`, `Until`, timers | Intercepts return fixed values; already deterministic. |
 | `crypto/rand.Read` | Returns the length without filling the buffer; deterministic. Not concrete. |
 | `os.Getpid/Getuid/Getgid`, `os.Getenv`, `syscall.Getenv`, `os.Getwd`, `os.Hostname` | Host-dependent, deterministic within a host. None is concrete, so tumble's grammar never admits them. |
@@ -231,11 +231,13 @@ with architecture-specific assembly (e.g. `math.Exp` on amd64 versus arm64)
 follow the host, as requirement 8 allows. Basic float arithmetic is never
 fused (see req 1), and `int`/`uint` are 64-bit on every supported host.
 
-**Sessions skip end-of-program checks.** Goroutine leaks, deadlocks, arena
-leaks and unreleased context cancels are reported by the CLI's `Finish` once
-`main` returns. A session calls one function repeatedly and has no "end of
+**Sessions skip end-of-program checks.** Goroutine leaks, arena leaks and
+unreleased context cancels are reported by the CLI's `Finish` once `main`
+returns. A session calls one function repeatedly and has no "end of
 program", so those checks do not run. Findings raised during a call are all
-reported.
+reported. A deadlock is the exception (#294): when the call's own goroutine
+waits and no goroutine can run, the call ends `Panicked` with a `deadlock`
+violation, as native Go's fatal error would end it.
 
 ## Req 9 — budget behaviour
 
@@ -293,4 +295,48 @@ effect isn't concrete, and tumble treats `Opaque` as no fingerprint.
 array, so a function given the same Go slice twice sees two independent
 copies. Native code would see one. tumble constructs distinct argument
 slices, so this isn't modelled.
+
+## Blocking and resumption of goroutines (#294)
+
+**One host goroutine per started interpreted goroutine, with a baton.** The
+interpreter recurses on the Go stack and keeps no instruction pointer, so a
+goroutine that blocks must keep its stack. Each interpreted goroutine that
+starts gets a host goroutine; exactly one runs at a time, and a goroutine
+runs until it blocks or exits, then hands over to the next runnable one
+the scheduler picks. The caller of `Run` (or of a session call) runs the
+entry goroutine itself, so a program with no `go` statement creates no host
+goroutine and pays nothing for this. Running nested goroutines to
+completion inside the blocking call was rejected: a goroutine deeper in that
+nesting can't wait for a shallower one, so ping-pong and worker pools would
+falsely deadlock.
+
+**Leaks and deadlocks are exact.** Scheduling runs until nothing is
+runnable, so a goroutine still waiting then can never proceed. If the entry
+goroutine is waiting, every goroutine is asleep: one `deadlock`, as native
+Go's fatal error, and no separate leak findings. Otherwise each goroutine
+still waiting is a `goroutine-leak`. Goroutines keep running after `main`
+returns, which native Go doesn't do, so that their code is checked; a leak
+found that way is still a leak natively. Waiting goroutines are then
+abandoned: they unwind without running deferred calls, since natively they
+never resume. After `os.Exit`, `log.Fatal` or the step limit nothing more
+runs and nothing is reported as a leak.
+
+**What blocks.** Receiving from an empty or nil channel, `range` over a
+channel, sending on a full buffered channel or a nil one, a `select` with no
+ready case and no default, `sync.WaitGroup.Wait` and `errgroup.Group.Wait`.
+Unbuffered sends, `Mutex.Lock` and `Cond.Wait` don't block yet: channels
+carry no values until #295, and #290 covers the locks. A wait giri can't
+identify (a WaitGroup with no shadow provenance) doesn't block, as before.
+
+**Probes don't park.** `sync.OnceFunc`/`OnceValue`/`OnceValues` run their
+function when they're called, to check it; natively it runs later, perhaps
+after the goroutines it waits for exist. A wait inside such a probe unwinds
+to the probe instead of parking. Other intercepted callbacks (sort
+comparators, `Once.Do`, `testing.T.Run`, …) run on the caller's goroutine
+natively too, so they block normally. `errgroup.Group.Go` starts a real
+goroutine.
+
+**New happens-before edges.** `close(ch)` happens before a receive that
+returns because the channel is closed; `errgroup.Group.Go`'s function
+returning happens before `Wait` returns.
 

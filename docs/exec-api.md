@@ -107,7 +107,7 @@ arena, bounds and race detection.
 | Field | Meaning |
 |---|---|
 | `Outputs [][]any` | Per set run: one Go value per result. `nil` unless the outcome is `Returned`. |
-| `Outcomes []Outcome` | `Returned`; `Panicked` (unrecovered panic, including giri-raised index-out-of-range, nil dereference and divide-by-zero); `Exhausted`; `Opaque` (returned a value no concrete model produced). |
+| `Outcomes []Outcome` | `Returned`; `Panicked` (unrecovered panic, including giri-raised index-out-of-range, nil dereference and divide-by-zero, and a deadlock: every goroutine of the call waiting, reported as a `deadlock` violation); `Exhausted`; `Opaque` (returned a value no concrete model produced). |
 | `ArgsAfter [][]any` | Per set run: each slice argument's contents after the call, typed like `Outputs` (a `nil` slice is a typed nil, as natively); `nil` for non-slice parameters and for sets that didn't return. A function that doesn't write into an argument reports its input. The caller's slices are never modified. Each slice argument has its own backing array, so aliasing between arguments isn't modelled. |
 | `Steps`, `StepsPerSet` | Instructions executed, callees included, in total and per set. |
 | `StepsByClass map[Class]uint64` | `Steps` by instruction class; every class present; sums to `Steps`. |
@@ -116,8 +116,16 @@ arena, bounds and race detection.
 | `Traces []Traces` | Per set run, when `Trace` is on. |
 | `CacheHits`, `PureExecuted` | Pure instructions served by the cache / actually executed (with a cache). |
 
-Determinism: with `SingleGoroutine` (or no goroutines), equal SSA, arguments
-and `Options` give byte-identical `Result`s. Map iteration is in sorted key
+Goroutines: since v0.101.0 a goroutine that receives from an empty channel,
+sends on a full buffered one, waits in `select`, or calls `WaitGroup.Wait`
+blocks until another goroutine makes progress possible, as natively. Every
+goroutine a call starts runs before the call returns. Goroutines still
+waiting when nothing can run are abandoned; none survives into the next
+call. Steps and traces of goroutine kernels therefore include the code after
+each wait, which earlier versions never ran.
+
+Determinism: equal SSA, arguments and `Options` give byte-identical
+`Result`s, with or without goroutines (the scheduler is seeded). Map iteration is in sorted key
 order, randomness is seeded, and time intercepts are constant. Across
 machines, violation messages carry absolute source paths, and `math`
 functions with architecture-specific assembly follow the host. Floating-point

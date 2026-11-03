@@ -140,27 +140,19 @@ func Run(prog *Program, config Config) *RunResult {
 		// declared with function-call initializers (e.g. flag.String, make, etc.).
 		// Dependency package inits called from within init() are suppressed in
 		// execStdlibCall; only the main package's own init body executes (#146).
-		ranInit := false
-		if initFn := prog.Main.Func("init"); initFn != nil {
-			interp.execFunction(mainGID, initFn, nil)
-			ranInit = true
-		}
-
-		// Find and execute main function
+		initFn := prog.Main.Func("init")
 		mainFn := prog.Main.Func("main")
-		if mainFn == nil && !ranInit {
-			// Legacy fallback for init-only programs; not triggered when init()
-			// has already run above.
-			mainFn = prog.Main.Func("init")
-		}
 
-		if mainFn != nil {
-			interp.execFunction(mainGID, mainFn, nil)
-			interp.finishGoroutine(mainGID)
-		}
-
-		// Drain the run queue: execute spawned goroutines via scheduler
-		interp.drainRunQueue()
+		// main runs on this host goroutine; goroutines it starts run until
+		// none is runnable, past the end of main for coverage (#294).
+		interp.runDriver(mainGID, func() {
+			if initFn != nil {
+				interp.execFunction(mainGID, initFn, nil)
+			}
+			if mainFn != nil {
+				interp.execFunction(mainGID, mainFn, nil)
+			}
+		})
 
 		// Run finalization checks
 		finalErrs := interp.Finish()
@@ -305,11 +297,9 @@ func runTestFn(prog *Program, tf TestFunc, config Config) *TestRunResult {
 		// Call the test function with an opaque *testing.T as its argument.
 		// handleTestingCall in stdlib.go intercepts t.Fatal, t.Log, t.Run, etc.
 		tArg := Value{Raw: struct{}{}}
-		interp.execFunction(mainGID, tf.Fn, []Value{tArg})
-		interp.finishGoroutine(mainGID)
-
-		// Drain the run queue (goroutines spawned inside the test).
-		interp.drainRunQueue()
+		interp.runDriver(mainGID, func() {
+			interp.execFunction(mainGID, tf.Fn, []Value{tArg})
+		})
 
 		finalErrs := interp.Finish()
 		return &RunResult{Violations: finalErrs, MemStats: interp.Memory.Stats(), SuppressedCount: interp.suppressedCount, SuppressedViolations: interp.suppressedViolations}
@@ -336,37 +326,39 @@ func (interp *Interpreter) finishGoroutine(gid int64) {
 	}
 	if !g.Panicked {
 		g.Status = GoroutineFinished
-		interp.sched.OnFinish(gid)
-	}
-}
-
-// takeNextTask removes and returns the queued goroutine the scheduler picks.
-func (interp *Interpreter) takeNextTask() goroutineTask {
-	runnable := make([]int64, len(interp.runQueue))
-	for i, t := range interp.runQueue {
-		runnable[i] = t.gid
-	}
-	next := interp.sched.Next(runnable)
-	for i, t := range interp.runQueue {
-		if t.gid == next {
-			// Swap-last-and-shrink: O(1) removal (order irrelevant; scheduler picks next).
-			last := len(interp.runQueue) - 1
-			interp.runQueue[i] = interp.runQueue[last]
-			interp.runQueue = interp.runQueue[:last]
-			return t
+		if interp.sched != nil {
+			interp.sched.OnFinish(gid)
 		}
 	}
-	panic(fmt.Sprintf("interpreter: scheduler picked goroutine %d, which is not queued", next))
 }
 
-// drainRunQueue runs queued goroutines one at a time, in scheduler order,
-// until none remain.
-func (interp *Interpreter) drainRunQueue() {
-	for len(interp.runQueue) > 0 {
-		t := interp.takeNextTask()
-		interp.execFunction(t.gid, t.fn, t.args)
-		interp.finishGoroutine(t.gid)
+// startGoroutine starts t.fn(t.args...) as a new goroutine spawned by gid at
+// site, as a go statement does, and returns its ID (0 if it couldn't start).
+// It runs when gid next blocks or exits.
+func (interp *Interpreter) startGoroutine(gid int64, t goroutineTask, funcName, site string) int64 {
+	newGID, err := interp.spawnGoroutine(funcName, site)
+	if err != nil {
+		interp.recordViolation(gid, err)
+		return 0
 	}
+	child := interp.goroutine(newGID)
+	child.SpawnSite = site // for goroutine leak reports
+
+	// The go statement is synchronized before the goroutine's start (#29):
+	// the parent ticks, then the child inherits the parent's clock.
+	if parent := interp.goroutine(gid); parent != nil {
+		parent.VClock.Tick(gid)
+		for k, v := range parent.VClock.Clocks {
+			if v > child.VClock.Clocks[k] {
+				child.VClock.Clocks[k] = v
+			}
+		}
+	}
+
+	interp.sched.OnSpawn(gid, newGID)
+	t.gid = newGID
+	interp.runQueue = append(interp.runQueue, t)
+	return newGID
 }
 
 // execFunction interprets a single SSA function.
@@ -492,7 +484,7 @@ func (interp *Interpreter) execInstruction(gid int64, fn *ssa.Function, instr ss
 					"execution limit of %d steps exceeded at %s",
 					interp.config.MaxSteps, interp.posString(instr.Pos()),
 				))
-				g.Panicked = true
+				interp.haltAll()
 			}
 			return nil
 		}
@@ -565,26 +557,17 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			// Receive from nil channel blocks forever in Go (deadlock) (#122).
 			if operand.Raw == nil {
 				interp.recordViolation(gid, &shadow.NilChannelError{Op: "receive", Site: site, GID: gid})
-				if g := interp.goroutine(gid); g != nil {
-					g.Status = GoroutineBlocked
-					g.BlockSite = site
-				}
+				interp.block(gid, waitInfo{site: site, kind: "channel receive"})
 				break
 			}
 			var chanID ChanID
 			if id, ok := operand.Raw.(ChanID); ok {
 				chanID = id
 			}
-			// Check if this receive would block (no pending value and not closed).
-			// If so, mark the goroutine as blocked so leak detection can report it.
+			// Wait until the channel has a value or is closed (#294).
 			if chanID != 0 {
-				if ch, ok := interp.channels[chanID]; ok && !ch.hasPending && !ch.closed {
-					if g := interp.goroutine(gid); g != nil {
-						g.Status = GoroutineBlocked
-						g.BlockChanID = chanID
-						g.BlockSite = site
-					}
-					break // Don't assign result; execBlock will see GoroutineBlocked
+				if ch, ok := interp.channels[chanID]; ok && !interp.block(gid, recvWait(ch, chanID, site)) {
+					break // aborted: execBlock sees GoroutineBlocked
 				}
 			}
 			// Determine ok BEFORE consuming the value (#143).
@@ -1064,6 +1047,9 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 			// rangeIter.advance) because we need access to the interpreter and gid (#143).
 			if chanID, ok := ri.val.Raw.(ChanID); ok {
 				if ch, exists := interp.channels[chanID]; exists {
+					if !interp.block(gid, recvWait(ch, chanID, site)) {
+						break // aborted
+					}
 					if ch.hasPending || ch.pendingCount > 0 {
 						// Consume one value; return (true, receivedVal, _).
 						val := ch.pendingVal
@@ -1071,14 +1057,8 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 						interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: true}, val, {}}})
 					} else if ch.closed {
 						// Channel closed and empty: terminate the range loop.
+						interp.observeClose(gid, ch)
 						interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: false}, {}, {}}})
-					} else {
-						// Channel empty and not closed: block goroutine.
-						if g := interp.goroutine(gid); g != nil {
-							g.Status = GoroutineBlocked
-							g.BlockChanID = chanID
-							g.BlockSite = site
-						}
 					}
 				} else {
 					interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: false}, {}, {}}})
@@ -1302,40 +1282,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		if callee == nil {
 			break // Can't resolve the goroutine function
 		}
-		funcName := interp.callTargetName(inst.Call)
-		newGID, err := interp.spawnGoroutine(funcName, site)
-		if err != nil {
-			interp.recordViolation(gid, err)
-			break
-		}
-
-		// Record the spawn site on the new goroutine for goroutine leak reporting.
-		if newG := interp.goroutine(newGID); newG != nil {
-			newG.SpawnSite = site
-		}
-
-		// Propagate parent → child happens-before edge (#29).
-		// Per Go memory model, the go statement is synchronized before the
-		// goroutine's start: parent ticks then child inherits parent's clock.
-		parent := interp.goroutine(gid)
-		if parent != nil {
-			parent.VClock.Tick(gid)
-			child := interp.goroutine(newGID)
-			if child != nil {
-				for k, v := range parent.VClock.Clocks {
-					if v > child.VClock.Clocks[k] {
-						child.VClock.Clocks[k] = v
-					}
-				}
-			}
-		}
-
-		interp.sched.OnSpawn(gid, newGID)
-		interp.runQueue = append(interp.runQueue, goroutineTask{
-			gid:  newGID,
-			fn:   callee,
-			args: args,
-		})
+		interp.startGoroutine(gid, goroutineTask{fn: callee, args: args}, interp.callTargetName(inst.Call), site)
 
 	// --- Channel Operations ---
 
@@ -1345,10 +1292,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		// Send on nil channel blocks forever in Go (deadlock) (#122).
 		if chanVal.Raw == nil {
 			interp.recordViolation(gid, &shadow.NilChannelError{Op: "send", Site: site, GID: gid})
-			if g := interp.goroutine(gid); g != nil {
-				g.Status = GoroutineBlocked
-				g.BlockSite = site
-			}
+			interp.block(gid, waitInfo{site: site, kind: "channel send", onSend: true})
 			break
 		}
 		var chanID ChanID
@@ -1358,58 +1302,7 @@ func (interp *Interpreter) execOp(gid int64, fn *ssa.Function, instr ssa.Instruc
 		interp.handleChannelSend(gid, chanID, val, site)
 
 	case *ssa.Select:
-		// Minimal select implementation (#30): iterate cases in order and
-		// execute the first ready case. If none are ready and the select is
-		// non-blocking (!inst.Blocking means a default clause exists), return
-		// the default index. If blocking and no case is ready, record deadlock.
-		chosenIdx := int64(-1)
-		recvOk := false
-		for i, state := range inst.States {
-			chanVal := interp.resolveValue(frame, state.Chan)
-			chanID, hasChanID := chanVal.Raw.(ChanID)
-			if !hasChanID {
-				continue
-			}
-			ch, exists := interp.channels[chanID]
-			if !exists {
-				continue
-			}
-			if state.Dir == types.SendOnly {
-				// Ready to send if channel is open
-				if !ch.closed {
-					chosenIdx = int64(i)
-					sendVal := interp.resolveValue(frame, state.Send)
-					interp.handleChannelSend(gid, chanID, sendVal, site)
-					break
-				}
-			} else {
-				// Ready to receive if there's a pending value or channel is closed (#145).
-				// Check pendingCount too (buffered channels) to match the v0.45.0 ARROW fix.
-				if ch.hasPending || ch.pendingCount > 0 || ch.closed {
-					chosenIdx = int64(i)
-					recvOk = !ch.closed || ch.hasPending || ch.pendingCount > 0
-					if ch.hasPending || ch.pendingCount > 0 {
-						interp.handleChannelRecv(gid, chanID, site)
-					}
-					break
-				}
-			}
-		}
-		if chosenIdx == -1 {
-			if !inst.Blocking {
-				// Non-blocking: return the default case index
-				chosenIdx = int64(len(inst.States))
-			} else {
-				// Blocking select with no ready case: mark goroutine as blocked (#45).
-				g := interp.goroutine(gid)
-				if g != nil {
-					g.Status = GoroutineBlocked
-					g.BlockSite = site
-					// No single channel to blame; BlockChanID stays 0.
-				}
-			}
-		}
-		interp.setLocal(frame, inst, Value{Raw: []Value{{Raw: chosenIdx}, {Raw: recvOk}}})
+		interp.execSelect(gid, frame, inst, site)
 
 	// --- Type Conversions ---
 
@@ -1615,9 +1508,7 @@ func (interp *Interpreter) execCall(gid int64, callerFn *ssa.Function, call *ssa
 	// syscall-backed stdlib code and continues running past the exit point.
 	if callee != nil && callee.Package() != nil {
 		if pkg := callee.Package().Pkg; pkg != nil && pkg.Path() == "os" && callee.Name() == "Exit" {
-			for _, g := range interp.goroutines {
-				g.Panicked = true
-			}
+			interp.haltAll()
 			return Value{}
 		}
 	}
@@ -1769,7 +1660,7 @@ func (interp *Interpreter) execBuiltin(gid int64, b *ssa.Builtin, args []Value, 
 			case map[interface{}]Value: // map length (#138)
 				return Value{Raw: int64(len(sv))}
 			case ChanID: // buffered channel: pending item count (#138)
-				if ch, ok := interp.channels[sv]; ok {
+				if ch, ok := interp.channels[sv]; ok && ch.capacity > 0 {
 					return Value{Raw: int64(ch.pendingCount)}
 				}
 				return Value{Raw: int64(0)}
